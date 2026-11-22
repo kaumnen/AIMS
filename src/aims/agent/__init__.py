@@ -12,6 +12,7 @@ from aims.agent.loop import (
     pass_gate,
     run_tool,
     settle,
+    wall_deadline,
 )
 from aims.agent.turnstile import Turnstile
 
@@ -36,4 +37,5 @@ __all__ = [
     "pass_gate",
     "run_tool",
     "settle",
+    "wall_deadline",
 ]

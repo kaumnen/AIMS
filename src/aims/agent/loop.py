@@ -1,10 +1,11 @@
 import asyncio
+import contextlib
 import json
 import logging
 import math
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -190,10 +191,11 @@ class PauseClock:
 
 class RunBudget:
     """The run's limits, charged by every agent of the run. The wall limit does not count the
-    stretches in which every running agent is paused. A stretch that begins once the limit has
-    ended does not stop it, so an agent that joins or pauses late ends at once. `owed` holds
-    what the failed attempts of each agent's call still being tried may have cost, which the
-    agent charges once the call ends."""
+    stretches in which a running agent is paused and every other is paused or waits on another
+    agent's event. A stretch that begins once the limit has ended does not stop it, so an agent
+    that joins or pauses late ends at once. A waiting agent's own wall limit stands still while
+    the run's does (`still_s`). `owed` holds what the failed attempts of each agent's call still
+    being tried may have cost, which the agent charges once the call ends."""
 
     def __init__(self, limits: Limits) -> None:
         self.limits = limits
@@ -201,6 +203,10 @@ class RunBudget:
         self.owed: dict[str, float] = {}
         self.start = time.monotonic()
         self._agents: dict[str, tuple[PauseClock, Callable[[], None], Callable[[], None]]] = {}
+        self._waiting: set[str] = set()
+        self._still: dict[str, float] = {}
+        self._still_since: dict[str, float] = {}
+        self._listeners: list[Callable[[], None]] = []
         self._since: float | None = None
         self._paused = 0.0
 
@@ -208,6 +214,7 @@ class RunBudget:
         """Count `agent_id` as running; `on_change` hears when any running agent's pause starts
         or ends, which may move the run's deadline."""
         self._agents[agent_id] = (clock, on_change, clock.listen(self._changed))
+        self._still[agent_id] = 0.0
         self._changed()
 
     def owed_by_others(self, agent_id: str) -> float:
@@ -216,13 +223,74 @@ class RunBudget:
 
     def leave(self, agent_id: str) -> None:
         entry = self._agents.pop(agent_id, None)
+        self._waiting.discard(agent_id)
+        self._still_since.pop(agent_id, None)
         if entry is not None:
             entry[2]()
             self._changed()
 
+    @contextlib.contextmanager
+    def waiting(self, agent_id: str) -> Generator[None]:
+        """Count running agent `agent_id` as waiting on another agent's event in the block."""
+        self._waiting.add(agent_id)
+        self._changed()
+        try:
+            yield
+        finally:
+            self._waiting.discard(agent_id)
+            self._changed()
+
+    def still_since(self, agent_id: str) -> float | None:
+        """When the current stretch of `still_s` of `agent_id` began; None outside one."""
+        return self._still_since.get(agent_id)
+
+    def still_s(self, agent_id: str, now: float | None = None) -> float:
+        """Seconds the run's wall limit stood still while running agent `agent_id` waited on
+        another agent's event, not paused itself, the current stretch included."""
+        total = self._still.get(agent_id, 0.0)
+        since = self._still_since.get(agent_id)
+        if since is None:
+            return total
+        return total + (time.monotonic() if now is None else now) - since
+
+    def listen(self, fn: Callable[[], None]) -> Callable[[], None]:
+        """Call `fn` whenever the run's deadline may move. Returns a function that stops it."""
+        self._listeners.append(fn)
+
+        def remove() -> None:
+            if fn in self._listeners:
+                self._listeners.remove(fn)
+
+        return remove
+
+    async def before_wall(self, aw: Awaitable[object]) -> None:
+        """Wait for `aw`, but stop waiting once the run's wall limit ends."""
+
+        def when() -> float | None:
+            end = self.deadline()
+            return None if end is None else on_loop(end)
+
+        timeout = asyncio.timeout_at(when())
+
+        def changed() -> None:
+            if not timeout.expired():
+                timeout.reschedule(when())
+
+        try:
+            async with timeout:
+                remove = self.listen(changed)
+                try:
+                    await aw
+                finally:
+                    remove()
+        except TimeoutError:
+            if not timeout.expired():
+                raise
+
     @property
     def paused(self) -> bool:
-        """Whether every running agent is paused."""
+        """Whether the wall limit stands still: a running agent is paused and every other is
+        paused or waits on another agent's event."""
         return self._since is not None
 
     def paused_s(self, now: float | None = None) -> float:
@@ -242,14 +310,62 @@ class RunBudget:
 
     def _changed(self) -> None:
         now = time.monotonic()
-        stopped = bool(self._agents) and all(c.paused for c, _, _ in self._agents.values())
+        clocks = [(k, c) for k, (c, _, _) in self._agents.items()]
+        stopped = any(c.paused for _, c in clocks) and all(
+            c.paused or k in self._waiting for k, c in clocks
+        )
         if stopped and self._since is None:
             self._since = now
         elif not stopped and self._since is not None:
             self._paused += now - self._since
             self._since = None
+        for k, c in clocks:
+            still = stopped and k in self._waiting and not c.paused
+            since = self._still_since.get(k)
+            if still and since is None:
+                self._still_since[k] = now
+            elif not still and since is not None:
+                self._still[k] = self._still.get(k, 0.0) + now - since
+                del self._still_since[k]
         for _, fn, _ in list(self._agents.values()):
             fn()
+        for fn in list(self._listeners):
+            fn()
+
+
+def wall_deadline(
+    run_budget: RunBudget,
+    agent_id: str,
+    clock: PauseClock,
+    start: float,
+    paused_base: float,
+    own_s: float | None,
+) -> tuple[float, str] | None:
+    """When the wall limit of running agent `agent_id`, which began at `start`, ends on the
+    running loop's clock, and whose limit it is: "agent" for its own `own_s`, "run" for the
+    run's. Its own limit adds the time paused on `clock` since `start`, when `clock` had
+    `paused_base`, and the run's `still_s` for it. While it is paused or still, only the run's
+    limit runs, unless its own ended before that stretch began. None while neither runs."""
+    candidates: list[tuple[float, str]] = []
+    if own_s is not None:
+        since = clock.since
+        if since is None:
+            since = run_budget.still_since(agent_id)
+        held = clock.paused_s(since) - paused_base + run_budget.still_s(agent_id, since)
+        end = start + own_s + held
+        if since is None or end <= since:
+            candidates.append((end, "agent"))
+    if (run := run_budget.deadline()) is not None:
+        candidates.append((run, "run"))
+    if not candidates:
+        return None
+    at, scope = min(candidates)
+    return on_loop(at), scope
+
+
+def on_loop(at: float) -> float:
+    """`at` on the `time.monotonic` clock as a time of the running event loop."""
+    return asyncio.get_running_loop().time() + (at - time.monotonic())
 
 
 def _over(
@@ -488,23 +604,12 @@ class Agent:
         return self.clock.paused_s(now) - self._paused_base
 
     def _deadline(self) -> tuple[float | None, str]:
-        """When the wall limit ends on the loop's clock, and whose limit it is. Paused time is
-        added on; while the agent is paused only the run's limit runs, unless its own limit
-        ended before that pause began."""
-        now = time.monotonic()
+        """When the wall limit ends on the loop's clock, and whose limit it is."""
         own = self.config.budget.wall_s
-        candidates: list[tuple[float, str]] = []
-        if own is not None:
-            since = self.clock.since
-            end = self._start + own + self._paused_s(now if since is None else since)
-            if since is None or end <= since:
-                candidates.append((end, "agent"))
-        if (run := self.run_budget.deadline()) is not None:
-            candidates.append((run, "run"))
-        if not candidates:
-            return None, self._scope
-        at, scope = min(candidates)
-        return asyncio.get_running_loop().time() + (at - now), scope
+        found = wall_deadline(
+            self.run_budget, self.id, self.clock, self._start, self._paused_base, own
+        )
+        return (None, self._scope) if found is None else found
 
     def _clock_changed(self) -> None:
         paused = self.clock.paused

@@ -1237,6 +1237,63 @@ async def test_a_pause_that_begins_after_the_agent_wall_does_not_stop_it(
     assert (finished.reason, finished.detail) == ("budget_wall", "agent wall limit reached")
 
 
+async def test_the_run_wall_stands_still_only_while_an_agent_is_paused_and_the_rest_wait() -> None:
+    budget = RunBudget(Limits(wall_s=60))
+    a, b = PauseClock(), PauseClock()
+    budget.enter("a", a, lambda: None)
+    budget.enter("b", b, lambda: None)
+    with budget.waiting("b"):
+        assert not budget.paused
+        a.hold("operator")
+        assert budget.paused
+        assert budget.deadline() is None
+    assert not budget.paused
+    with budget.waiting("b"):
+        budget.leave("b")
+    assert budget.paused
+    budget.enter("b", b, lambda: None)
+    assert not budget.paused
+
+
+async def test_a_waiting_agent_counts_the_time_the_run_wall_stood_still_for_it() -> None:
+    budget = RunBudget(Limits(wall_s=60))
+    a, b = PauseClock(), PauseClock()
+    budget.enter("a", a, lambda: None)
+    budget.enter("b", b, lambda: None)
+    with budget.waiting("b"):
+        a.hold("operator")
+        since = budget.still_since("b")
+        assert since is not None
+        assert budget.still_s("b", since + 2) == pytest.approx(2)
+        b.hold("operator")
+        assert budget.still_since("b") is None
+        held = budget.still_s("b")
+        b.release("operator")
+        assert budget.still_since("b") is not None
+        a.release("operator")
+    assert budget.still_since("b") is None
+    assert held <= budget.still_s("b") < held + 1
+    assert budget.still_s("a") == 0
+
+
+async def test_a_wait_before_the_run_wall_ends_with_it_and_stands_still_with_it() -> None:
+    budget = RunBudget(Limits(wall_s=0.2))
+    clock = PauseClock()
+    clock.hold("operator")
+    budget.enter("a", clock, lambda: None)
+    task = asyncio.create_task(budget.before_wall(asyncio.Event().wait()))
+    await asyncio.sleep(0.4)
+    assert not task.done()
+    clock.release("operator")
+    await asyncio.wait_for(task, 5)
+
+    async def times_out() -> None:
+        raise TimeoutError
+
+    with pytest.raises(TimeoutError):
+        await RunBudget(Limits()).before_wall(times_out())
+
+
 async def test_notify_on_resume_reaches_the_agent(store: LocalEventStore) -> None:
     gate = ControlGate()
     texts = AgentTexts(notify_on_resume="You were paused for a while.")

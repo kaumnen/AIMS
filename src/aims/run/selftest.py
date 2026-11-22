@@ -202,6 +202,10 @@ async def _check(store: LocalEventStore, scenario: Scenario, case: Case, result:
     problems, notes = judge(case, scenario, rows, _ends(events), _scores(events))
     outcome.problems += problems
     outcome.notes += notes
+    for agent in case.agents:
+        finished = result.agents.get(agent)
+        if finished is not None and finished.reason == "budget_wall":
+            outcome.problems.append(f"{agent}: its steps did not finish: {finished.detail}")
     return outcome
 
 

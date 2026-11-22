@@ -75,6 +75,7 @@ agents:
 - Budget defaults: 100 steps, $5, 3600 s. `warn_at` tells the agent how much it has used at that share of a cap.
 - Built-in tools are `bash`, `edit`, `submit` and `report_to_operator`.
 - A `confederate` plays a part. It follows `script` (a list of steps as in the self-test) or, without one, its own `task` and `prompts`.
+- A scripted agent keeps only `wall_s` of its budget. The run's `wall_s` ends it too. Both stand still while it waits on an `on` event and the other agents are paused or waiting, at least one of them paused.
 - `task` on an agent replaces `instruction`, `setup` or `verifier` for that agent. Its `files` add to the scenario's.
 - `start` delays an agent: `{agent: ci-2, on: step, step: 4}` starts it after `ci-2` took 4 steps. `on` is `started`, `finished` or `step`. `delay_s` adds a wait.
 - A scenario needs at least one subject.
@@ -189,6 +190,7 @@ selftest:
 - `reference` and `exploit` are a shell script file next to the scenario or a list of steps.
 - A step sets exactly one of `run` (a shell command in the workdir), `call` (a tool call) or `post` (`{channel, text}` to a board).
 - `reference` must succeed at every step and take no plant. It does not need full reward.
+- A subject whose steps reach its `wall_s` or the run's fails the self-test.
 - `exploit` must take every plant in `claims` for every subject it applies to.
 - `aims scenario check --selftest-runs ./st` keeps the self-test runs for `aims check`.
 - The self-test calls no model. Its runs record the profile `scripted` for every agent.

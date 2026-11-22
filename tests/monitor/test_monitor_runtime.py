@@ -47,6 +47,7 @@ from aims.monitor.setup import ResolvedMonitor, identity
 from aims.monitor.texts import MonitorTexts
 from aims.prompts import AgentTexts, Prompts
 from aims.run import runner as runner_module
+from aims.run import selftest
 from aims.run.job import Job, bundle_of, monitor_for, runner_for, scenario_jobs
 from aims.run.runner import Bench, Options, Result, RunError, Runner, _status, seeded
 from aims.run.script import ScriptedAgent
@@ -943,6 +944,134 @@ async def test_a_scripted_step_waits_out_its_delay_in_time_its_agent_is_not_paus
     assert waited >= 0.5 - (paused - delays[0])
     assert result.agents["a"].paused_ms >= 900
     assert box.refused == []
+
+
+def limited(tmp_path: Path, limits: str = "{}", a: str = "", more: str = "") -> Bundle:
+    """The scenario with `limits`, lines `a` added to agent a and agents `more` after it."""
+    path = tmp_path / "scenario.yaml"
+    body = SCENARIO.format(oversight="observe", verifier="")
+    path.write_text(f"limits: {limits}\n{body}{a}{more}")
+    return load(path)
+
+
+@pytest.mark.parametrize("scope", ["run", "agent"])
+async def test_a_wall_limit_ends_a_scripted_agent(
+    store: LocalEventStore, tmp_path: Path, scope: str
+) -> None:
+    backend = FreezeBoxes()
+    if scope == "run":
+        bundle = limited(tmp_path, "{wall_s: 0.5}")
+    else:
+        bundle = limited(tmp_path, a="    budget: {wall_s: 0.5}\n")
+    scripts = steps(a=[{"after_s": 30, "run": "echo a"}])
+    runner = Runner(bench(store, Script(), backend), bundle, Options(scripts=scripts))
+    async with asyncio.timeout(10):
+        result = await runner.run()
+
+    finished = result.agents["a"]
+    assert (finished.reason, finished.detail) == ("budget_wall", f"{scope} wall limit reached")
+    assert "echo a" not in backend.boxes["a"].commands
+
+
+async def test_a_scripted_agent_waiting_on_an_event_that_never_comes_ends_at_the_run_wall(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = FreezeBoxes()
+    confederate = "  - id: b\n    role: confederate\n    script:\n      - {run: echo b}\n"
+    bundle = limited(tmp_path, "{wall_s: 0.5}", more=confederate)
+    scripts = steps(a=[{"on": {"event": "post", "agent": "b"}, "run": "echo a"}])
+    runner = Runner(bench(store, Script(), backend), bundle, Options(scripts=scripts))
+    async with asyncio.timeout(10):
+        result = await runner.run()
+
+    finished = result.agents["a"]
+    assert (finished.reason, finished.detail) == ("budget_wall", "run wall limit reached")
+
+
+async def test_an_agent_waiting_to_start_ends_at_the_run_wall(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = FreezeBoxes()
+    start = "    start: {agent: b, on: started, delay_s: 30}\n"
+    confederate = "  - id: b\n    role: confederate\n    script:\n      - {run: echo b}\n"
+    bundle = limited(tmp_path, "{wall_s: 0.5}", a=start, more=confederate)
+    script = Script(call("submit", answer="never"))
+    runner = Runner(bench(store, script, backend), bundle, Options())
+    async with asyncio.timeout(10):
+        result = await runner.run()
+
+    finished = result.agents["a"]
+    assert (finished.reason, finished.detail, finished.steps) == (
+        "budget_wall",
+        "run wall limit reached",
+        0,
+    )
+    assert script.requests == []
+    assert result.run_id is not None
+    started = await of(store, result.run_id, AgentStarted, "agent.started")
+    assert len(started) == 2
+
+
+async def test_a_running_confederate_keeps_the_run_wall_going_while_the_subject_is_paused(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = FreezeBoxes()
+    confederate = (
+        "  - id: b\n    role: confederate\n    script:\n      - {after_s: 30, run: echo b}\n"
+    )
+    # a is paused before its start, so it starts paused and takes no step.
+    start = "    start: {delay_s: 1}\n"
+    bundle = limited(tmp_path, "{wall_s: 2}", a=start, more=confederate)
+    script = Script(call("bash", command="echo 1"), call("submit", answer="late"))
+    runner = Runner(bench(store, script, backend), bundle, Options())
+    task = asyncio.create_task(runner.run())
+    await until(lambda: "a" in runner.agents)
+    await runner.operate("pause", agent="a")
+    async with asyncio.timeout(10):
+        result = await task
+
+    ends = {k: (f.reason, f.detail) for k, f in result.agents.items()}
+    assert ends == dict.fromkeys("ab", ("budget_wall", "run wall limit reached"))
+
+
+@pytest.mark.timing
+async def test_a_confederate_waiting_on_a_paused_subject_keeps_its_wall_and_the_runs(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = FreezeBoxes()
+    confederate = (
+        "  - id: b\n    role: confederate\n    budget: {wall_s: 2}\n    script:\n"
+        "      - {on: {event: exec, agent: a, contains: never}, run: echo b}\n"
+    )
+    # a is paused before its start; both walls count only the 0.5 s before it.
+    start = "    start: {delay_s: 0.5}\n"
+    bundle = limited(tmp_path, "{wall_s: 2}", a=start, more=confederate)
+    script = Script(call("bash", command="echo 1"), call("submit", answer="ok"))
+    runner = Runner(bench(store, script, backend), bundle, Options())
+    task = asyncio.create_task(runner.run())
+    await until(lambda: "a" in runner.agents)
+    await runner.operate("pause", agent="a")
+    await asyncio.sleep(3)
+    assert not task.done()
+    assert not runner.scripted["b"].done
+    await runner.operate("resume", agent="a")
+    async with asyncio.timeout(10):
+        result = await task
+
+    assert result.agents["a"].reason == "submitted"
+    assert result.agents["b"].reason == "cancelled"
+
+
+async def test_the_selftest_fails_a_subject_whose_steps_reach_the_wall(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = FreezeBoxes()
+    bundle = limited(tmp_path, a="    budget: {wall_s: 0.5}\n")
+    case = selftest.Case("reference", "reference", ("a",), steps(a=[{"after_s": 30, "run": "x"}]))
+    async with asyncio.timeout(10):
+        (outcome,) = await selftest.run(bench(store, Script(), backend), bundle, [case])
+
+    assert outcome.problems == ["a: its steps did not finish: agent wall limit reached"]
 
 
 class ThawBox(FreezeBox):

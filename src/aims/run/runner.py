@@ -974,7 +974,8 @@ class Runner:
         tasks: dict[str, asyncio.Task[AgentFinished]] = {}
 
         async def start_then(start: Any, run: Callable[[], Awaitable[AgentFinished]]) -> Any:
-            await watch.wait_start(start, begin)
+            # Past the run's wall limit the agent starts and ends at once, its end logged.
+            await budget.before_wall(watch.wait_start(start, begin))
             return await run()
 
         for agent in self.scenario.agents:
@@ -997,6 +998,7 @@ class Runner:
                     store=bench.store,
                     run_id=self.run_id,
                     watch=watch,
+                    run_budget=budget,
                     post=self.post or self.post_message,
                     canaries=None if self.prepared is None else self.prepared.canaries,
                     replay=plans.get(agent.id),

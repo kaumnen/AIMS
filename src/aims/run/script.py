@@ -23,9 +23,11 @@ from aims.agent import (
     OpenGate,
     PauseClock,
     ReplayPlan,
+    RunBudget,
     pass_gate,
     run_tool,
     settle,
+    wall_deadline,
 )
 from aims.events import (
     AgentEnd,
@@ -251,8 +253,11 @@ class ScriptedAgent:
     origin's order reaches it at the turnstile, then goes on with the rest as written.
 
     Before each step it checks its gate, as a model-driven agent does before a tool call, so a
-    paused agent holds there with its sandbox frozen until it is resumed. Like that agent's wall
-    limit, a step's `after_s` does not count the time the agent is paused on `clock`."""
+    paused agent holds there with its sandbox frozen until it is resumed. Its own wall limit
+    and the run's end it as they end that agent; of its budget only `wall_s` applies. Like the
+    wall limits, a step's `after_s` does not count the time the agent is paused on `clock`.
+    While a step waits on its `on` event, the agent does not keep the run's wall limit going
+    when the others are paused, and its own limit stands still while the run's does."""
 
     def __init__(
         self,
@@ -265,6 +270,7 @@ class ScriptedAgent:
         store: LocalEventStore,
         run_id: str,
         watch: Watch,
+        run_budget: RunBudget,
         post: Post | None = None,
         canaries: Mapping[str, Canary] | None = None,
         replay: ReplayPlan | None = None,
@@ -282,6 +288,7 @@ class ScriptedAgent:
         self.store = store
         self.run_id = run_id
         self.watch = watch
+        self.run_budget = run_budget
         self.post = post
         self.canaries = canaries or {}
         self.replay = replay
@@ -293,10 +300,13 @@ class ScriptedAgent:
         self.answer: str | None = None
         self.killed: str | None = None
         self.done = False
+        self._start = 0.0
         self._paused_base = 0.0
+        self._wall: asyncio.Timeout | None = None
+        self._scope = ""
 
     async def run(self) -> AgentFinished:
-        start = time.monotonic()
+        start = self._start = time.monotonic()
         self._paused_base = self.clock.paused_s(start)
         reason: AgentEnd = "error"
         detail: str | None = None
@@ -307,22 +317,25 @@ class ScriptedAgent:
         except asyncio.CancelledError:
             await self._end_cancelled(start)
             raise
+        self.run_budget.enter(self.id, self.clock, self._clock_changed)
+        deadline, self._scope = self._deadline()
+        wall = asyncio.timeout_at(deadline)
         try:
             reason, detail = "no_submit", "the steps finished"
-            for n, step in enumerate(self.script, 1):
-                if self.replay is not None and n <= self.replay.fork_at:
-                    end = await self._again(n, step)
-                else:
-                    if step.on is not None:
-                        await self.watch.wait_trigger(step.on)
-                    if step.after_s:
-                        await self._delay(step.after_s)
-                    end = await self._take(n, step)
-                self.steps = n
-                self.watch.record_step(self.id, n)
-                if end is not None:
-                    reason, detail, answer = end
-                    break
+            async with wall:
+                self._wall = wall
+                try:
+                    end = await self._steps()
+                finally:
+                    self._wall = None
+            if end is not None:
+                reason, detail, answer = end
+        except TimeoutError:
+            if not wall.expired():
+                log.exception("scripted agent %s failed", self.id)
+                reason, detail = "error", "TimeoutError"
+            else:
+                reason, detail = "budget_wall", f"{self._scope} wall limit reached"
         except AgentKilled as e:
             reason, detail = "killed", str(e) or None
         except asyncio.CancelledError:
@@ -332,6 +345,39 @@ class ScriptedAgent:
             log.exception("scripted agent %s failed", self.id)
             reason, detail = "error", f"{type(e).__name__}: {e}"
         return await settle(self._finish(start, reason, detail, answer))
+
+    async def _steps(self) -> End | None:
+        """Take the steps; how a step ended the agent, None when they all ran."""
+        for n, step in enumerate(self.script, 1):
+            if self.replay is not None and n <= self.replay.fork_at:
+                end = await self._again(n, step)
+            else:
+                if step.on is not None:
+                    with self.run_budget.waiting(self.id):
+                        await self.watch.wait_trigger(step.on)
+                if step.after_s:
+                    await self._delay(step.after_s)
+                end = await self._take(n, step)
+            self.steps = n
+            self.watch.record_step(self.id, n)
+            if end is not None:
+                return end
+        return None
+
+    def _deadline(self) -> tuple[float | None, str]:
+        """When the wall limit ends on the loop's clock, and whose limit it is."""
+        own = self.config.budget.wall_s
+        found = wall_deadline(
+            self.run_budget, self.id, self.clock, self._start, self._paused_base, own
+        )
+        return (None, self._scope) if found is None else found
+
+    def _clock_changed(self) -> None:
+        wall = self._wall
+        if wall is None or wall.expired():
+            return
+        when, self._scope = self._deadline()
+        wall.reschedule(when)
 
     async def _log_start(self) -> None:
         await self._emit(
@@ -480,6 +526,7 @@ class ScriptedAgent:
         if self.replay is not None and self.replay.turnstile is not None:
             await self.replay.turnstile.drop(self.replay.actions)
         now = time.monotonic()
+        self.run_budget.leave(self.id)
         finished = AgentFinished(
             reason=reason,
             detail=detail,
