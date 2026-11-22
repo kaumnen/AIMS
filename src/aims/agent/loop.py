@@ -145,6 +145,11 @@ class PauseClock:
     def paused(self) -> bool:
         return bool(self._keys)
 
+    @property
+    def since(self) -> float | None:
+        """When the current pause began on the `time.monotonic` clock; None while not paused."""
+        return self._since
+
     def hold(self, key: str) -> None:
         if key in self._keys:
             return
@@ -185,9 +190,10 @@ class PauseClock:
 
 class RunBudget:
     """The run's limits, charged by every agent of the run. The wall limit does not count the
-    stretches in which every running agent is paused. `owed` holds what the failed attempts of
-    each agent's call still being tried may have cost, which the agent charges once the call
-    ends."""
+    stretches in which every running agent is paused. A stretch that begins once the limit has
+    ended does not stop it, so an agent that joins or pauses late ends at once. `owed` holds
+    what the failed attempts of each agent's call still being tried may have cost, which the
+    agent charges once the call ends."""
 
     def __init__(self, limits: Limits) -> None:
         self.limits = limits
@@ -226,10 +232,13 @@ class RunBudget:
 
     def deadline(self) -> float | None:
         """When the run's wall limit ends on the `time.monotonic` clock; None without a limit or
-        while every running agent is paused."""
-        if self.limits.wall_s is None or self._since is not None:
+        while every running agent is paused, unless the limit ended before that pause began."""
+        if self.limits.wall_s is None:
             return None
-        return self.start + self.limits.wall_s + self._paused
+        end = self.start + self.limits.wall_s + self._paused
+        if self._since is not None and end > self._since:
+            return None
+        return end
 
     def _changed(self) -> None:
         now = time.monotonic()
@@ -480,12 +489,16 @@ class Agent:
 
     def _deadline(self) -> tuple[float | None, str]:
         """When the wall limit ends on the loop's clock, and whose limit it is. Paused time is
-        added on; while the agent is paused only the run's limit runs."""
+        added on; while the agent is paused only the run's limit runs, unless its own limit
+        ended before that pause began."""
         now = time.monotonic()
         own = self.config.budget.wall_s
         candidates: list[tuple[float, str]] = []
-        if own is not None and not self.clock.paused:
-            candidates.append((self._start + own + self._paused_s(now), "agent"))
+        if own is not None:
+            since = self.clock.since
+            end = self._start + own + self._paused_s(now if since is None else since)
+            if since is None or end <= since:
+                candidates.append((end, "agent"))
         if (run := self.run_budget.deadline()) is not None:
             candidates.append((run, "run"))
         if not candidates:

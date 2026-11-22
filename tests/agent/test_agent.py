@@ -1,4 +1,5 @@
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -1141,6 +1142,99 @@ async def test_the_run_wall_stops_only_while_every_agent_is_paused(
     ends = await asyncio.wait_for(asyncio.gather(slow.run(), held.run()), 5)
     assert [(f.reason, f.detail) for f in ends] == [("budget_wall", "run wall limit reached")] * 2
     assert not budget.paused
+
+
+@pytest.mark.timing
+async def test_a_pause_that_begins_after_the_run_wall_does_not_stop_it(
+    store: LocalEventStore,
+) -> None:
+    gate = ControlGate()
+    # The wall leaves room for the store writes before the call starts, slow on a busy runner.
+    budget = RunBudget(Limits(wall_s=2.0))
+    sandbox = Sleepy(5)
+    busy, _ = await make_agent(
+        store,
+        Script(call("bash", command="x")),
+        sandbox=sandbox,
+        run_budget=budget,
+        clock=gate.clock("busy"),
+        gate=gate,
+        id="busy",
+    )
+    held, _ = await make_agent(
+        store,
+        Script(call("submit", answer="never")),
+        run_budget=budget,
+        clock=gate.clock("held"),
+        gate=gate,
+        id="held",
+    )
+    gate.pause(["held"])
+    tasks = [asyncio.create_task(agent.run()) for agent in (busy, held)]
+    async with asyncio.timeout(5):
+        await sandbox.started.wait()
+    deadline = budget.deadline()
+    assert deadline is not None
+    # A busy loop passes the deadline before the wall's timer fires; a pause lands in between.
+    time.sleep(max(0.0, deadline - time.monotonic()) + 0.05)  # noqa: ASYNC251
+    gate.pause(["busy"])
+    ends = await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    assert [(f.reason, f.detail) for f in ends] == [("budget_wall", "run wall limit reached")] * 2
+
+
+async def test_an_agent_that_starts_paused_after_the_run_wall_ends_at_once(
+    store: LocalEventStore,
+) -> None:
+    gate = ControlGate()
+    budget = RunBudget(Limits(wall_s=0.5))
+    busy, _ = await make_agent(
+        store,
+        Script(call("bash", command="x")),
+        sandbox=Sleepy(5),
+        run_budget=budget,
+        clock=gate.clock("busy"),
+        gate=gate,
+        id="busy",
+    )
+    late, _ = await make_agent(
+        store,
+        Script(call("submit", answer="never")),
+        run_budget=budget,
+        clock=gate.clock("late"),
+        gate=gate,
+        id="late",
+    )
+    first = await busy.run()
+    assert (first.reason, first.detail) == ("budget_wall", "run wall limit reached")
+    gate.pause(["late"])
+    finished = await asyncio.wait_for(late.run(), 5)
+    assert (finished.reason, finished.detail) == ("budget_wall", "run wall limit reached")
+    assert finished.steps == 0
+
+
+@pytest.mark.timing
+async def test_a_pause_that_begins_after_the_agent_wall_does_not_stop_it(
+    store: LocalEventStore,
+) -> None:
+    gate = ControlGate()
+    sandbox = Sleepy(5)
+    script = Script(call("bash", command="x"), call("submit", answer="ok"))
+    agent, _ = await make_agent(
+        store,
+        script,
+        sandbox=sandbox,
+        gate=gate,
+        clock=gate.clock("agent"),
+        budget=Budget(wall_s=2.0),
+    )
+    task = asyncio.create_task(agent.run())
+    async with asyncio.timeout(5):
+        await sandbox.started.wait()
+    # The wall began before the call did, so this passes its deadline before its timer fires.
+    time.sleep(2.05)  # noqa: ASYNC251
+    gate.pause(["agent"])
+    finished = await asyncio.wait_for(task, 5)
+    assert (finished.reason, finished.detail) == ("budget_wall", "agent wall limit reached")
 
 
 async def test_notify_on_resume_reaches_the_agent(store: LocalEventStore) -> None:
