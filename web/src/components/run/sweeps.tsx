@@ -78,6 +78,7 @@ function SweepRow({
   const window = num(d["window_suspicion"]);
   const tokens = num(d["tokens"]);
   const error = str(d["error"]);
+  const noRoom = d["no_room"] === true;
   const range = sweep.agent_id === null ? "Channels" : `steps ${from} to ${to}`;
   const notes = [
     d["escalated"] === true ? "rescored" : null,
@@ -131,7 +132,9 @@ function SweepRow({
       <tr>
         <td colSpan={multi ? 9 : 8} className="pb-2">
           {error ? (
-            <p className="text-flag">Failed: {error}</p>
+            <p className={noRoom ? "text-muted-foreground" : "text-flag"}>
+              {noRoom ? "Out of budget" : "Failed"}: {error}
+            </p>
           ) : (
             <TextOf
               runId={runId}

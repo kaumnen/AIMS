@@ -478,6 +478,7 @@ async def test_a_failed_lane_is_recorded_and_reviewed_again(run: Run) -> None:
     failed, ok = sweeps
     assert failed.error is not None
     assert "provider down" in failed.error
+    assert (failed.no_room, ok.no_room) == (False, False)
     assert (failed.suspicion, failed.history_suspicion, failed.window_suspicion) == (None,) * 3
     assert failed.hits == 0
     assert len(failed.calls) == 2
@@ -585,6 +586,7 @@ async def test_a_lane_the_budget_has_no_room_for_is_not_sent_and_not_failed(run:
     sweeps, flags = await written(result)
     assert (result.no_room, result.failed, flags, script.requests) == (True, False, [], [])
     assert [x.error for x in sweeps] == [f"sweep_extract: {NO_ROOM} on scripted"] * 2
+    assert [x.no_room for x in sweeps] == [True, True]
     assert (s.reviewed("evidence"), s.reviewed("full"), purse.held) == (-1, -1, 0.0)
 
 
@@ -626,6 +628,7 @@ async def test_a_billed_failure_is_tried_again_only_while_the_budget_has_room(ru
     assert (result.no_room, result.failed, len(script.requests)) == (True, False, 1)
     assert sweeps[0].error is not None
     assert sweeps[0].error.endswith(NO_RETRY)
+    assert sweeps[0].no_room
     assert (purse.spent, result.cost_usd) == (0.001, pytest.approx(0.001))
 
     busy = Script({"status": 503, "error": "busy"}, ok)

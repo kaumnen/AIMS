@@ -598,6 +598,7 @@ class ChannelSweeper:
             cost_usd=round(calls.cost_usd, 10),
             duration_ms=int((time.monotonic() - start) * 1000),
             error=error,
+            no_room=short,
         )
         result = SweepResult(
             sweeps=[Draft(sweep)],

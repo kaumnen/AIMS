@@ -375,6 +375,9 @@ async def test_a_failed_channel_sweep_reviews_the_same_items_again(store: LocalE
     sweeper, _, _ = channel_sweeper(f, scripted(answer))
     found = await sweeper.sweep("every")
     assert found.result.failed
+    (sweep,) = [d.payload for d in found.result.sweeps]
+    assert isinstance(sweep, MonitorSweep)
+    assert (sweep.error is not None, sweep.no_room) == (True, False)
     assert sweeper.reviewed == -1
 
 
@@ -392,6 +395,7 @@ async def test_a_channel_sweep_with_no_room_is_not_sent_and_not_failed(
     assert isinstance(sweep, MonitorSweep)
     assert sweep.error is not None
     assert NO_ROOM in sweep.error
+    assert sweep.no_room
     assert sweeper.reviewed == -1
 
 

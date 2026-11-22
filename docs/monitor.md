@@ -43,7 +43,7 @@ Pick a preset with `--monitor`, the scenario's `monitor:` section or the `[monit
 - Each sweep and review call is sent only when the budget has room for it at its output cap, with its prompt priced uncached. The judge's share and the calls under way count too. When only one of the calls that ask at once fits, the others wait for it to finish.
 - A failed call is tried again only when another full attempt fits. A failed call with no cost reported and an answer with no token counts count against the budget, as they do for the agents.
 - A call on a model with no output cap is planned at 4,096 tokens of output, so it can cost more than planned. A review's samples of the agent's next step use the agent's model. A call on a model with no price is held only by the costs counted so far.
-- Once a sweep call has no room, the monitor keeps only its signals. Such a sweep does not count as failed, so the agents go on. A review with no room for its calls keeps the flags. The judge still runs on what is left.
+- Once a sweep call has no room, the monitor keeps only its signals. Such a sweep does not count as failed, so the agents go on. Its `monitor.sweep` event sets `no_room`. A review's Sweeps tab labels it "Out of budget". A review with no room for its calls keeps the flags. The judge still runs on what is left.
 - `aims estimate` and `aims monitor` warn when a budget is too small to sweep every step. It goes by the sweep cost per step of past runs with the same monitor, else by the prices.
 
 ## Judge settings

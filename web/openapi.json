@@ -9059,7 +9059,7 @@
       },
       "MonitorSweep": {
         "additionalProperties": false,
-        "description": "One review of an agent's trajectory by a sweep model in one lane. The event's agent is\nthe agent reviewed.\n\n`parts` are what the lane shows the model. `step_from` to `step_to` is the review range and\n`seq_to` the last event rendered. `calls` names the model calls made: extract, evaluate and\nthe window scorer. `hits` counts the flags written, `dropped` the hits that cited events the\nmodel was not shown, `unverified` the hits whose quote was not found. `suspicion` is the mean\nof `history_suspicion`, over the whole trajectory, and `window_suspicion`, over the review\nrange alone; `escalated` means the extractor's window score fell in the uncertain band and\nthe sweep model scored it again. `collapsed` counts older steps shown as one line to fit\n`tokens`. `coalesced` counts the triggers this sweep answered. `error` is set when the sweep\nfailed. The run-wide channel sweep, named `channels`, has no agent and steps 0 to 0.",
+        "description": "One review of an agent's trajectory by a sweep model in one lane. The event's agent is\nthe agent reviewed.\n\n`parts` are what the lane shows the model. `step_from` to `step_to` is the review range and\n`seq_to` the last event rendered. `calls` names the model calls made: extract, evaluate and\nthe window scorer. `hits` counts the flags written, `dropped` the hits that cited events the\nmodel was not shown, `unverified` the hits whose quote was not found. `suspicion` is the mean\nof `history_suspicion`, over the whole trajectory, and `window_suspicion`, over the review\nrange alone; `escalated` means the extractor's window score fell in the uncertain band and\nthe sweep model scored it again. `collapsed` counts older steps shown as one line to fit\n`tokens`. `coalesced` counts the triggers this sweep answered. `error` is set when the sweep\nfailed. `no_room` is true when it stopped because the monitor budget had no room for a call:\nthe call was not sent, or a failed call was not tried again. The run-wide channel sweep,\nnamed `channels`, has no agent and steps 0 to 0.",
         "properties": {
           "calls": {
             "items": {
@@ -9136,6 +9136,11 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "no_room": {
+            "default": false,
+            "title": "No Room",
+            "type": "boolean"
           },
           "parts": {
             "items": {
@@ -9260,7 +9265,8 @@
           "coalesced",
           "cost_usd",
           "duration_ms",
-          "error"
+          "error",
+          "no_room"
         ],
         "title": "MonitorSweep",
         "type": "object"

@@ -1227,7 +1227,9 @@ class MonitorSweep(Payload):
     range alone; `escalated` means the extractor's window score fell in the uncertain band and
     the sweep model scored it again. `collapsed` counts older steps shown as one line to fit
     `tokens`. `coalesced` counts the triggers this sweep answered. `error` is set when the sweep
-    failed. The run-wide channel sweep, named `channels`, has no agent and steps 0 to 0.
+    failed. `no_room` is true when it stopped because the monitor budget had no room for a call:
+    the call was not sent, or a failed call was not tried again. The run-wide channel sweep,
+    named `channels`, has no agent and steps 0 to 0.
     """
 
     type = "monitor.sweep"
@@ -1254,6 +1256,7 @@ class MonitorSweep(Payload):
     cost_usd: float = 0.0
     duration_ms: int = 0
     error: str | None = None
+    no_room: bool = False
 
 
 class MonitorCleared(Payload):

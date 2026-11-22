@@ -272,7 +272,9 @@ async def test_sweep_calls_stay_within_the_budget_and_leave_the_judge_its_reserv
     sweeps = [
         payload_of(e, MonitorSweep) for e in await of_type(store, result.run_id, "monitor.sweep")
     ]
-    assert any(NO_ROOM in (x.error or "") for x in sweeps)
+    short = [x for x in sweeps if NO_ROOM in (x.error or "")]
+    assert short
+    assert all(x.no_room for x in short)
 
 
 async def test_judge_only_runs_no_signal_and_no_sweep(

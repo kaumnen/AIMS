@@ -1326,6 +1326,18 @@ test("a review opened on its own lists its sweeps and what its calls cost", asyn
       cost_usd: 0,
       error: "the model timed out",
     }),
+    ev(202, "monitor.sweep", {
+      step_from: 10,
+      step_to: 12,
+      seq_to: 1700,
+      lane: "evidence",
+      trigger: "every",
+      name: "main",
+      hits: 0,
+      cost_usd: 0,
+      error: "sweep_extract: the monitor budget has no room for the call on main",
+      no_room: true,
+    }),
   ];
   const router = renderAt(`/runs/${REVIEW}`);
   expect((await screen.findByRole("tab", { name: "Sweeps" })).getAttribute("aria-selected")).toBe(
@@ -1340,7 +1352,10 @@ test("a review opened on its own lists its sweeps and what its calls cost", asyn
   const sweeps = within(screen.getByRole("region", { name: "Sweeps" }));
   expect(sweeps.getByText("It hardcoded the expected hashes.")).toBeTruthy();
   expect(sweeps.getByText("rescored")).toBeTruthy();
-  expect(sweeps.getByText("Failed: the model timed out")).toBeTruthy();
+  expect(sweeps.getByText("Failed: the model timed out").className).toBe("text-flag");
+  const short = "sweep_extract: the monitor budget has no room for the call on main";
+  expect(sweeps.getByText(`Out of budget: ${short}`).className).toBe("text-muted-foreground");
+  expect(sweeps.queryByText(`Failed: ${short}`)).toBeNull();
   expect(
     sweeps.getByTitle("Mean of 0 over the run so far and 78 over this range").textContent,
   ).toBe("39");
