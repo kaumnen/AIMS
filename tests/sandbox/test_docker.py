@@ -14,6 +14,7 @@ from typing import Any, cast
 import aiodocker
 import pytest
 from aiodocker.containers import DockerContainer
+from tracer_losses import lost_records
 
 from aims.events import (
     MAX_INT,
@@ -1603,7 +1604,7 @@ async def test_signal_flood_spills_without_losing_records(
     assert (finished.end, finished.exit_code, finished.dropped) == ("exited", 0, 0)
     cap = audit_module.CAPS["other"]
     evs = await events(store, run_id)
-    assert not [e for e in evs if e.type == "audit.lost"]
+    assert await lost_records(store, run_id) == []
     other = {
         "sys.denied",
         "ipc.event",
@@ -2229,7 +2230,7 @@ async def test_a_pidfd_is_not_recorded_as_a_file_write(
     assert ("file.access", "/work/ctl") in written
     assert ("file.write", "/work/ctl") in written
     assert [path for _, path in written if not str(path).startswith("/work/")] == []
-    assert not [e for e in evs if e.type == "audit.lost"]
+    assert await lost_records(store, run_id) == []
 
 
 # A python process whose child holds a pipe with bytes waiting, that pipe's write end and a file
@@ -2376,16 +2377,6 @@ async def test_reads_of_another_processs_ptrace_checked_proc_files_are_recorded(
     kept = {f"/proc/{pid}/{n}" for n in [*names, "mountstats"]}
     kept |= {f"/proc/{pid}/task/{pid}/{n}" for n in names}
     assert {p for p in reads if p.startswith(f"/proc/{pid}/")} == kept
-
-
-async def lost_records(store: LocalEventStore, run_id: str) -> list[str]:
-    """The reasons of the run's losses, but for the kernel skipping a probe run, which any test
-    can meet on a busy host."""
-    return [
-        reason
-        for e in await events(store, run_id, "audit.lost")
-        if not (reason := str(e.data.get("reason"))).startswith("kernel skipped tracer probe")
-    ]
 
 
 LOOKER = (
@@ -2631,10 +2622,7 @@ async def test_file_setattr(backend: DockerBackend, store: LocalEventStore) -> N
     pseudo = {(p.path, p.partial, p.exec_id) for p in attrs if p.path.startswith(".../")}
     exec_id = result.finished.exec_id
     assert pseudo == {(".../", True, exec_id), (".../[eventfd]", True, exec_id)}
-    # The module's one tracer reports a probe run the kernel skipped in every sandbox, and an
-    # earlier test's flood can show up here. Any other loss would be this exec's.
-    lost = [str(e.data["reason"]) for e in await events(store, run_id, "audit.lost")]
-    assert not [r for r in lost if not r.startswith("kernel skipped tracer probe")]
+    assert await lost_records(store, run_id) == []
     attrs = [p for p in attrs if p.path == "/work/f"]
     assert all(p.exec_id == result.finished.exec_id and not p.partial for p in attrs)
     assert any(
