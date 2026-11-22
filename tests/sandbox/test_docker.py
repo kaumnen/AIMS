@@ -49,7 +49,7 @@ from aims.sandbox import docker as docker_module
 from aims.sandbox import reader as reader_module
 from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import exec_output
-from aims.sandbox.images import ensure_image
+from aims.sandbox.images import ensure_image, ensure_pulled
 from aims.sandbox.trace import ARGV_CAP, STRLEN
 from aims.sandbox.tracer import (
     ATTACH_FAILED,
@@ -398,6 +398,25 @@ async def test_masked_proc_files_read_empty(backend: DockerBackend, store: Local
 
     assert all(int(x) > 0 for x in unmasked.stdout.split())
     assert [int(x) for x in hidden.stdout.split()] == [0, 0, 0, 0]
+
+
+async def test_the_masked_paths_copy_keeps_every_docker_default(backend: DockerBackend) -> None:
+    # A sandbox with masked paths sends our copy in place of Docker's list. A path the copy
+    # misses would go unmasked. Extra paths in the copy only mask more, as on an older daemon.
+    image = await ensure_pulled(backend.docker, IMAGE)
+    container = await create_container(
+        backend.docker,
+        config={"Image": image["Id"], "Cmd": ["true"], "Labels": backend._labels},
+        name=f"aims-masked-{uuid.uuid4().hex[:12]}",
+    )
+    try:
+        defaults = (await container.show())["HostConfig"].get("MaskedPaths")
+    finally:
+        await remove_container(container)
+
+    assert defaults, "Docker reported no default masked paths"
+    missing = sorted(set(defaults) - set(docker_module.DEFAULT_MASKED_PATHS))
+    assert missing == [], f"Docker masks {missing} by default; add them to DEFAULT_MASKED_PATHS"
 
 
 async def test_timeout_kills_the_process_group(
