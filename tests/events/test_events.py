@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.events import (
+    AgentInput,
     BlobRef,
     ChainError,
     Draft,
@@ -45,15 +46,23 @@ from aims.events import (
     split_lines,
     verify_run,
 )
+from aims.events import chain as chain_module
 from aims.events import log as log_module
 from aims.events import store as store_module
 from aims.events.blobs import ZSTD_MAGIC, BlobStore
-from aims.events.chain import GENESIS, Head, digest, follow, seal
+from aims.events.chain import GENESIS, MAX_LINE, Head, digest, follow, seal
 from aims.events.disk import make_dir
 from aims.events.index import Index
 from aims.events.log import LogFile
 from aims.events.schema import now, text_of
-from aims.events.store import INLINE_LIMIT, LOG, TEMP_AGE_S, _append_line, _write_private
+from aims.events.store import (
+    INLINE_LIMIT,
+    LOG,
+    TEMP_AGE_S,
+    Invalid,
+    _append_line,
+    _write_private,
+)
 from aims.run import truth
 from aims.run.runner import seal_unsealed
 
@@ -1130,6 +1139,42 @@ async def test_a_copied_run_syncs_its_entries_before_its_lines(
         run_dir = copy.root / run_id
         order = [synced.index(ident(p)) for p in (copy.root, run_dir, run_dir / LOG)]
         assert order == sorted(order)
+
+
+async def long_line_run(store: LocalEventStore, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A run whose second line is longer than a log line may be."""
+    run_id = await store.create_run(STARTED)
+    with monkeypatch.context() as m:
+        m.setattr(chain_module, "MAX_LINE", 2 * MAX_LINE)
+        long = AgentInput(kind="inject", step=0, text="y" * MAX_LINE)
+        await store.append(run_id, [Draft(long, "a1")])
+    return run_id
+
+
+async def test_a_line_longer_than_a_log_line_does_not_follow(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await long_line_run(store, monkeypatch)
+    first, second = split_lines(log_path(store, run_id).read_bytes())
+    assert len(second) > MAX_LINE
+    _, head = follow(Head(), first, run_id=run_id)
+    with pytest.raises(ChainError) as e:
+        follow(head, second, run_id=run_id)
+    assert e.value.reason == f"line is longer than {MAX_LINE} bytes"
+
+
+async def test_a_copy_refuses_a_line_longer_than_a_log_line(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await long_line_run(store, monkeypatch)
+    lines = split_lines(log_path(store, run_id).read_bytes())
+    async with await LocalEventStore.open(tmp_path / "copy", ingest_only=True) as copy:
+        await copy.ingest(run_id, lines[:1])
+        with pytest.raises(Invalid, match=f"line is longer than {MAX_LINE} bytes"):
+            await copy.ingest(run_id, lines[1:])
+        head = await copy.head(run_id)
+        assert head is not None
+        assert head.seq == 0
 
 
 async def test_stream_tails_until_finished(store: LocalEventStore) -> None:

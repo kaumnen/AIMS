@@ -65,6 +65,8 @@ def seal(
 def follow(head: Head, line: bytes, *, run_id: str) -> tuple[dict[str, Any], Head]:
     """Verify that `line` is the next event after `head`."""
     at = _at(head)
+    if len(line) > MAX_LINE:
+        raise ChainError(f"line is longer than {MAX_LINE} bytes", **at)
     if not line.endswith(b"\n"):
         raise ChainError("incomplete line", **at)
     try:
