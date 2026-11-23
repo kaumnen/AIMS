@@ -680,18 +680,50 @@ class Index:
         finally:
             self._lock.release()
 
-    async def _begin(self) -> None:
-        """Begin an immediate transaction. One already open has no writer, since the lock is
-        held and any rollback a cancelled writer queued ran first: roll it back, begin again.
-        `in_transaction` would tell sooner, but reading it waits for the connection's thread."""
+    @contextlib.asynccontextmanager
+    async def snapshot(self) -> AsyncGenerator[int]:
+        """Run the block's reads in one read transaction: each sees the index as it was when
+        the block began, whatever another connection writes meanwhile, such as a drop of a run
+        or a reset. Yields the generation of the index then, as `generation` reads it. The
+        transaction ends when the block does, also when it raises or is cancelled. The write
+        lock of this index is held throughout, since a writer here would roll back the
+        transaction: keep the block to a few reads, with no write and no other wait."""
+        found: list[int] = []
+
+        async def begin() -> None:
+            await self._begin("deferred")
+            # a deferred transaction reads its snapshot at its first read
+            found.append(await self.generation())
+
+        await self._locked(begin, BUSY_TRIES)
         try:
-            await self._db.execute("begin immediate")
+            yield found[0]
+        finally:
+            try:
+                await self._rollback()
+            finally:
+                self._lock.release()
+
+    async def generation(self) -> int:
+        """The generation of the index: SQLite's schema version, which every reset changes, as
+        an open by another index VERSION does. Writes of rows leave it as it is."""
+        async with self._db.execute("pragma schema_version") as cur:
+            row = await cur.fetchone()
+        return 0 if row is None else row[0]
+
+    async def _begin(self, mode: Literal["immediate", "deferred"] = "immediate") -> None:
+        """Begin a transaction, immediate for a write. One already open has no owner, since the
+        lock is held and any rollback a cancelled writer or reader queued ran first: roll it
+        back, begin again. `in_transaction` would tell sooner, but reading it waits for the
+        connection's thread."""
+        try:
+            await self._db.execute(f"begin {mode}")
         except sqlite3.OperationalError as e:
             if "within a transaction" not in str(e):
                 raise
             log.warning("the index held a transaction no writer owns; it is rolled back")
             await self._db.rollback()
-            await self._db.execute("begin immediate")
+            await self._db.execute(f"begin {mode}")
 
     async def _locked(self, begin: Callable[[], Awaitable[object]], tries: int) -> None:
         """Take the write lock of this index and await `begin`, which takes SQLite's. Returns
@@ -1828,7 +1860,8 @@ class Index:
         agent_id: str | None = None,
     ) -> list[StepInfo]:
         """A page of agent steps up to the run's head in seq order, after seq `after`, each with
-        its tool calls."""
+        its tool calls. The page, its span and its rows are read in one snapshot: a drop or a
+        reset meanwhile leaves no step without its tool calls."""
         if not _held(run_id, agent_id):
             return []
         where = ["run_id = ?", f"+seq <= {HEAD}", "type = ?"]
@@ -1840,44 +1873,45 @@ class Index:
             where.append("agent_id = ?")
             args.append(agent_id)
         args.append(_cap(limit))
-        async with self._db.execute(
-            f"select seq, ts, agent_id, data from events where {' and '.join(where)}"
-            " order by seq limit ?",
-            args,
-        ) as cur:
-            page = list(await cur.fetchall())
-        if not page:
-            return []
-        lo, hi = await self._span(run_id, page)
-        where = [
-            "run_id = ?",
-            f"+seq <= {HEAD}",
-            f"type in ({', '.join('?' * len(STEP_TYPES))})",
-            "seq > ?",
-        ]
-        args = [run_id, run_id, *STEP_TYPES, lo]
-        if hi is not None:
-            where.append("seq < ?")
-            args.append(hi)
-        if agent_id is not None:
-            where.append("agent_id = ?")
-            args.append(agent_id)
-        async with self._db.execute(
-            "select seq, ts, agent_id, type, json_extract(data, '$.call_id'),"
-            " json_extract(data, '$.role'),"
-            " json_extract(data, '$.model_call'), json_extract(data, '$.exec_id'),"
-            " case when type = 'tool.call' then json_extract(data, '$.name') end,"
-            " case when type = 'tool.call' then json_type(data, '$.arguments') end,"
-            " case when type = 'tool.call' then json_extract(data, '$.arguments') end,"
-            " case when type = 'exec.finished' then json_extract(data, '$.exit_code') end,"
-            " case when type = 'exec.finished' then json_extract(data, '$.end') end,"
-            " case when type = 'exec.finished' then json_extract(data, '$.duration_ms') end,"
-            " case when type = 'tool.result' then json_extract(data, '$.error') end,"
-            " case when type = 'tool.result' then json_extract(data, '$.denied') end"
-            f" from events where {' and '.join(where)} order by seq",
-            args,
-        ) as cur:
-            rows = list(await cur.fetchall())
+        async with self.snapshot():
+            async with self._db.execute(
+                f"select seq, ts, agent_id, data from events where {' and '.join(where)}"
+                " order by seq limit ?",
+                args,
+            ) as cur:
+                page = list(await cur.fetchall())
+            if not page:
+                return []
+            lo, hi = await self._span(run_id, page)
+            where = [
+                "run_id = ?",
+                f"+seq <= {HEAD}",
+                f"type in ({', '.join('?' * len(STEP_TYPES))})",
+                "seq > ?",
+            ]
+            args = [run_id, run_id, *STEP_TYPES, lo]
+            if hi is not None:
+                where.append("seq < ?")
+                args.append(hi)
+            if agent_id is not None:
+                where.append("agent_id = ?")
+                args.append(agent_id)
+            async with self._db.execute(
+                "select seq, ts, agent_id, type, json_extract(data, '$.call_id'),"
+                " json_extract(data, '$.role'),"
+                " json_extract(data, '$.model_call'), json_extract(data, '$.exec_id'),"
+                " case when type = 'tool.call' then json_extract(data, '$.name') end,"
+                " case when type = 'tool.call' then json_type(data, '$.arguments') end,"
+                " case when type = 'tool.call' then json_extract(data, '$.arguments') end,"
+                " case when type = 'exec.finished' then json_extract(data, '$.exit_code') end,"
+                " case when type = 'exec.finished' then json_extract(data, '$.end') end,"
+                " case when type = 'exec.finished' then json_extract(data, '$.duration_ms') end,"
+                " case when type = 'tool.result' then json_extract(data, '$.error') end,"
+                " case when type = 'tool.result' then json_extract(data, '$.denied') end"
+                f" from events where {' and '.join(where)} order by seq",
+                args,
+            ) as cur:
+                rows = list(await cur.fetchall())
         return _steps(page, rows)
 
     async def _span(self, run_id: str, page: Sequence[Sequence[Any]]) -> tuple[int, int | None]:

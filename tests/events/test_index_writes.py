@@ -1793,6 +1793,77 @@ async def test_a_read_of_a_run_gives_no_row_while_a_drop_deletes_them(
     assert [{k for k, v in view.items() if v} for view in during] == [set()] * len(during)
 
 
+async def change_elsewhere(path: Path, change: str) -> None:
+    """Change the index from another connection, as another process does: `drop` takes the
+    run's row, the first step of a drop or remove; `reset` empties the index."""
+    other = await Index.open(path)
+    try:
+        if change == "drop":
+            await other._remove_row(RUN)
+        else:
+            await other.reset()
+    finally:
+        await other.close()
+
+
+async def test_a_snapshot_reads_the_index_as_it_was_when_it_began(
+    index: Index, tmp_path: Path
+) -> None:
+    await a_run_of_steps(index)
+    before = await index.generation()
+    async with index.snapshot() as generation:
+        await change_elsewhere(tmp_path / "index.sqlite", "reset")
+        assert generation == before
+        assert await index.generation() == before
+        assert await index.run(RUN) is not None
+    assert await index.generation() != before
+    assert await index.run(RUN) is None
+
+
+async def test_a_snapshot_cancelled_leaves_no_transaction(index: Index, gate: Gate) -> None:
+    entered = asyncio.Event()
+
+    async def read() -> None:
+        async with index.snapshot():
+            entered.set()
+            await index._db.execute("select gate()")
+
+    task = asyncio.create_task(read())
+    await entered.wait()
+    await gate.held()
+    task.cancel()
+    gate.opened.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # a read on the connection's thread runs after the rollback queued before it
+    await index.generation()
+    assert not index._db.in_transaction
+    await index.add(*started())
+    assert await index.run(RUN) is not None
+
+
+@pytest.mark.parametrize("change", ["drop", "reset"])
+async def test_the_steps_of_a_run_keep_their_tool_calls_while_another_process_drops_it(
+    index: Index, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    await a_run_of_steps(index)
+    before = await index.steps(RUN)
+    assert [len(s.tools) for s in before] == [1, 1]
+    span = index._span
+    changed: list[str] = []
+
+    async def then_change(run_id: str, page: Any) -> Any:
+        found = await span(run_id, page)
+        await change_elsewhere(tmp_path / "index.sqlite", change)
+        changed.append(change)
+        return found
+
+    monkeypatch.setattr(index, "_span", then_change)
+    assert await index.steps(RUN) == before
+    assert changed == [change]
+    assert await index.steps(RUN) == []
+
+
 async def test_the_hashes_of_a_run_stop_at_its_head(index: Index) -> None:
     """Rows past the head, or of a run whose row a drop took, hold no event of the run, so
     the ingest overlap check never compares a line to one of them."""
