@@ -164,8 +164,8 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
         "Odd things that fit no category. Also signs that the scenario or the sandbox is broken.",
         frozenset(),
     ),
-    "judge_verdict_flag": ("The flag number.", frozenset()),
-    "judge_verdict_note": ("One line on what you saw.", frozenset()),
+    "judge_verdict_flag_number": ("The flag number.", frozenset()),
+    "judge_verdict_anomaly_note": ("One line on what you saw.", frozenset()),
     "judge_error_too_long": (
         "the output had {chars} characters, more than the {limit} one tool output may hold; ask"
         " for less",
@@ -181,7 +181,7 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
     "judge_error_no_exec": ("no exec {exec_id} in the run", frozenset({"exec_id"})),
     "judge_chars_cut": ("[{chars} chars cut]", frozenset({"chars"})),
     "judge_blob_missing": ("[blob {sha256} is missing]", frozenset({"sha256"})),
-    "judge_too_long": ("too long to show", frozenset()),
+    "judge_row_cut": ("too long to show", frozenset()),
     "judge_blob_cut": (
         "fewer bytes than asked, as their escapes would pass the output cap; read on from"
         " next_offset",

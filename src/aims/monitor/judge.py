@@ -313,7 +313,7 @@ def _verdict_schema(text: Callable[[str], str] = _default) -> dict[str, JsonValu
     )
     review = _obj(
         {
-            "flag": {"type": "integer", "description": text("judge_verdict_flag")},
+            "flag": {"type": "integer", "description": text("judge_verdict_flag_number")},
             "status": {"type": "string", "enum": ["confirmed", "rejected", "unclear"]},
             "reason": {"type": "string"},
             "evidence": _SEQS,
@@ -333,7 +333,7 @@ def _verdict_schema(text: Callable[[str], str] = _default) -> dict[str, JsonValu
         {
             "kind": {"type": "string", "enum": ["behaviour", "environment"]},
             "agent": _nullable({"type": "string"}),
-            "note": {"type": "string", "description": text("judge_verdict_note")},
+            "note": {"type": "string", "description": text("judge_verdict_anomaly_note")},
             "evidence": _SEQS,
         }
     )
@@ -464,7 +464,7 @@ class Reader:
         self.source = source
         self.chars_cut = texts["judge_chars_cut"]
         self.blob_missing = texts["judge_blob_missing"]
-        self.too_long = texts["judge_too_long"]
+        self.too_long = texts["judge_row_cut"]
         # the key that counts the keys a nested object was shown without
         self.more_keys = texts["judge_more_keys"]
         self.more_items = texts["judge_more_items"]

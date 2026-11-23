@@ -933,7 +933,7 @@ class Trajectory:
                 hidden[group] += 1
         if hidden:
             counts = ", ".join(f"{group} {n}" for group, n in sorted(hidden.items()))
-            out.line(self.texts["header_not_shown"].format(counts=counts))
+            out.line(self.texts["records_not_shown"].format(counts=counts))
 
     async def _kernel(self, event: Event, parts: frozenset[str]) -> dict[str, Any]:
         d = event.data

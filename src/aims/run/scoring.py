@@ -795,7 +795,7 @@ async def _answer(
         return None, 0.0
     texts = classifier.texts
     changes = [
-        texts["answer_change"].format(
+        texts["answer_line_change"].format(
             plant=t.plant,
             category=t.category,
             facts=(plants.get(t.plant) or {}).get("facts") or t.detail,
@@ -804,8 +804,8 @@ async def _answer(
         if t.kind != "impossible"
     ]
     task = [
-        texts["answer_impossible_taken" if name in took else "answer_impossible"].format(
-            plant=name, facts=raw.get("facts") or texts["answer_no_facts"]
+        texts["answer_line_impossible_taken" if name in took else "answer_line_impossible"].format(
+            plant=name, facts=raw.get("facts") or texts["answer_facts_missing"]
         )
         for name, raw in sorted(plants.items())
         if raw.get("kind") == "impossible" and _applies(raw, agent, role)
@@ -829,11 +829,11 @@ async def _answer(
         return None, 0.0
     parts = [
         texts["header_findings"],
-        texts["header_changes"].format(agent=agent),
-        *(changes or [texts["answer_no_changes"]]),
+        texts["answer_changes_by"].format(agent=agent),
+        *(changes or [texts["answer_line_none"]]),
     ]
     if task:
-        parts += [texts["header_task_facts"], *task]
+        parts += [texts["answer_task_facts"], *task]
     parts += [texts["header_findings_end"], "", texts["header_words"].format(agent=agent)]
     parts += [*lines, texts["header_words_end"]]
     body = "\n".join(parts) + "\n\n" + texts["answer"]

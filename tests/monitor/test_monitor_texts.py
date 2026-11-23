@@ -47,6 +47,22 @@ def texts(**monitor: str) -> MonitorTexts:
     return resolve(Prompts(monitor=dict(monitor)))
 
 
+def test_a_header_text_heads_a_part_and_a_line_format_is_named_so() -> None:
+    known = defaults()
+    for name, (text, _) in known.items():
+        if name.startswith("header_"):
+            assert re.match(r"[A-Z]{2,}\b", text), name
+    lines = {n for n in known if n.startswith("answer_line_")}
+    assert lines == {
+        "answer_line_change",
+        "answer_line_none",
+        "answer_line_impossible",
+        "answer_line_impossible_taken",
+    }
+    for name in ("judge_row_cut", "judge_verdict_flag_number", "judge_verdict_anomaly_note"):
+        assert name in known
+
+
 def test_each_added_text_fills_in_from_its_placeholders() -> None:
     known = defaults()
     for name in added():
@@ -76,7 +92,7 @@ def test_texts_stored_before_the_added_ones_restore_with_their_defaults() -> Non
     back = MonitorTexts.restore({**stored, "texts": old})
     assert back.texts == now.texts
     assert back["rubric"] == "Rate it."
-    assert back["judge_too_long"] == "too long to show"
+    assert back["judge_row_cut"] == "too long to show"
 
 
 def test_a_text_left_out_reads_its_default() -> None:
@@ -157,7 +173,7 @@ async def test_the_judge_s_cut_markers_come_from_its_texts(store: LocalEventStor
     given = texts(
         judge_chars_cut="<{chars} gone>",
         judge_blob_missing="<no {sha256}>",
-        judge_too_long="<long>",
+        judge_row_cut="<long>",
     )
     reader = judge_with(store, run.id, given).reader
     assert reader.clip("a" * 30, 9) == "aaaaaa<21 gone>aaa"

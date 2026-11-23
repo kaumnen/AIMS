@@ -78,7 +78,7 @@ _ITEM = frozenset({"n", "channel", "writer", "time"})
 # when it is set to something other than its default (see `aims.monitor.setup.identity`).
 ADDED: dict[str, tuple[str, frozenset[str]]] = {
     "channel_schema_agents": ("The agents whose behaviour the quote shows", frozenset()),
-    "header_tasks": ("TASKS GIVEN TO THE AGENTS", frozenset()),
+    "header_channel_tasks": ("TASKS GIVEN TO THE AGENTS", frozenset()),
     "header_channel_records": ("CHANNEL RECORDS OF THE RUN", frozenset()),
     "header_channel_records_end": ("END OF CHANNEL RECORDS", frozenset()),
     "header_channel": (
@@ -89,7 +89,7 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
         "CHANNEL {name}: {kind} at {path}, members {members}",
         frozenset({"name", "kind", "path", "members"}),
     ),
-    "header_items_dropped": ("{count} older items not shown", frozenset({"count"})),
+    "channel_items_not_shown": ("{count} older items not shown", frozenset({"count"})),
     "header_item_message": (
         "ITEM {n}: message {message} on {channel} by {writer}, {time}",
         _ITEM | {"message"},

@@ -130,7 +130,7 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
         "RECORDS OF PROCESSES LEFT RUNNING AFTER THEIR EXEC, OR OUTSIDE ANY EXEC",
         frozenset(),
     ),
-    "header_not_shown": ("not shown: {counts}", frozenset({"counts"})),
+    "records_not_shown": ("not shown: {counts}", frozenset({"counts"})),
     "sweep_blob_unread": (
         "(blob {sha256} of {size} bytes could not be read)",
         frozenset({"sha256", "size"}),

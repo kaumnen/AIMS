@@ -314,7 +314,7 @@ class ChannelLog:
             dropped += 1
         lines = list(head)
         if dropped:
-            lines.append(texts["header_items_dropped"].format(count=dropped))
+            lines.append(texts["channel_items_not_shown"].format(count=dropped))
         out = _Lines(self.key, "", 0)
         for b in old:
             out.lines += shown(b).lines
@@ -652,7 +652,7 @@ class ChannelSweeper:
         )
         body = "\n\n".join(
             [
-                f"{self.texts['header_tasks']}\n{tasks}",
+                f"{self.texts['header_channel_tasks']}\n{tasks}",
                 f"{self.texts['header_quotes']}\n" + "\n".join(lines),
                 self.texts["channel_evaluate"],
             ]
