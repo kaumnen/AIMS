@@ -113,11 +113,18 @@ def read_blob(path: Path, size: int | None = None) -> bytes | None:
     With `size`, also None when they are longer; no more than that is decoded."""
     if size is not None and not (type(size) is int and size >= 0):
         return None
-    raw = path.read_bytes()
+    return blob_bytes(path.read_bytes(), path.name, size)
+
+
+def blob_bytes(raw: bytes, sha256: str, size: int | None = None) -> bytes | None:
+    """The blob that `raw`, a blob file as a store holds it, carries if it matches `sha256`,
+    else None. With `size`, also None when the blob is longer; no more than that is decoded."""
+    if size is not None and not (type(size) is int and size >= 0):
+        return None
     data = _frames(raw, size) if raw.startswith(ZSTD_MAGIC) else None
-    if data is not None and hashlib.sha256(data).hexdigest() == path.name:
+    if data is not None and hashlib.sha256(data).hexdigest() == sha256:
         return data
-    if (size is None or len(raw) <= size) and hashlib.sha256(raw).hexdigest() == path.name:
+    if (size is None or len(raw) <= size) and hashlib.sha256(raw).hexdigest() == sha256:
         return raw
     return None
 

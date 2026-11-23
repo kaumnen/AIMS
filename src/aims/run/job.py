@@ -130,6 +130,21 @@ class Job(_Strict):
             out.append(self.folder)
         return out
 
+    def sizes(self) -> dict[str, int | None]:
+        """Each blob of `blobs` with the size its reference states, the least where two refer
+        to it. None for the folder, which the control plane tars from the scenario."""
+        out: dict[str, int | None] = {}
+        for name in INPUTS:
+            ref = (self.scenario or {}).get(name)
+            if isinstance(ref, dict) and is_blob_ref(ref):
+                sha, size = ref["sha256"], ref["size"]
+                if isinstance(sha, str) and type(size) is int:
+                    held = out.get(sha)
+                    out[sha] = size if held is None else min(held, size)
+        if self.folder is not None and self.folder not in out:
+            out[self.folder] = None
+        return out
+
     def keys(self) -> list[str]:
         """The AIMS_KEYS entries its profiles need, which the runner must allow with their
         variables set. A self-test calls no model: every agent in it is scripted."""

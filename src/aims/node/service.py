@@ -3,7 +3,6 @@ its Docker host with one kernel tracer, keeping every run in its own store."""
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -28,7 +27,7 @@ from aims.events import (
     RunStatus,
     SelfTestCase,
 )
-from aims.events.blobs import decode
+from aims.events.blobs import blob_bytes
 from aims.events.log import next_lines
 from aims.events.schema import blob_refs
 from aims.events.store import TruthRefused, is_run_id
@@ -76,6 +75,18 @@ def data_dir(env: dict[str, str] | None = None) -> Path:
         return Path(local) / "aims" / "runner"
     base = env.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "aims" / "runner"
+
+
+async def job_inputs(client: ControlClient, job: Job) -> dict[str, bytes]:
+    """The scenario inputs of `job`, each checked against its sha256 and decoded no further than
+    its reference states."""
+    out: dict[str, bytes] = {}
+    for sha, size in job.sizes().items():
+        data = blob_bytes(await client.job_blob(job.run_id, sha), sha, size)
+        if data is None:
+            raise RuntimeError(f"blob {sha} came back with other bytes")
+        out[sha] = data
+    return out
 
 
 @dataclass(slots=True)
@@ -330,12 +341,7 @@ class Node:
             if isinstance(job, MonitorJob | ScoreJob):
                 await self._monitor_or_score(job)
                 return
-            blobs: dict[str, bytes] = {}
-            for sha in job.blobs():
-                data = decode(await link.client.job_blob(job.run_id, sha))
-                if hashlib.sha256(data).hexdigest() != sha:
-                    raise RuntimeError(f"blob {sha} came back with other bytes")
-                blobs[sha] = data
+            blobs = await job_inputs(link.client, job) if job.blobs() else {}
             if job.kind == "models.check":
                 models = job.config()
                 link.ship(job.run_id)
