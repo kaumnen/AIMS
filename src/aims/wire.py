@@ -14,6 +14,8 @@ RUNNER_API = 2
 HEARTBEAT_S = 10.0
 STALE_S = 60.0
 CLAIM_S = 10.0
+# the most bytes of a run's truth file the control plane takes, and so sends
+TRUTH_LIMIT = 16 * 1024 * 1024
 
 
 class _Wire(BaseModel):

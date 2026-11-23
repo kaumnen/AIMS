@@ -30,6 +30,7 @@ from aims.server.state import Connected, ServerState
 from aims.text import scrub
 from aims.wire import (
     RUNNER_API,
+    TRUTH_LIMIT,
     Ack,
     AnyJob,
     Claimed,
@@ -446,9 +447,6 @@ async def put_blob(
         await state.store.put_blob_stream(run_id, sha256, request.stream(), limit=BLOB_LIMIT)
     except BlobError as e:
         raise ProblemException(422, "Invalid request", str(e), code="blob") from None
-
-
-TRUTH_LIMIT = 16 * 1024 * 1024
 
 
 @router.put(

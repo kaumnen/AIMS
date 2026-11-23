@@ -1265,6 +1265,19 @@ async def running_run(cp: CP, fake: FakeRunner, local: LocalEventStore) -> Async
             await task
 
 
+async def test_an_inject_as_long_as_an_api_body_allows_reaches_the_runner(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    """The runner's feed takes an event as long as the largest command, so a long inject does
+    not stop it."""
+    text = "x" * (3 * 1024 * 1024)
+    async with running_run(cp, fake, local) as run_id, cp.client(cp.operator) as c:
+        r = await c.post(f"/api/runs/{run_id}/inject", json={"text": text})
+        assert r.status_code == 202, r.text
+        inject = await fake.next(CommandMessage)
+        assert (inject.command.action, inject.command.text) == ("inject", text)
+
+
 async def test_operator_text_with_a_lone_surrogate_is_refused_and_never_blocks_a_kill(
     cp: CP, fake: FakeRunner, local: LocalEventStore
 ) -> None:

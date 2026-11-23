@@ -10,11 +10,14 @@ import pytest
 from pydantic import JsonValue
 from scripted import profile
 
+from aims import __version__
 from aims.models import ProfileError, load_models
+from aims.node import client as client_module
 from aims.node import service
 from aims.node.client import ControlClient
 from aims.node.service import job_inputs
 from aims.run.job import Job, JobFork
+from aims.wire import RunnerHello, RunnerStatus, TracerHealth
 
 PLAIN = profile(name="plain", structured_output=False)
 JUDGE = profile(name="judge")
@@ -175,3 +178,48 @@ async def test_a_runner_reads_no_more_of_a_job_input_reply_than_a_file_under_its
     finally:
         await client.aclose()
     assert len(sent) <= 3
+
+
+REPLIES = {
+    "hello": lambda c: c.hello(
+        RunnerHello(name="r1", version=__version__, arch="arm64", tracer=TracerHealth(alive=True))
+    ),
+    "claim": lambda c: c.claim("r"),
+    "heads": lambda c: c.heads(["r"]),
+    "missing": lambda c: c.missing("r", ["a" * 64]),
+    "events": lambda c: c.post_events("r", [b"{}\n"]),
+    "truth": lambda c: c.run_truth("r"),
+    "error": lambda c: c.status(RunnerStatus(tracer=TracerHealth(alive=True), free=1)),
+}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("call", list(REPLIES))
+async def test_a_runner_reads_no_more_of_a_control_plane_reply_than_its_cap(
+    call: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each kind of reply has its cap, an error's body too, so a reply that never ends costs a
+    runner no more memory than that."""
+    mib = 1024 * 1024
+    for name in ("REPLY_LIMIT", "TRUTH_LIMIT"):
+        monkeypatch.setattr(client_module, name, mib, raising=False)
+    sent: list[int] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        for n in range(64):
+            sent.append(n)
+            yield b" " * mib
+
+    status = 500 if call == "error" else 200
+    transport = httpx2.MockTransport(lambda request: httpx2.Response(status, content=body()))
+    client = ControlClient("http://cp", "token", runner="r1", transport=transport)
+    raised: Exception | None = None
+    try:
+        await REPLIES[call](client)
+    except Exception as e:
+        raised = e
+    finally:
+        await client.aclose()
+    assert len(sent) <= 3
+    assert type(raised).__name__ == ("ApiError" if call == "error" else "TooLarge")
+    assert f"passes {mib} bytes" in str(raised)
