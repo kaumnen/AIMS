@@ -80,6 +80,8 @@ INLINE_LIMIT = 8 * 1024
 CHUNK = 1000
 # the marks the lag of a run keeps of where `unindexed` read its log
 MARKS = 256
+# the times `logged_events` reads a run whose index head moved back
+LOGGED_TRIES = 3
 RETRY_S = 1.0
 RETRY_MAX_S = 300.0
 TEMP_AGE_S = 3600.0
@@ -90,6 +92,11 @@ TRUTH_TEMP = re.compile(rf"\.{re.escape(TRUTH)}\.[0-9a-f]{{32}}")
 
 class RunCorrupt(Exception):
     pass
+
+
+class IndexChanged(RuntimeError):
+    """A read of several parts found the index changed under it each time, as while another
+    process resets it or a run's rows are dropped. A later read sees it whole."""
 
 
 class TruthRefused(ValueError):
@@ -277,6 +284,19 @@ class EventStore(Protocol):
     ) -> list[Event]:
         """The events a run's log holds past its index, filtered as `events` filters: none
         unless the index is behind the log."""
+        ...
+
+    async def logged_events(
+        self,
+        run_id: str,
+        *,
+        after: int = -1,
+        before: int | None = None,
+        limit: int = 100,
+        types: Sequence[str] = (),
+        agent_id: str | None = None,
+    ) -> list[Event]:
+        """A page of `events` with the events the log holds past an index behind it."""
         ...
 
     async def rebuild(self) -> None: ...
@@ -554,16 +574,36 @@ class LocalEventStore:
         The read starts at the last mark of the run's lag at or before `after` and past the
         index head, so a run far behind is not read from its index head each time. A read
         marks the line at `after`, its last line and every CHUNK lines. A cancel stops it."""
-        lag = self._lags.get(run_id)
-        if lag is None:
-            return []
+        events, _ = await self._past_index(
+            run_id, after=after, before=before, types=types, agent_id=agent_id, limit=limit
+        )
+        return events
+
+    async def _past_index(
+        self,
+        run_id: str,
+        *,
+        after: int,
+        before: int | None,
+        types: Sequence[str],
+        agent_id: str | None,
+        limit: int,
+    ) -> tuple[list[Event], Head]:
+        """`unindexed`, with the index head the read of the log began at. That head is read
+        first, also for a run that is not behind."""
         try:
             start = await self.head(run_id) or Head()
+        except RunCorrupt:
+            return [], Head()
+        lag = self._lags.get(run_id)
+        if lag is None:
+            return [], start
+        try:
             end = await self.log_head(run_id)
         except RunCorrupt:
-            return []
+            return [], start
         if end is None:
-            return []
+            return [], start
         last = end.seq if before is None else min(end.seq, before - 1)
         kinds = frozenset(types)
         stop = threading.Event()
@@ -612,7 +652,7 @@ class LocalEventStore:
                 if seq >= start.seq and len(lag.marks) <= MARKS:
                     break
                 del lag.marks[seq]
-        return out
+        return out, start
 
     def holds(self, run_id: str) -> bool:
         """Whether the run has a directory here. A run that was deleted has none, whichever
@@ -1454,6 +1494,44 @@ class LocalEventStore:
         """Which providers answered the run's model calls, per requested model."""
         return await self._index.served(run_id)
 
+    async def logged_events(
+        self,
+        run_id: str,
+        *,
+        after: int = -1,
+        before: int | None = None,
+        limit: int = 100,
+        types: Sequence[str] = (),
+        agent_id: str | None = None,
+    ) -> list[Event]:
+        """The page of a run's events after seq `after` as `events` gives it, with the events
+        the log holds past an index that is behind it. For a reader that acts on events just
+        written, which the index may not hold yet.
+
+        The log is read first, from the index head on, then the page with the head that bounds
+        it in one snapshot. The index only moves on meanwhile, so the two parts leave no gap.
+        A head that moved back in between, as a reset by another process or a retake here does,
+        would leave one: then both are read again, LOGGED_TRIES times in all, and IndexChanged
+        raises."""
+        limit = max(1, min(limit, MAX_PAGE))
+        for _ in range(LOGGED_TRIES):
+            tail, start = await self._past_index(
+                run_id, after=after, before=before, types=types, agent_id=agent_id, limit=limit
+            )
+            async with self._index.snapshot():
+                indexed = await self._index.head(run_id)
+                page = await self._index.events(
+                    run_id, after=after, before=before, limit=limit, types=types, agent_id=agent_id
+                )
+            if (-1 if indexed is None else indexed[0].seq) >= start.seq:
+                break
+        else:
+            raise IndexChanged(f"run {run_id}: its index head moved back on each read")
+        if not tail or len(page) >= limit:
+            return page
+        last = page[-1].seq if page else -1
+        return [*page, *(e for e in tail if e.seq > last)][:limit]
+
     async def every(self, run_id: str, *, types: Sequence[str] = ()) -> list[Event]:
         """Every event of a run in seq order, read page by page past the index's page cap."""
         out: list[Event] = []
@@ -1888,23 +1966,9 @@ async def logged_events(
     """The page of a run's events after seq `after` as `store.events` gives it, with the events
     the log holds past an index that is behind it. For a reader that acts on events just
     written, which the index may not hold yet."""
-    limit = max(1, min(limit, MAX_PAGE))
-    # The log first: the index only moves on meanwhile, so the two parts leave no gap.
-    tail = await store.unindexed(
-        run_id,
-        after=after,
-        before=before,
-        types=types,
-        agent_id=agent_id,
-        limit=limit,
-    )
-    page = await store.events(
+    return await store.logged_events(
         run_id, after=after, before=before, limit=limit, types=types, agent_id=agent_id
     )
-    if not tail or len(page) >= limit:
-        return page
-    last = page[-1].seq if page else -1
-    return [*page, *(e for e in tail if e.seq > last)][:limit]
 
 
 class _Unnamed(str):

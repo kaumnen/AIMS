@@ -620,12 +620,14 @@ class Lines:
         monkeypatch.setattr(store_module, "read_events", read_events)
 
 
-async def far_behind(store: LocalEventStore, breaker: Breaker, n: int) -> str:
-    """A live run whose index holds its first event only, with `n` events past it in its log,
-    and no catch-up under way."""
+async def far_behind(store: LocalEventStore, breaker: Breaker, n: int, *, held: int = 0) -> str:
+    """A live run whose index holds its first `held` + 1 events only, with events up to seq
+    `n` in its log, and no catch-up under way."""
     run_id = await store.create_run(STARTED)
+    if held:
+        await store.append(run_id, [call(i) for i in range(1, held + 1)])
     breaker.left = 10**6
-    for first in range(1, n + 1, 1000):
+    for first in range(held + 1, n + 1, 1000):
         await store.append(run_id, [call(i) for i in range(first, min(first + 1000, n + 1))])
     task = store._lags[run_id].task
     assert task is not None
@@ -674,6 +676,85 @@ async def test_a_cancelled_read_past_a_lagging_index_stops_reading_the_log(
             assert lines.count <= at_cancel + 2
         finally:
             lines.wait = 0.0
+
+
+async def index_elsewhere(
+    store: LocalEventStore, breaker: Breaker, run_id: str, events: int, *, reset: bool = True
+) -> None:
+    """Another process resets the index, then indexes the first `events` events of the run
+    from its log, as a rebuild part way does."""
+    other = await Index.open(store.root / INDEX)
+    left, breaker.left = breaker.left, 0
+    try:
+        if reset:
+            await other.reset()
+        if events:
+            lines = (store.root / run_id / LOG).read_bytes().splitlines(keepends=True)[:events]
+            first = [Event.model_validate(json.loads(line)) for line in lines]
+            end = Head(seq=events - 1, hash=first[-1].hash, offset=sum(map(len, lines)))
+            await other.add(first, end)
+    finally:
+        breaker.left = left
+        await other.close()
+
+
+@pytest.mark.parametrize("again", [50, 0])
+async def test_logged_events_leave_no_gap_while_another_process_resets_the_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, again: int
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("database is locked"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await far_behind(store, breaker, 199, held=99)
+        real = Index.events
+        resets: list[int] = []
+
+        async def events(index: Index, *args: Any, **kw: Any) -> list[Event]:
+            if not resets:
+                resets.append(again)
+                await index_elsewhere(store, breaker, run_id, again)
+            return await real(index, *args, **kw)
+
+        monkeypatch.setattr(Index, "events", events)
+        page = await logged_events(store, run_id, limit=1000)
+        assert resets == [again]
+        assert [e.seq for e in page] == list(range(200))
+
+
+@pytest.mark.parametrize("again", [50, 0])
+async def test_logged_events_read_again_when_the_index_head_moved_back_after_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, again: int
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("database is locked"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await far_behind(store, breaker, 199, held=99)
+        real = store._past_index
+        reads: list[int] = []
+
+        async def past_index(*args: Any, **kw: Any) -> Any:
+            found = await real(*args, **kw)
+            if not reads:
+                await index_elsewhere(store, breaker, run_id, again)
+            reads.append(found[1].seq)
+            return found
+
+        monkeypatch.setattr(store, "_past_index", past_index)
+        page = await logged_events(store, run_id, limit=1000)
+        assert reads == [99, again - 1]
+        assert [e.seq for e in page] == list(range(200))
+        # a head that moves back on every read
+        reads.clear()
+
+        async def back_each_time(*args: Any, **kw: Any) -> Any:
+            await index_elsewhere(store, breaker, run_id, 100, reset=False)
+            found = await real(*args, **kw)
+            await index_elsewhere(store, breaker, run_id, 0)
+            reads.append(found[1].seq)
+            return found
+
+        monkeypatch.setattr(store, "_past_index", back_each_time)
+        with pytest.raises(store_module.IndexChanged, match="moved back"):
+            await logged_events(store, run_id, limit=1000)
+        assert reads == [99] * store_module.LOGGED_TRIES
 
 
 async def caught_up(store: LocalEventStore, run_id: str) -> bool:

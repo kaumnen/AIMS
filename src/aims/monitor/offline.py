@@ -579,6 +579,20 @@ class OriginStore:
             run_id, after=after, before=before, types=types, agent_id=agent_id, limit=limit
         )
 
+    async def logged_events(
+        self,
+        run_id: str,
+        *,
+        after: int = -1,
+        before: int | None = None,
+        limit: int = 100,
+        types: Sequence[str] = (),
+        agent_id: str | None = None,
+    ) -> list[Event]:
+        return await self._of(run_id).logged_events(
+            run_id, after=after, before=before, limit=limit, types=types, agent_id=agent_id
+        )
+
     async def rebuild(self) -> None:
         return None
 
