@@ -6,6 +6,7 @@ import contextlib
 import time
 from collections.abc import AsyncIterator
 from compression import zstd
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -15,6 +16,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import TypeAdapter, ValidationError
 
 from aims import __version__
+from aims.aio import settle
 from aims.events import Diverged, Gap, Invalid, MissingBlobs, RunCorrupt, split_lines
 from aims.events.blobs import BlobError
 from aims.events.chain import MAX_LINE
@@ -228,14 +230,26 @@ def _feed_event(message: CommandMessage | OfferMessage) -> ServerSentEvent:
     return ServerSentEvent(data=message, event="offer")
 
 
-@router.get("/stream", response_class=EventSourceResponse)
-async def runner_stream(
+@dataclass(slots=True)
+class Feed:
+    """A runner's open stream: its connection, its queue and a task that ends as the server
+    stops."""
+
+    conn: Connected
+    queue: asyncio.Queue[CommandMessage | OfferMessage | None]
+    stop: asyncio.Task[bool]
+
+
+async def open_feed(
     principal: RunnerToken, state: State, name: RunnerName = None
-) -> AsyncIterator[ServerSentEvent]:
-    """Commands for this runner's runs, unacknowledged ones first, and job offers."""
+) -> AsyncIterator[Feed]:
+    """Hold a runner's stream from before its response starts to after it ends; an unknown
+    runner gets its 409 as a status. This runs as a dependency: its exit runs once the response
+    has ended, however it ended. FastAPI does not close an endpoint's generator when the
+    response ends during a send, so cleanup there would wait for the GC."""
     conn = connected(state, principal, name)
     old = conn.feed
-    conn.feed = feed = asyncio.Queue(10_000)
+    conn.feed = queue = asyncio.Queue(10_000)
     with contextlib.suppress(asyncio.QueueFull):
         old.put_nowait(None)
     conn.streams += 1
@@ -244,40 +258,57 @@ async def runner_stream(
     # end as the server stops: uvicorn waits out its grace for open responses, then cancels them
     stop = asyncio.create_task(state.stopping.wait())
     try:
-        yield ServerSentEvent(comment="connected", retry=2000)
-        sent: set[str] = set()
-        for c in await state.db.pending_commands(conn.name):
-            sent.add(c.id)
-            yield _feed_event(
-                CommandMessage(
-                    id=c.id, seq=c.seq, run_id=c.run_id, command=CommandAction(**c.payload)
-                )
-            )
-        while not state.stopping.is_set():
-            get = asyncio.create_task(feed.get())
-            try:
-                await asyncio.wait((get, stop), return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                # a get cancelled before it returns leaves its message on the feed
-                get.cancel()
-            if not get.done():
-                return
-            message = get.result()
-            if message is None:
-                return
-            if isinstance(message, CommandMessage) and message.id in sent:
-                continue
-            yield _feed_event(message)
+        yield Feed(conn, queue, stop)
     finally:
         stop.cancel()
         conn.streams -= 1
-        if conn.feed is feed:
-            for run_id in list(conn.offered):
-                if await state.db.requeue(run_id, runner=conn.name):
-                    state.changes.touch(run_id)
+        offered: list[str] = []
+        if conn.feed is queue:
+            offered = sorted(conn.offered)
             conn.offered.clear()
         state.runner_changed()
-        state.poke()
+        try:
+            if offered:
+                # the request may end through a cancel, which would cut a plain await here
+                await settle(_requeue(state, conn.name, offered))
+        finally:
+            state.poke()
+
+
+async def _requeue(state: ServerState, runner: str, run_ids: list[str]) -> None:
+    for run_id in run_ids:
+        if await state.db.requeue(run_id, runner=runner):
+            state.changes.touch(run_id)
+
+
+@router.get("/stream", response_class=EventSourceResponse)
+async def runner_stream(
+    state: State, feed: Annotated[Feed, Depends(open_feed)]
+) -> AsyncIterator[ServerSentEvent]:
+    """Commands for this runner's runs, unacknowledged ones first, and job offers."""
+    conn = feed.conn
+    yield ServerSentEvent(comment="connected", retry=2000)
+    sent: set[str] = set()
+    for c in await state.db.pending_commands(conn.name):
+        sent.add(c.id)
+        yield _feed_event(
+            CommandMessage(id=c.id, seq=c.seq, run_id=c.run_id, command=CommandAction(**c.payload))
+        )
+    while not state.stopping.is_set():
+        get = asyncio.create_task(feed.queue.get())
+        try:
+            await asyncio.wait((get, feed.stop), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # a get cancelled before it returns leaves its message on the queue
+            get.cancel()
+        if not get.done():
+            return
+        message = get.result()
+        if message is None:
+            return
+        if isinstance(message, CommandMessage) and message.id in sent:
+            continue
+        yield _feed_event(message)
 
 
 @router.post("/commands/{command_id}/ack", status_code=204, responses=responses(404))

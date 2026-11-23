@@ -2,6 +2,7 @@ import ast
 import asyncio
 import contextlib
 import dataclasses
+import gc
 import gzip
 import hashlib
 import inspect
@@ -26,12 +27,14 @@ from types import SimpleNamespace
 from typing import IO, Any, Literal, cast
 from unittest.mock import patch
 
+import anyio
 import httpx2
 import pytest
 from cp import CP, SCENARIO, control_plane, start, stop
 from fastapi import FastAPI
 from fastapi.routing import iter_route_contexts
 from pydantic import BaseModel, JsonValue, ValidationError
+from starlette.types import Message, Scope
 
 import aims
 from aims import __version__
@@ -2411,9 +2414,127 @@ async def test_a_runner_stream_ends_when_the_server_stops(cp: CP, fake: FakeRunn
     assert fake.task is not None
     async with asyncio.timeout(2):
         await fake.task
-    assert cp.state.runners["fake"].streams == 0
+    conn = cp.state.runners["fake"]
+
+    async def streams() -> int:
+        return conn.streams
+
+    # the stream's cleanup runs as its request ends, just after the last frame
+    await until(streams, 0, within=2)
     # the offer it never claimed goes back to the queue
+    await until(lambda: job_state(cp, run_id), "queued", within=2)
+
+
+@contextlib.contextmanager
+def gc_held() -> Generator[None]:
+    """No cyclic GC in the block, so only a request's own cleanup counts: the GC also finalizes
+    an endpoint's generator that a response left suspended."""
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+
+
+async def stalled(
+    cp: CP, path: str, token: str, *, query: str = "", runner: str | None = None
+) -> None:
+    """GET `path` straight through the app as a client that reads three body frames, then
+    stops reading and goes a moment later. What the server sends meanwhile backs up."""
+    headers = [(b"host", b"127.0.0.1"), (b"authorization", f"Bearer {token}".encode())]
+    if runner is not None:
+        headers.append((b"x-aims-runner", runner.encode()))
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": query.encode(),
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 80),
+    }
+    gone = asyncio.Event()
+    frames = 0
+
+    async def receive() -> Message:
+        await gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        nonlocal frames
+        if message["type"] != "http.response.body":
+            return
+        frames += 1
+        if frames == 3:
+            asyncio.get_running_loop().call_later(0.2, gone.set)
+            await asyncio.Event().wait()
+
+    app = create_app(cp.state, dispatcher=False)
+    # in a group: FastAPI's keepalive task, sending into a response that has ended
+    with contextlib.suppress(anyio.BrokenResourceError):
+        async with asyncio.timeout(10):
+            await app(scope, receive, send)
+
+
+async def test_a_runner_stream_that_stalls_and_drops_releases_its_offers(cp: CP) -> None:
+    runner = FakeRunner(cp, "stalls")
+    await runner.client.hello(runner.hello_body())
+    await runner.client.status(RunnerStatus(tracer=TracerHealth(alive=True), free=2))
+    await runner.client.aclose()
+    conn = cp.state.runners["stalls"]
+
+    async def streams() -> int:
+        return conn.streams
+
+    async def offered() -> set[str]:
+        return conn.offered
+
+    with gc_held():
+        reading = asyncio.create_task(stalled(cp, "/runner/v1/stream", cp.runner, runner="stalls"))
+        await until(streams, 1)
+        (run_id,) = await start_run(cp)
+        await until(offered, {run_id})
+        for i in range(20):
+            action = CommandAction(action="pause", reason="x" * 1000)
+            message = CommandMessage(id=f"c{i}", seq=i, run_id=run_id, command=action)
+            assert runner_api.send(cp.state, "stalls", message)
+        await reading
+        assert conn.streams == 0
+        assert conn.offered == set()
     assert await job_state(cp, run_id) == "queued"
+
+
+async def test_a_runner_stream_that_drops_releases_its_offers(cp: CP, fake: FakeRunner) -> None:
+    (run_id,) = await start_run(cp)
+    await fake.next(OfferMessage)
+    conn = cp.state.runners["fake"]
+    assert conn.free() == 1
+    await fake.disconnect()
+
+    async def streams() -> int:
+        return conn.streams
+
+    await until(streams, 0)
+    assert conn.offered == set()
+    assert conn.free() == 2
+    # the requeue follows the count down
+    await until(lambda: job_state(cp, run_id), "queued")
+
+
+async def test_a_runner_stream_before_hello_is_refused_with_a_status(cp: CP) -> None:
+    client = ControlClient(cp.url, cp.runner, runner="early")
+    try:
+        with pytest.raises(ApiError) as caught:
+            async with client.stream():
+                pass
+        assert (caught.value.status, caught.value.code) == (409, "hello")
+    finally:
+        await client.aclose()
 
 
 async def test_a_stream_ends_when_its_session_does(cp: CP) -> None:
