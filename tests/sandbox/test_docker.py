@@ -589,8 +589,11 @@ async def test_kernel_audit_sees_what_ran(backend: DockerBackend, store: LocalEv
     by_cpu: dict[int, list[KernelPayload]] = {}
     for p in kernel:
         by_cpu.setdefault(p.cpu, []).append(p)
+    # A fork comes late in the log and sorts into place by kernel order (ProcFork), so the
+    # stamps are checked in that order: each number once, and the clock never going back.
     for stream in by_cpu.values():
-        assert [p.cpu_seq for p in stream] == sorted({p.cpu_seq for p in stream})
+        stream.sort(key=lambda p: p.cpu_seq)
+        assert len({p.cpu_seq for p in stream}) == len(stream)
         assert [p.ts_kernel for p in stream] == sorted(p.ts_kernel for p in stream)
     started_at = {p.pid: p.ts_kernel for p in procs}
     assert all(started_at[p.ppid] < p.ts_kernel for p in procs if p.ppid in started_at)
