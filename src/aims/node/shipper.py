@@ -78,6 +78,11 @@ class Gone(Exception):
     """The run is no longer in the local store."""
 
 
+class Lacks(Exception):
+    """The local copy lacks a blob its log names, so the control plane would refuse the lines
+    that name it. A blob that is not here when its line is never comes later."""
+
+
 class Shipper:
     """Copies one run's log and blobs to the control plane as the log grows: blobs first, then
     exact lines from where the server's copy ends. Once the server holds the sealed run, sends
@@ -142,6 +147,10 @@ class Shipper:
                 return
             except Gone:
                 self._gone()
+                return
+            except Lacks as e:
+                self.refused = str(e)
+                log.error("run %s: not shipped: %s", self.run_id, e)
                 return
             except KeyError:
                 # the store names a run with no folder that way, as when it reads a blob
@@ -293,5 +302,11 @@ class Shipper:
 
     async def _upload(self, shas: Sequence[str]) -> None:
         for sha in shas:
-            await self.client.put_blob(self.run_id, sha, self.store.blob_path(self.run_id, sha))
+            try:
+                path = self.store.blob_path(self.run_id, sha)
+            except KeyError:
+                if self.seen and not self.store.holds(self.run_id):
+                    raise Gone from None
+                raise Lacks(f"the local copy lacks blob {sha}") from None
+            await self.client.put_blob(self.run_id, sha, path)
             self.sent.add(sha)

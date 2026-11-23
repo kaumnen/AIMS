@@ -32,7 +32,7 @@ from typer.testing import CliRunner
 from aims import cli
 from aims.cli import EXIT_CANCELLED, app
 from aims.config import MAX_KEEP_DAYS
-from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
+from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall, ToolResult
 from aims.net import Outbound
 from aims.node import service
 from aims.node.link import Link
@@ -1667,6 +1667,37 @@ async def test_push_goes_on_past_a_run_deleted_under_it(
     assert result.exit_code == 1, result.output
     assert f"error: {first}: the run was deleted here" in result.output
     assert f"{second} completed 2 events" in result.output
+
+
+async def test_push_goes_on_past_a_run_whose_blob_is_gone(cp: CP, tmp_path: Path) -> None:
+    """A cleanup or a partial copy took a blob file the log names. The control plane refuses
+    lines whose blobs it lacks, so that run ends with the reason and the next one ships."""
+    started = RunStarted(scenario="offline", oversight="observe", agents=["a"])
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        first = await store.create_run(started)
+        ref = await store.content(first, "x" * 100_000)
+        assert not isinstance(ref, str)
+        await store.append(
+            first,
+            [
+                Draft(ToolCall(call_id="c", name="x", arguments="{}"), "a"),
+                Draft(ToolResult(call_id="c", output=ref), "a"),
+                Draft(RunFinished(status="completed")),
+            ],
+        )
+        store.blob_path(first, ref.sha256).unlink()
+        second = await store.create_run(started)
+        await store.append(second, [Draft(RunFinished(status="completed"))])
+    env = {"AIMS_TOKEN": cp.runner}
+    async with asyncio.timeout(20):
+        result = await asyncio.to_thread(
+            CliRunner().invoke, app, ["push", str(tmp_path / "runs"), "--server", cp.url], env=env
+        )
+    assert result.exit_code == 1, result.output
+    assert f"error: {first}: the local copy lacks blob {ref.sha256}" in result.output
+    assert f"{second} completed 2 events" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert await cp.state.store.run(first) is None
 
 
 async def left_runs(cp: CP, root: Path) -> tuple[str, str]:
