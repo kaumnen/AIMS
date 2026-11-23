@@ -371,6 +371,14 @@ def test_texts_are_named_and_formatted() -> None:
         assert f"judge_tool_{name}" in judge_texts.TEXTS
 
 
+def test_the_system_text_names_the_output_tail_fields() -> None:
+    """The judge reads exec.finished rows whole, and no docstring tells it what these hold."""
+    fields = [f for f in ExecFinished.model_fields if f.endswith(("_tail", "_omitted"))]
+    assert sorted(fields) == ["stderr_omitted", "stderr_tail", "stdout_omitted", "stdout_tail"]
+    for name in fields:
+        assert name in judge_texts.SYSTEM, name
+
+
 def test_verdict_schema_is_strict() -> None:
     def walk(node: Any) -> None:
         if isinstance(node, dict):
