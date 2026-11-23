@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useEffectEvent, useState } from "react";
 import { reconnectLive } from "@/api/channel";
 import { client } from "@/api/client";
 import { REOPEN_MAX_MS, REOPEN_MS } from "@/api/live";
+import { staleRuns } from "@/api/runs";
 import { forgetSession, whoami } from "@/api/session";
 
 import { Button } from "./ui/button";
@@ -82,9 +83,7 @@ export function Unreachable({ retry }: { retry: () => void }) {
   const queryClient = useQueryClient();
   // The stream keeps the page's runs current. None is open now, so once the page is back each
   // read of runs goes again.
-  useEffect(() => {
-    void queryClient.invalidateQueries({ queryKey: ["runs"], refetchType: "none" });
-  }, [queryClient]);
+  useEffect(() => staleRuns(queryClient), [queryClient]);
   // It tries again by itself, as a stream does, and at once when the tab comes back or online.
   const again = useEffectEvent(retry);
   useEffect(() => {

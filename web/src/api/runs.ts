@@ -19,6 +19,7 @@ import type { RunTail } from "./tail";
 export type RunSummary = Schemas["RunSummary"];
 export type RunPage = Schemas["RunPage"];
 type RunDetail = Schemas["RunDetail"];
+type StepPage = Schemas["StepPage"];
 export type RunKind = RunSummary["kind"];
 export type Category = NonNullable<(typeof categoryValues)[number]>;
 
@@ -203,6 +204,20 @@ const runListFetching = (qc: QueryClient) =>
 const MAX_GONE = 10_000;
 // the tail of each run whose page is open
 export const tails = new Map<string, RunTail>();
+
+// After a time with no stream, each read of runs goes again when it next shows. A run's events
+// and steps held to the end read on from where they got to, as its page's tail has them do:
+// read again, a long list would read every page it holds.
+export function staleRuns(qc: QueryClient): void {
+  void qc.invalidateQueries({
+    queryKey: ["runs"],
+    refetchType: "none",
+    predicate: ({ queryKey: [, what], state }) =>
+      what !== "events" &&
+      (what !== "steps" ||
+        ((state.data as InfiniteData<StepPage> | undefined)?.pages.at(-1)?.next ?? null) !== null),
+  });
+}
 
 export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
   if (runs.length === 0) return;

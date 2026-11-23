@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import { Live, type LiveState, Reopen } from "@/api/live";
-import { syncRuns } from "@/api/runs";
+import { staleRuns, syncRuns } from "@/api/runs";
 
 const LiveContext = createContext<Live | null>(null);
 // how many times the stream was opened again after the browser gave up on it
@@ -63,7 +63,7 @@ export function LiveProvider({
     kept.use(onClosed, () => {
       // as after an outage the page showed: no stream kept the runs current meanwhile, so each
       // read of them goes again when it next shows
-      void queryClient.invalidateQueries({ queryKey: ["runs"], refetchType: "none" });
+      staleRuns(queryClient);
       setEpoch((e) => e + 1);
     });
   });

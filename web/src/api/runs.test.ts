@@ -21,6 +21,7 @@ import {
   reviewsQuery,
   type RunPage,
   runsQuery,
+  staleRuns,
   syncRuns,
 } from "./runs";
 import { scoresQuery } from "./score";
@@ -143,6 +144,25 @@ test("an open run takes its update and refetches when it ends, its last steps to
     detail.queryKey,
     ["runs", "steps", "b"],
     ["runs", "step", "b"],
+  ]);
+});
+
+test("after a time with no stream a run's events and full steps read on, the rest goes again", () => {
+  const qc = new QueryClient();
+  const set = (key: readonly unknown[], next: number | null) =>
+    qc.setQueryData(key, { pages: [{ items: [], next }], pageParams: [null] });
+  set(["runs", "list", {}], null);
+  set(["runs", "events", "b", {}, "start"], null);
+  set(["runs", "steps", "b"], null);
+  set(["runs", "steps", "c"], 200);
+  staleRuns(qc);
+  const stale = qc
+    .getQueryCache()
+    .findAll({ predicate: (q) => q.state.isInvalidated })
+    .map((q) => q.queryKey);
+  expect(stale).toEqual([
+    ["runs", "list", {}],
+    ["runs", "steps", "c"],
   ]);
 });
 
