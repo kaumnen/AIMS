@@ -154,20 +154,6 @@ def _chunks(f: IO[bytes], seen: hashlib._Hash | None = None) -> Iterator[bytes]:
         yield data
 
 
-def stored_size(path: Path) -> int:
-    """The uncompressed size of a stored blob, from its frame header when it has one."""
-    with path.open("rb") as f:
-        head = f.read(18)
-    if head.startswith(ZSTD_MAGIC):
-        with contextlib.suppress(zstd.ZstdError):
-            size = zstd.get_frame_info(head).decompressed_size
-            if size is not None:
-                return size
-        with contextlib.suppress(zstd.ZstdError), path.open("rb") as f:
-            return sum(len(out) for out in _decoded(_chunks(f)))
-    return path.stat().st_size
-
-
 def holds_blob(path: Path) -> int | None:
     """The size of the blob the file at `path` is named by, None when the file does not hold
     it. Reads it a chunk at a time."""

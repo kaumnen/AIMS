@@ -53,7 +53,7 @@ from aims.events import (
 from aims.events import chain as chain_module
 from aims.events import log as log_module
 from aims.events import store as store_module
-from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore, Part, read_blob, stored_size
+from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore, Part, read_blob
 from aims.events.chain import GENESIS, MAX_LINE, Head, digest, follow, seal
 from aims.events.disk import make_dir
 from aims.events.index import Index
@@ -1431,7 +1431,7 @@ async def test_a_blob_read_decodes_no_more_than_its_reference_states(
     assert peak_of(lambda: read_blob(blobs.path(raw), len(frame))) < MIB
 
 
-async def test_checking_and_sizing_a_blob_holds_none_of_it(store: LocalEventStore) -> None:
+async def test_checking_a_blob_holds_none_of_it(store: LocalEventStore) -> None:
     run_id = await store.create_run(STARTED)
     blobs = store.blobs(run_id)
     make_dir(blobs.root)
@@ -1443,8 +1443,6 @@ async def test_checking_and_sizing_a_blob_holds_none_of_it(store: LocalEventStor
     blobs.path(sha).write_bytes(frame)
     ref = BlobRef(sha256=sha, size=len(big))
     await store.append(run_id, [Draft(ToolCall(call_id="c", name="shell", arguments=ref))])
-    assert peak_of(lambda: stored_size(blobs.path(sha))) < 8 * MIB
-    assert stored_size(blobs.path(sha)) == len(big)
     assert peak_of(lambda: verify_run(store.root / run_id)) < 8 * MIB
     assert verify_run(store.root / run_id).ok
     blobs.path(sha).write_bytes(frame[:-4])
