@@ -162,6 +162,8 @@ test("who signs in after a 401 sees nothing the last session loaded", async () =
   fireEvent.change(field, { target: { value: "good" } });
   fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
   expect(await screen.findByRole("button", { name: /vera/ })).toBeTruthy();
+  // not even for a moment, nor hidden
+  expect(screen.queryByText("operator-only")).toBeNull();
   expect(await screen.findByText(/No runs yet/)).toBeTruthy();
   expect(screen.queryByText("operator-only")).toBeNull();
   expect(reconnectLive).toHaveBeenCalled();
@@ -176,6 +178,8 @@ test("a session started in another tab shows nothing the last one loaded", async
   me = { name: "vera", role: "viewer", auth: true };
   await act(() => router.options.context.queryClient.refetchQueries(whoami));
   expect(await screen.findByRole("button", { name: /vera/ })).toBeTruthy();
+  // not even for a moment, nor hidden
+  expect(screen.queryByText("operator-only")).toBeNull();
   expect(await screen.findByText(/No runs yet/)).toBeTruthy();
   expect(screen.queryByText("operator-only")).toBeNull();
 });
@@ -193,6 +197,8 @@ test("a tab that comes back after another signed in as someone else shows the ne
   me = { name: "vera", role: "viewer", auth: true };
   act(() => void window.dispatchEvent(new Event("focus")));
   expect(await screen.findByRole("button", { name: /vera/ })).toBeTruthy();
+  // not even for a moment, nor hidden
+  expect(screen.queryByText("operator-only")).toBeNull();
   expect(await screen.findByText(/No runs yet/)).toBeTruthy();
   expect(screen.queryByText("operator-only")).toBeNull();
   expect(reconnectLive).toHaveBeenCalled();

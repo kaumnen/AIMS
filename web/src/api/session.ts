@@ -29,11 +29,25 @@ export function forgetSession(qc: QueryClient): void {
 const same = (a: Whoami, b: Whoami) => a.name === b.name && a.role === b.role && a.auth === b.auth;
 
 // Another tab can sign in as someone else, or sign out, with the same cookie. A tab asks again
-// who it is each time it comes back into view, also while it shows the sign-in form. Someone
-// else, or nobody, drops all the last session loaded, as a sign-in does; the same one changes
-// nothing.
+// who it is each time it comes back into view, also while it shows the sign-in form. Nobody
+// brings the sign-in form over the page; the same one changes nothing.
+//
+// Whoever the session read names, here or in another tab, sees nothing someone else loaded:
+// the page drops all of it first. The same one keeps the page as it was, drafts included.
 export function watchSession(qc: QueryClient): () => void {
   let asking = false;
+  let last = qc.getQueryData<Whoami>(whoami.queryKey);
+  const key = hashKey(whoami.queryKey);
+  const unwatch = qc.getQueryCache().subscribe(({ query }) => {
+    const now = query.state.data as Whoami | undefined;
+    if (query.queryHash !== key || now === undefined) return;
+    if (last && !same(last, now)) {
+      // the tabs' shared stream may still hold the old session
+      reconnectLive();
+      forgetSession(qc);
+    }
+    last = now;
+  });
   const ask = async () => {
     const state = qc.getQueryState<Whoami>(whoami.queryKey);
     const before = state?.data;
@@ -47,10 +61,8 @@ export function watchSession(qc: QueryClient): () => void {
       if (data ? !out && before && same(data, before) : out || response.status !== 401) return;
       // the tab moved on meanwhile, a sign-out say
       if (qc.getQueryData(whoami.queryKey) !== before) return;
-      // the tabs' shared stream may still hold the old session
-      reconnectLive();
-      forgetSession(qc);
-      await qc.resetQueries({ queryKey: whoami.queryKey });
+      if (data) qc.setQueryData(whoami.queryKey, data);
+      else await qc.refetchQueries({ queryKey: whoami.queryKey });
     } catch {
       // out of reach: the stream says so
     } finally {
@@ -61,6 +73,7 @@ export function watchSession(qc: QueryClient): () => void {
   addEventListener("focus", onShow);
   document.addEventListener("visibilitychange", onShow);
   return () => {
+    unwatch();
     removeEventListener("focus", onShow);
     document.removeEventListener("visibilitychange", onShow);
   };

@@ -5,7 +5,7 @@ import { reconnectLive } from "@/api/channel";
 import { client } from "@/api/client";
 import { REOPEN_MAX_MS, REOPEN_MS } from "@/api/live";
 import { staleRuns } from "@/api/runs";
-import { forgetSession, whoami } from "@/api/session";
+import { whoami } from "@/api/session";
 
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -16,9 +16,10 @@ export function SignIn() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // The session is over, however it ended. Whoever signs in next, here or in another tab,
-  // starts from nothing.
-  useEffect(() => forgetSession(queryClient), [queryClient]);
+  // The session is over, however it ended. The page waits under the form with no stream, so
+  // once it shows again each read of runs goes again. Someone else signing in, here or in
+  // another tab, starts from nothing.
+  useEffect(() => staleRuns(queryClient), [queryClient]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -34,8 +35,7 @@ export function SignIn() {
       }
       // the tabs' shared stream still holds the old session until it connects again
       reconnectLive();
-      forgetSession(queryClient);
-      await queryClient.resetQueries({ queryKey: whoami.queryKey });
+      await queryClient.refetchQueries({ queryKey: whoami.queryKey });
     } catch {
       setError("Cannot reach the control plane.");
     } finally {
