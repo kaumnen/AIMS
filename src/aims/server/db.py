@@ -657,18 +657,29 @@ class ServerDB:
     )
 
     @staticmethod
-    def _job(r: tuple[Any, ...]) -> Job:
+    def _tried(text: str) -> list[str]:
+        tried = json.loads(text)
+        # only a damaged row holds another shape; it would stop every dispatch
+        return tried if isinstance(tried, list) else []
+
+    @classmethod
+    def _job(cls, r: tuple[Any, ...]) -> Job:
+        payload = json.loads(r[4])
+        if not isinstance(payload, dict):
+            # Only a damaged row holds such a payload. It reads as a job of a kind this
+            # version does not know: lists leave it out and no runner loads it.
+            payload = {"kind": "unreadable"}
         return Job(
             r[0],
             r[1],
             r[2],
             r[3],
-            json.loads(r[4]),
+            payload,
             json.loads(r[5]),
             r[6],
             r[7],
             r[8],
-            json.loads(r[9]),
+            cls._tried(r[9]),
             r[10],
             r[11],
             r[12],
@@ -833,7 +844,7 @@ class ServerDB:
             row = await self._one("select tried from jobs where run_id = ?", (run_id,))
             if row is None:
                 return False
-            tried = [*json.loads(row[0]), runner]
+            tried = [*self._tried(row[0]), runner]
             cur = await self._db.execute(
                 "update jobs set state = 'offered', runner = ?, offered_at = ?, tried = ?,"
                 " updated = ? where run_id = ? and state = 'queued'",

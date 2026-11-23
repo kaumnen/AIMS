@@ -1019,6 +1019,52 @@ async def test_a_job_of_a_kind_this_version_does_not_know_breaks_no_list(
         assert listed == [good]
 
 
+@pytest.mark.parametrize(
+    ("payload", "tried", "state"),
+    [
+        ("[]", "[]", "waiting"),
+        ('"x"', "[]", "queued"),
+        ("null", "[]", "done"),
+        ("1", "[]", "waiting"),
+        ('{"kind": "unknown"}', "null", "queued"),
+    ],
+)
+async def test_a_damaged_job_row_breaks_no_list_and_stops_no_dispatch(
+    cp: CP, fake: FakeRunner, payload: str, tried: str, state: sdb.JobState
+) -> None:
+    from aims.server.db import Job as JobRow
+
+    bad = "01a18000-0000-7000-8000-00000000000f"
+    t = time.time()
+    payload_ok = {"kind": "unknown"}
+    row = JobRow(bad, None, None, state, payload_ok, {}, None, None, None, [], None, t, t, None)
+    await cp.state.db.add_jobs([row])
+    # as a hand edit or a damaged file may leave it: valid JSON of the wrong shape
+    await cp.state.db._db.execute(
+        "update jobs set payload = ?, tried = ? where run_id = ?", (payload, tried, bad)
+    )
+    await cp.state.db._db.commit()
+    async with cp.client(cp.operator) as c, cp.client(cp.viewer) as viewer:
+        r = await c.get("/api/runs")
+        assert r.status_code == 200, r.text
+        assert r.json()["items"] == []
+        assert (await c.get(f"/api/runs/{bad}")).status_code == 404
+        r = await viewer.get(f"/api/runs/{bad}")
+        assert (r.status_code, r.json()["code"]) == (403, "kind")
+        (good,) = await start_run(cp)
+        offered: set[str] = set()
+        while good not in offered:
+            offered.add((await fake.next(OfferMessage)).run_id)
+        r = await c.get("/api/runs")
+        assert [i["run_id"] for i in r.json()["items"]] == [good]
+    if bad in offered:
+        # no runner can load it, so the claim ends it
+        assert await fake.client.claim(bad) is None
+        job = await cp.state.db.job(bad)
+        assert job is not None
+        assert (job.state, (job.reason or "")[:21]) == ("done", "the job does not load")
+
+
 async def test_a_viewer_gets_nothing_of_a_job_of_a_kind_this_version_does_not_know(
     cp: CP, fake: FakeRunner
 ) -> None:
