@@ -323,7 +323,7 @@ test("past a server page of held events a raw list reads on by paging", async ()
   tail.stop();
 });
 
-test("a tail stopped while a raw page is read holds nothing and leaves the cache", async () => {
+test("a tail stopped while a raw page is read holds nothing, then reads on and leaves the cache", async () => {
   const asked = heldReads();
   const qc = new QueryClient();
   const all = rawEventsQuery(RUN, {});
@@ -333,11 +333,34 @@ test("a tail stopped while a raw page is read holds nothing and leaves the cache
   source.send({ kind: "events", run_id: RUN, events: range(5, 6) });
   flush();
   tail.stop();
-  expect(qc.getQueryCache().hasListeners()).toBe(false);
   asked[0]?.answer(range(0, 4));
   await read;
-  await new Promise((done) => setTimeout(done, 0));
+  await waitFor(() => expect(lastNewer(qc, all.queryKey)).toBe(4));
   expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4]);
+  expect(qc.getQueryCache().hasListeners()).toBe(false);
+});
+
+test("a raw page read cancelled as the reader leaves, after the tail stopped, reads on when shown again", async () => {
+  const asked = heldReads();
+  const qc = new QueryClient();
+  const last = rawEventsQuery(RUN, {}, "end");
+  qc.setQueryData(last.queryKey, {
+    ...page(range(3, 4), null, 3),
+    pageParams: [{ before: Number.MAX_SAFE_INTEGER }],
+  });
+  const { source, tail } = open(qc, 4);
+  const list = new InfiniteQueryObserver(qc, last);
+  const off = list.subscribe(() => undefined);
+  void list.fetchPreviousPage();
+  await waitFor(() => expect(asked).toHaveLength(1));
+  source.send({ kind: "events", run_id: RUN, events: range(5, 9) });
+  flush();
+  // the page's effects end before its list's: the tail stops, then the list's read is cancelled
+  tail.stop();
+  off();
+  await waitFor(() => expect(lastNewer(qc, last.queryKey)).toBe(4));
+  expect(rawSeqs(qc, last.queryKey)).toEqual([3, 4]);
+  expect(qc.getQueryCache().hasListeners()).toBe(false);
 });
 
 test("a raw list takes the stream a page at a time up to 10,000 events, then reads on", async () => {

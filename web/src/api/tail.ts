@@ -149,9 +149,6 @@ export class RunTail {
     this.#reopen?.stop();
     this.#live?.stop();
     this.#live = null;
-    this.#held.clear();
-    this.#unheld?.();
-    this.#unheld = null;
     this.#readOnAll(Number.POSITIVE_INFINITY);
   }
 
@@ -333,13 +330,13 @@ export class RunTail {
   // A list that stops before `after`, where the stream starts, reads on past its last event once
   // shown: one kept from an earlier visit, or one a stopped tail no longer keeps current. A
   // search stops at its last match, so it reads on whenever that is before `after`. A list
-  // whose page is read does so once the read is in, while the tail runs.
+  // whose page is read does so once the read is in, even after the tail stopped.
   #readOnAll(after: number): void {
     for (const query of this.#rawLists()) {
       const data = query.state.data as InfiniteData<RawPage> | undefined;
       if (data === undefined || lastSeq(data.pages) >= after) continue;
       if (query.state.fetchStatus === "idle") this.#readOn(query.queryKey);
-      else if (!this.#stopped) this.#hold(query.queryHash, "over");
+      else this.#hold(query.queryHash, "over");
     }
   }
 
@@ -356,20 +353,20 @@ export class RunTail {
   }
 
   // Once the read's own write is in, as syncRuns does: each list whose read ended, in success,
-  // failure or cancel, takes what it held as if it had just come. A list gone takes nothing.
+  // failure or cancel, takes what it held as if it had just come. A list gone takes nothing. Past
+  // a stop nothing more comes, so each list reads on instead.
   #replay(): void {
     if (this.#replaying) return;
     this.#replaying = true;
     queueMicrotask(() => {
       this.#replaying = false;
-      if (this.#stopped) return;
       const cache = this.qc.getQueryCache();
       for (const [hash, held] of this.#held) {
         const query = cache.get(hash);
         if (query !== undefined && query.state.fetchStatus !== "idle") continue;
         this.#held.delete(hash);
         if (query === undefined) continue;
-        if (held === "over") this.#readOn(query.queryKey);
+        if (held === "over" || this.#stopped) this.#readOn(query.queryKey);
         else this.#append(query.queryKey, held);
       }
       if (this.#held.size > 0) return;
