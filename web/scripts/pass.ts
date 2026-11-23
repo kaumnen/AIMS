@@ -149,7 +149,9 @@ try {
     if (k && v) ids[k] = v;
   }
 
+  // a reused --dir holds the last pass's log, which says live before this runner is
   const liveLog = join(dir, "live.log");
+  await rm(liveLog, { force: true });
   live = spawn(
     [
       "uv",
