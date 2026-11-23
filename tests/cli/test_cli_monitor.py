@@ -43,6 +43,7 @@ from aims.events import (
     MonitorAction,
     MonitorDegraded,
     MonitorFlag,
+    MonitorJudging,
     MonitorSweep,
     MonitorVerdict,
     OperatorAction,
@@ -1333,6 +1334,22 @@ async def test_the_view_shows_the_last_few_notes_and_the_end_lists_all(tmp_path:
         console = Console(record=True, width=200)
         console.print(table)
         assert console.export_text().count("judge: timeout") == 20
+
+
+async def test_the_view_names_the_judge_phase_until_the_run_ends(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        await store.append(run_id, [Draft(MonitorJudging(timeout_s=600)), Draft(MonitorVerdict())])
+        view = LiveView(store, DeltaBus())
+        view.add(run_id)
+        await until(lambda: view.runs[run_id].verdict != "")
+        console = Console(record=True, width=200)
+        console.print(view)
+        assert f"s {run_id}  judging, up to 600 s" in console.export_text()
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        await until(lambda: view.runs[run_id].status == "completed")
+        await view.stop()
+    assert view.runs[run_id].phase == "done"
 
 
 async def test_the_view_and_the_end_name_each_judge_rollout_that_failed(tmp_path: Path) -> None:

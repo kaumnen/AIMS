@@ -261,6 +261,9 @@ class LiveView:
                 a.reward = "none" if reward is None else f"{_num(reward):g}"
             case "sandbox.archived":
                 run.phase = "archive"
+            case "monitor.judging":
+                timeout = _num(data.get("timeout_s"))
+                run.phase = f"judging, up to {timeout:g} s" if timeout else "judging"
             case "run.finished":
                 run.status = str(data.get("status"))
                 run.phase = "done"
