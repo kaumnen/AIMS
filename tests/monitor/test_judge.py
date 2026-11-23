@@ -68,7 +68,6 @@ from aims.monitor.judge import (
     HEAD_CHARS,
     HISTORY_ROWS,
     MIN_OUTPUT,
-    MORE_KEYS,
     OUTPUT_CHARS,
     PROBLEM_CHARS,
     SCORE_CHARS,
@@ -89,6 +88,9 @@ from aims.monitor.texts import MonitorTexts
 from aims.prompts import check_format
 
 pytestmark = pytest.mark.anyio
+
+MORE_KEYS = MonitorTexts()["judge_more_keys"]
+CHARS_CUT = MonitorTexts()["judge_chars_cut"]
 
 AGENT = "a"
 K: dict[str, Any] = {"ts_kernel": 1, "cpu": 0, "cpu_seq": 0}
@@ -544,7 +546,7 @@ async def test_a_long_blob_shows_the_text_a_whole_read_would(store: LocalEventSt
     run = await make_run(store)
     text = "".join(f"line {i} é€\n" for i in range(600_000))
     ref = await store.put_blob(run.id, text.encode())
-    reader = Reader(store, run.id)
+    reader = Reader(store, run.id, MonitorTexts())
     value = ref.model_dump()
     tracemalloc.start()
     try:
@@ -553,8 +555,8 @@ async def test_a_long_blob_shows_the_text_a_whole_read_would(store: LocalEventSt
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
-    assert head == clip(text, 2000)
-    assert end == clip_end(text, 3000)
+    assert head == clip(text, 2000, CHARS_CUT)
+    assert end == clip_end(text, 3000, CHARS_CUT)
     assert peak < 8 * 1024 * 1024
     assert reader._blobs == {}
 

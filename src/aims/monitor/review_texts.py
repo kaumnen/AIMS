@@ -30,3 +30,10 @@ TEXTS: dict[str, tuple[str, frozenset[str]]] = {
     "review_resample": (REVIEW_RESAMPLE, frozenset({"calls"})),
     "review_resample_text": (REVIEW_RESAMPLE_TEXT, frozenset({"text"})),
 }
+
+# Texts added after monitor identities were first stamped. Each counts in the identity hash only
+# when it is set to something other than its default (see `aims.monitor.setup.identity`).
+ADDED: dict[str, tuple[str, frozenset[str]]] = {
+    "review_chars_cut": ("[{chars} characters cut]", frozenset({"chars"})),
+}
+TEXTS |= ADDED

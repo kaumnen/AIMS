@@ -78,8 +78,6 @@ OUTPUT_CHARS = 16_000
 # The most characters one tool output holds as the judge reads it, escapes included. Rows past
 # OUTPUT_CHARS wait for the next page; a first row too long for this cap is shown cut.
 TOOL_CHARS = 20_000
-TOO_LONG = judge_texts.ADDED["judge_too_long"][0]
-CHARS_CUT = judge_texts.ADDED["judge_chars_cut"][0]
 EVENT_CHARS = 3_000
 TEXT_CHARS = 400
 LIST_ITEMS = 20
@@ -117,8 +115,6 @@ MODEL_TYPES = frozenset({"model.request", "model.response", "tool.call"})
 PROC_TYPES = ("proc.exec", "proc.fork", "proc.exit")
 ARGV_ITEMS = 12
 NO_HEAD = frozenset({"body", "stream", "more", "records", "dropped"})
-# The key that counts the keys a nested object was shown without.
-MORE_KEYS = "[more keys]"
 # How far `Reader.fit` shortens a value, tried in turn: what it divides the characters of a text
 # by, the most items of a list, and the most keys of a nested object, None for all of them.
 FITS = ((1, LIST_ITEMS, None), (4, LIST_ITEMS // 4, None), (10, 2, 4))
@@ -131,7 +127,6 @@ HEAD_CHARS = OUTPUT_CHARS // 2
 # The cuts of the head's command, its leftover commands and how many it lists, tried in turn.
 HEADS = ((NOTE_CHARS, 200, LIST_ITEMS), (TEXT_CHARS, 60, 10), (TEXT_CHARS // 4, 30, 3))
 RANK: dict[str, int] = {"no": 0, "unclear": 1, "yes": 2}
-CUT_OFF = "the answer was cut off before it ended"
 UNREVIEWED = "no rollout that was shown the flags gave a verdict"
 
 
@@ -152,18 +147,18 @@ def dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def cut_row(e: Event, cut: str = TOO_LONG) -> dict[str, Any]:
+def cut_row(e: Event, cut: str) -> dict[str, Any]:
     """In place of an event too long for one tool output: its place, and that it is cut."""
     return {"seq": e.seq, "type": e.type, "cut": cut}
 
 
-def clip(text: str, limit: int, marker: str = CHARS_CUT) -> str:
+def clip(text: str, limit: int, marker: str) -> str:
     """`text` cut to about `limit` characters, keeping its head and tail. `marker` stands in
     for the characters left out, its `{chars}` their count."""
     return _clip(text, text, len(text), limit, marker)
 
 
-def clip_end(text: str, limit: int, marker: str = CHARS_CUT) -> str:
+def clip_end(text: str, limit: int, marker: str) -> str:
     """`text` cut to its last `limit` characters."""
     return _clip_end(text, len(text), limit, marker)
 
@@ -464,13 +459,15 @@ def parse_verdict(text: str) -> tuple[VerdictArgs | None, str]:
 class Reader:
     """Read-only views of one run's chain, without the monitor's own events and model calls."""
 
-    def __init__(self, store: EventStore, source: str, texts: MonitorTexts | None = None) -> None:
+    def __init__(self, store: EventStore, source: str, texts: MonitorTexts) -> None:
         self.store = store
         self.source = source
-        texts = texts or MonitorTexts()
         self.chars_cut = texts["judge_chars_cut"]
         self.blob_missing = texts["judge_blob_missing"]
         self.too_long = texts["judge_too_long"]
+        # the key that counts the keys a nested object was shown without
+        self.more_keys = texts["judge_more_keys"]
+        self.more_items = texts["judge_more_items"]
         self.monitor_calls: set[str] = set()
         self.execs: dict[str, tuple[Event, ExecStarted]] = {}
         self.snapshots: list[tuple[Event, FsSnapshot]] | None = None
@@ -595,7 +592,7 @@ class Reader:
     ) -> Any:
         """`value` with each text cut to `chars` characters and each list to `items` items.
         With `keys`, an object inside it keeps that many keys and counts the rest under
-        MORE_KEYS; `value` itself keeps every key, as an event's payload has a fixed set. A
+        `more_keys`; `value` itself keeps every key, as an event's payload has a fixed set. A
         blob shows as its hash and size with the head of its text, or the end of it under a
         key that names a tail, where the last lines say how a command ended."""
         if isinstance(value, str):
@@ -616,7 +613,7 @@ class Reader:
                 for k, v in shown
             }
             if len(kept) > len(shown):
-                out[MORE_KEYS] = len(kept) - len(shown)
+                out[self.more_keys] = len(kept) - len(shown)
             return out
         if isinstance(value, list):
             short = [
@@ -624,7 +621,7 @@ class Reader:
                 for v in value[:items]
             ]
             if len(value) > items:
-                short.append(f"[{len(value) - items} more]")
+                short.append(self.more_items.format(n=len(value) - items))
             return short
         return value
 
@@ -1237,7 +1234,8 @@ class Judge:
             calls = reply.tool_calls if completed else []
             seen, used = r.seen.copy(), r.tool_calls
             if not calls:
-                verdict, why = parse_verdict(reply.text) if completed else (None, CUT_OFF)
+                cut_off = (None, self._text("judge_cut_off"))
+                verdict, why = parse_verdict(reply.text) if completed else cut_off
                 if verdict is not None:
                     r.judged = self._settle(r, verdict)
                     return

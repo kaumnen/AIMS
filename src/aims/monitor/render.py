@@ -204,10 +204,9 @@ def strings(value: Any) -> Iterable[str]:
             yield from strings(item)
 
 
-def glossary(types: Iterable[str], texts: MonitorTexts | None = None) -> str:
+def glossary(types: Iterable[str], texts: MonitorTexts) -> str:
     """What each record type in `types` is, from the glossary of `texts`. A type it leaves out
     is not explained."""
-    texts = texts or MonitorTexts()
     lines = [texts["header_glossary"], texts["glossary_format"]]
     for name in sorted(set(types)):
         if name.startswith(SERVICE_PREFIX):
@@ -269,9 +268,9 @@ class _Step:
     denied: bool = False
     shown: dict[int, set[int]] | None = None
 
-    @property
-    def label(self) -> str:
-        return "preamble" if self.n == 0 else f"step {self.n}"
+    def label(self, texts: MonitorTexts) -> str:
+        """Where a record of this step was shown, with `{type}` for the record's type."""
+        return texts["sweep_label_preamble" if self.n == 0 else "sweep_label_step"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,10 +287,11 @@ class _Body:
 
 
 class _Out:
-    def __init__(self, key: bytes, upto: int, label: str) -> None:
+    def __init__(self, key: bytes, upto: int, label: str, n: int) -> None:
         self.key = key
         self.upto = upto
         self.label = label
+        self.n = n
         self.lines: list[str] = []
         self.frames: dict[str, int] = {}
         self.sources: dict[int, str] = {}
@@ -310,7 +310,7 @@ class _Out:
         self.lines.append(line)
         self.frames[f] = event.seq
         self.sources[event.seq] = "\n".join([line, *strings(fields)])
-        self.labels[event.seq] = f"{self.label} {kind}"
+        self.labels[event.seq] = self.label.format(n=self.n, type=kind)
         self.types.add(kind)
 
     def merge(self, other: _Out) -> None:
@@ -801,8 +801,8 @@ class Trajectory:
         self, index: int, parts: frozenset[str], upto: int, shown: dict[int, set[int]]
     ) -> _Body:
         step = self._steps[index]
-        out = _Out(self.key, upto, step.label)
         texts = self.texts
+        out = _Out(self.key, upto, step.label(texts), step.n)
         if step.head is None:
             out.line(texts["header_preamble"])
         else:
@@ -826,7 +826,7 @@ class Trajectory:
             await self._exec(out, ex, parts, shown, None)
         late = [e for e in step.late if e.seq <= upto]
         if late:
-            sub = _Out(self.key, upto, step.label)
+            sub = _Out(self.key, upto, step.label(texts), step.n)
             await self._digest(sub, late, shown.get(-1, set()), parts)
             if sub.lines:
                 out.line(texts["header_leftover"])
@@ -845,7 +845,7 @@ class Trajectory:
             return self._shorts[index]
         step = self._steps[index]
         assert step.head is not None
-        out = _Out(self.key, step.head.seq, step.label)
+        out = _Out(self.key, step.head.seq, step.label(self.texts), step.n)
         calls: list[dict[str, Any]] = []
         for c in step.calls:
             args = one_line(await self._text(c.event.data.get("arguments")))
@@ -878,7 +878,8 @@ class Trajectory:
                     text = await blob_text(self.store, self.run_id, sha, stated_size(value))
                 except BlobError, KeyError, OSError:
                     log.warning("trajectory of %s: blob %s does not read", self.agent_id, sha)
-                    return f"(blob {sha} of {value.get('size')} bytes could not be read)"
+                    unread = self.texts["sweep_blob_unread"]
+                    return unread.format(sha256=sha, size=value.get("size"))
                 self._blobs[sha] = text
             return self._blobs[sha]
         return str(value)

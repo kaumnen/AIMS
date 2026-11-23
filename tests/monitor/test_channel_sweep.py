@@ -216,7 +216,7 @@ async def test_blobs_held_at_their_ends_show_as_the_cut_of_their_whole_text(
     (call,) = [json.loads(x) for x in rendered.text.split("\n") if '"tool.call"' in x]
     assert call["arguments"] == cut(edit, ARGUMENT_BYTES)
     (item,) = f.log._items
-    short = await f.log._short(item, _Lines(KEY, "item 1"), f.log.seen)
+    short = await f.log._short(item, _Lines(KEY, "item {n} {type}", 1), f.log.seen, TEXTS)
     assert json.loads(short.lines[0])["text"] == cut(" ".join(message.split()), SHORT_BYTES)
 
 
@@ -436,7 +436,7 @@ async def test_a_channel_sweep_with_no_room_is_not_sent_and_not_failed(
 
 
 def test_the_evaluate_schema_names_the_run_agents() -> None:
-    schema: Any = evaluate_schema(["a", "b"]).json_schema
+    schema: Any = evaluate_schema(["a", "b"], TEXTS).json_schema
     hit = schema["properties"]["hits"]["items"]
     assert hit["properties"]["agents"]["items"]["enum"] == ["a", "b"]
     assert hit["required"] == list(hit["properties"])

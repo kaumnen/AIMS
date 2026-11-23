@@ -6,6 +6,7 @@ import pytest
 
 from aims.agent import OpenGate
 from aims.events import ExecStarted, LocalEventStore, RunStarted
+from aims.prompts import OMITTED
 from aims.sandbox import AuditedSandbox, DockerBackend, SandboxSpec
 from aims.scenario import SandboxConfig
 from aims.tools import ToolContext, load_tools
@@ -49,6 +50,7 @@ async def ctx(backend: DockerBackend, tmp_path: Path) -> AsyncIterator[ToolConte
                 step=1,
                 config=SandboxConfig(command_timeout_s=5, max_command_timeout_s=10),
                 gate=OpenGate(),
+                omitted=OMITTED,
             )
         finally:
             await sb.close()

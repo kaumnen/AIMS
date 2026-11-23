@@ -37,7 +37,7 @@ from aims.events import (
     ProcExec,
     RunStarted,
 )
-from aims.prompts import Prompts, TextError
+from aims.prompts import OMITTED, Prompts, TextError
 from aims.run.job import monitor_for
 from aims.run.runner import Bench, Options, Runner, Texts, resolve_texts
 from aims.sandbox import DockerBackend, SandboxBackend
@@ -218,6 +218,7 @@ def context(store: EventStore, run_id: str, agent: str) -> ToolContext:
         step=1,
         config=SandboxConfig(),
         gate=cast("Any", None),
+        omitted=OMITTED,
     )
 
 

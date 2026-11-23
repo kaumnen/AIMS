@@ -96,5 +96,6 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
     ),
     "header_item_change": ("ITEM {n}: change on {channel} by {writer}, {time}", _ITEM),
     "header_read_by": ("READ BY {reader}, {time}", frozenset({"reader", "time"})),
+    "channel_label_item": ("item {n} {type}", frozenset({"n", "type"})),
 }
 TEXTS |= ADDED

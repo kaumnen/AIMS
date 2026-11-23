@@ -120,7 +120,7 @@ class Bash(TextTool):
             ("stderr", "stderr_cut", result.stderr, result.stderr_tail, f.stderr_bytes),
         ):
             if total:
-                text, cut = cap_stream(head, tail, total, STREAM_LIMIT, ctx.omitted)
+                text, cut = cap_stream(head, tail, total, STREAM_LIMIT, marker=ctx.omitted)
                 text += "" if text.endswith("\n") else "\n"
                 if cut:
                     parts.append(self.say(cut_key, bytes=total, text=text))

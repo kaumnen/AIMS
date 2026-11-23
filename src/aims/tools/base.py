@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 from aims.events import Draft, EventStore, ExecPhase, Payload
 from aims.models import ToolSpec
-from aims.prompts import OMITTED, TextError, check_format
+from aims.prompts import TextError, check_format
 from aims.scenario import SandboxConfig
 
 if TYPE_CHECKING:
@@ -35,8 +35,8 @@ class ToolContext:
     step: int
     config: SandboxConfig
     gate: Gate
+    omitted: str
     phase: ExecPhase = "agent"
-    omitted: str = OMITTED
 
     async def emit(self, payload: Payload) -> None:
         await self.store.append(self.run_id, [Draft(payload, self.agent_id)])
@@ -138,13 +138,13 @@ def load_tools(
     return [known[n](texts.get(n)) for n in names]
 
 
-def cap(data: bytes, limit: int = OUTPUT_LIMIT, marker: str = OMITTED) -> tuple[str, bool]:
+def cap(data: bytes, limit: int = OUTPUT_LIMIT, *, marker: str) -> tuple[str, bool]:
     """`data` as text, cut to its first and last `limit / 2` bytes when longer than `limit`."""
-    return cap_stream(data, data[-(limit // 2) :], len(data), limit, marker)
+    return cap_stream(data, data[-(limit // 2) :], len(data), limit, marker=marker)
 
 
 def cap_stream(
-    head: bytes, tail: bytes, total: int, limit: int = OUTPUT_LIMIT, marker: str = OMITTED
+    head: bytes, tail: bytes, total: int, limit: int = OUTPUT_LIMIT, *, marker: str
 ) -> tuple[str, bool]:
     """A stream of `total` bytes as text, from its first bytes `head` and last bytes `tail`,
     cut to its first and last `limit / 2` bytes when longer than `limit`. `marker` stands in

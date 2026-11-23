@@ -112,9 +112,10 @@ class _Item:
 
 
 class _Lines:
-    def __init__(self, key: bytes, label: str) -> None:
+    def __init__(self, key: bytes, label: str, n: int) -> None:
         self.key = key
         self.label = label
+        self.n = n
         self.lines: list[str] = []
         self.frames: dict[str, int] = {}
         self.sources: dict[int, str] = {}
@@ -132,7 +133,7 @@ class _Lines:
         self.frames[f] = seq
         source = "\n".join([line, *strings(fields)])
         self.sources[seq] = f"{self.sources[seq]}\n{source}" if seq in self.sources else source
-        self.labels[seq] = f"{self.label} {kind}"
+        self.labels[seq] = self.label.format(n=self.n, type=kind)
         self.agents[seq] = agent
         self.types.add(kind)
 
@@ -291,7 +292,9 @@ class ChannelLog:
         ]
         fresh = [b for b, i in zip(blocks, items, strict=True) if i.last(upto) > after]
         old = [b for b, i in zip(blocks, items, strict=True) if i.last(upto) <= after]
-        shorts = {id(b): await self._short(i, b, upto) for b, i in zip(blocks, items, strict=True)}
+        shorts = {
+            id(b): await self._short(i, b, upto, texts) for b, i in zip(blocks, items, strict=True)
+        }
         collapsed: set[int] = set()
         dropped = 0
         size = tokens("\n".join(head)) + sum(b.tokens for b in blocks) + 64
@@ -312,7 +315,7 @@ class ChannelLog:
         lines = list(head)
         if dropped:
             lines.append(texts["header_items_dropped"].format(count=dropped))
-        out = _Lines(self.key, "")
+        out = _Lines(self.key, "", 0)
         for b in old:
             out.lines += shown(b).lines
             _merge(out, shown(b))
@@ -343,12 +346,12 @@ class ChannelLog:
     async def _block(
         self, n: int, item: _Item, upto: int, next_calls: int, texts: MonitorTexts
     ) -> _Lines:
-        out = _Lines(self.key, f"item {n}")
+        out = _Lines(self.key, texts["channel_label_item"], n)
         when = item.event.ts.strftime("%H:%M:%S")
         said = {"n": n, "channel": item.channel, "writer": item.writer, "time": when}
         if item.change is None:
             out.line(texts["header_item_message"].format(message=item.message, **said))
-            text = await self._text(item.event.data.get("text"))
+            text = await self._text(item.event.data.get("text"), texts)
             out.record(
                 item.seq,
                 "channel.message",
@@ -369,7 +372,7 @@ class ChannelLog:
                 fields["target"] = cut(str(c.get("target")), SHORT_BYTES * 2)
             content = c.get("content")
             if isinstance(content, dict) and c.get("change") != "removed":
-                fields["content"] = cut(await self._text(content), EXCERPT_BYTES)
+                fields["content"] = cut(await self._text(content, texts), EXCERPT_BYTES)
             out.record(item.seq, "channel.change", item.writer, fields)
         for read in item.reads:
             if read.event.seq > upto:
@@ -384,7 +387,7 @@ class ChannelLog:
                 fields = {"op": "read", "path": cut(str(d.get("path")), SHORT_BYTES * 2)}
             out.record(read.event.seq, read.event.type, read.reader, fields)
             for call in self._next(read, upto, next_calls):
-                parsed = arguments(await self._text(call.data.get("arguments")))
+                parsed = arguments(await self._text(call.data.get("arguments"), texts))
                 fields = {
                     "name": call.data.get("name"),
                     "arguments": _capped(parsed, ARGUMENT_BYTES),
@@ -392,12 +395,12 @@ class ChannelLog:
                 out.record(call.seq, "tool.call", read.reader, fields)
         return out
 
-    async def _short(self, item: _Item, block: _Lines, upto: int) -> _Lines:
-        out = _Lines(self.key, block.label)
+    async def _short(self, item: _Item, block: _Lines, upto: int, texts: MonitorTexts) -> _Lines:
+        out = _Lines(self.key, block.label, block.n)
         readers = [r.reader for r in item.reads if r.event.seq <= upto]
         fields: dict[str, Any] = {"channel": item.channel, "readers": readers}
         if item.change is None:
-            text = one_line(await self._text(item.event.data.get("text")))
+            text = one_line(await self._text(item.event.data.get("text"), texts))
             fields["text"] = cut(text, SHORT_BYTES)
         else:
             fields["path"] = cut(str(item.change.get("path")), SHORT_BYTES)
@@ -408,7 +411,7 @@ class ChannelLog:
         calls = self._calls.get(read.reader, [])
         return [c for c in calls if read.event.seq < c.seq <= upto][:count]
 
-    async def _text(self, value: Any) -> str:
+    async def _text(self, value: Any, texts: MonitorTexts) -> str:
         if value is None:
             return ""
         if isinstance(value, str):
@@ -422,7 +425,8 @@ class ChannelLog:
                     text = await blob_text(self.store, self.run_id, sha, stated_size(value))
                 except BlobError, KeyError, OSError:
                     log.warning("channel log: blob %s does not read", sha)
-                    return f"(blob {sha} of {value.get('size')} bytes could not be read)"
+                    unread = texts["sweep_blob_unread"]
+                    return unread.format(sha256=sha, size=value.get("size"))
                 self._blobs[sha] = text
             return self._blobs[sha]
         return str(value)
@@ -443,9 +447,8 @@ class _Evaluate(_Loose):
     suspicion: int
 
 
-def evaluate_schema(agents: Sequence[str], texts: MonitorTexts | None = None) -> OutputSchema:
+def evaluate_schema(agents: Sequence[str], texts: MonitorTexts) -> OutputSchema:
     """The evaluate call's schema, with the run's agents as the names a hit may give."""
-    texts = texts or MonitorTexts()
     hit = _object(
         {
             "quote": {"type": "integer", "description": texts["sweep_schema_quote_id"]},

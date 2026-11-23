@@ -151,11 +151,12 @@ async def payloads[T](store: LocalEventStore, run_id: str, kind: type[T]) -> lis
 
 
 def test_cap_keeps_head_and_tail() -> None:
-    assert cap(b"short") == ("short", False)
-    text, cut = cap(b"a" * 10 + b"b" * 10, limit=8)
+    marker = prompts.OMITTED
+    assert cap(b"short", marker=marker) == ("short", False)
+    text, cut = cap(b"a" * 10 + b"b" * 10, limit=8, marker=marker)
     assert cut
     assert text == "aaaa\n[... 12 bytes omitted ...]\nbbbb"
-    text, cut = cap_stream(b"x" * 100, b"y" * 50, 1000, limit=20)
+    text, cut = cap_stream(b"x" * 100, b"y" * 50, 1000, limit=20, marker=marker)
     assert text == "xxxxxxxxxx\n[... 980 bytes omitted ...]\nyyyyyyyyyy"
     assert cut
 

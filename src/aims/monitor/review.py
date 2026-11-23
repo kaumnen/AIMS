@@ -202,9 +202,10 @@ class Reviewer:
                 hold.settle()
         cost = reply.cost_usd or 0.0
         if reply.tool_calls:
-            text = self.texts["review_resample"].format(calls=_sampled(reply))
+            cut = self.texts["review_chars_cut"]
+            text = self.texts["review_resample"].format(calls=_sampled(reply, cut))
         elif reply.text.strip():
-            said = escape({"text": _cap(reply.text)})
+            said = escape({"text": _cap(reply.text, self.texts["review_chars_cut"])})
             text = self.texts["review_resample_text"].format(text=said)
         else:
             return Score(importance=1, suspicion=0, call_id=reply.call_id), cost, False
@@ -229,20 +230,22 @@ class Reviewer:
             record = {
                 "frame": frame(self.key, e.seq),
                 "tool": call.name,
-                "arguments": _cap(arguments),
+                "arguments": _cap(arguments, self.texts["review_chars_cut"]),
             }
             lines.append(escape(record))
         return "\n".join(lines)
 
 
-def _sampled(reply: Reply) -> str:
+def _sampled(reply: Reply, marker: str) -> str:
     return "\n".join(
-        escape({"tool": c.name, "arguments": _cap(c.arguments)}) for c in reply.tool_calls
+        escape({"tool": c.name, "arguments": _cap(c.arguments, marker)}) for c in reply.tool_calls
     )
 
 
-def _cap(text: str) -> str:
+def _cap(text: str, marker: str) -> str:
+    """`text` cut to its first and last ARGUMENTS_CAP / 2 characters. `marker` stands in for
+    the characters left out, its `{chars}` their count."""
     if len(text) <= ARGUMENTS_CAP:
         return text
     half = ARGUMENTS_CAP // 2
-    return f"{text[:half]}[{len(text) - ARGUMENTS_CAP} characters cut]{text[-half:]}"
+    return f"{text[:half]}{marker.format(chars=len(text) - ARGUMENTS_CAP)}{text[-half:]}"

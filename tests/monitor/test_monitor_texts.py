@@ -10,21 +10,23 @@ import re
 import string
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import JsonValue
-from scripted import Script, models, profile
-from test_judge import make_run, tool
+from scripted import Script, call, models, profile, say
+from test_channel_sweep import Feed
+from test_judge import make_run, tool, verdict
 from test_render import AGENT, FULL, Run
 
-from aims.events import LocalEventStore
+from aims.events import LocalEventStore, ToolCall
 from aims.models import ModelClient, ToolRequest, ToolSpec
 from aims.monitor import glossary_texts
 from aims.monitor.channels import evaluate_schema
-from aims.monitor.config import JudgeConfig, MonitorConfig
+from aims.monitor.config import JudgeConfig, MonitorConfig, ReviewConfig
 from aims.monitor.judge import Judge, Rollout, clip
 from aims.monitor.render import glossary
+from aims.monitor.review import ARGUMENTS_CAP, Reviewer
 from aims.monitor.setup import identity
 from aims.monitor.sweep import schemas, system
 from aims.monitor.texts import MonitorTexts, added, defaults, resolve
@@ -159,10 +161,45 @@ async def test_the_judge_s_cut_markers_come_from_its_texts(store: LocalEventStor
     )
     reader = judge_with(store, run.id, given).reader
     assert reader.clip("a" * 30, 9) == "aaaaaa<21 gone>aaa"
-    assert clip("a" * 30, 9) == "aaaaaa[21 chars cut]aaa"
+    assert clip("a" * 30, 9, texts()["judge_chars_cut"]) == "aaaaaa[21 chars cut]aaa"
     missing = {"sha256": "1" * 64, "size": 3}
     assert await reader.text(run.id, missing, 100) == f"<no {'1' * 64}>"
     assert reader.too_long == "<long>"
+
+
+async def test_the_judge_s_list_and_object_cuts_come_from_its_texts(
+    store: LocalEventStore,
+) -> None:
+    run = await make_run(store)
+    given = texts(judge_more_keys="<keys>", judge_more_items="<{n} items>")
+    reader = judge_with(store, run.id, given).reader
+    value = {"outer": {f"k{i}": i for i in range(10)}, "items": list(range(30))}
+    assert await reader.compact(run.id, value, 100, 5, keys=3) == {
+        "outer": {"k0": 0, "k1": 1, "k2": 2, "<keys>": 7},
+        "items": [0, 1, 2, 3, 4, "<25 items>"],
+    }
+
+
+async def test_a_cut_off_answer_is_refused_with_the_judge_s_text(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    script = Script(
+        call("events"),
+        say("partial") | {"finish": "length"},
+        say(json.dumps(verdict())),
+    )
+    p = profile()
+    client = ModelClient(store, run.id, models(p), transport=script.transport(), env={})
+    judge = Judge(
+        source=run.id,
+        config=JudgeConfig(max_tool_calls=1),
+        profile=p,
+        texts=texts(judge_invalid="refused: {problems}", judge_cut_off="<cut off>"),
+        client=client,
+        store=store,
+        budget_usd=5.0,
+    )
+    assert (await judge.run(flags=[], sweeps=[])).verdict is not None
+    assert script.requests[2]["messages"][-1]["content"] == "refused: <cut off>"
 
 
 async def test_the_judge_s_blob_cut_note_comes_from_its_texts(store: LocalEventStore) -> None:
@@ -215,6 +252,58 @@ async def test_the_render_headers_come_from_their_texts(store: LocalEventStore) 
     assert "RUN RECORDS OF AGENT" not in text
 
 
+MISSING = {"sha256": "1" * 64, "size": 3}
+
+
+async def test_the_render_labels_and_unread_note_come_from_their_texts(
+    store: LocalEventStore,
+) -> None:
+    run = await Run.open(store)
+    await run.preamble()
+    await run.step(1)
+    given = texts(
+        sweep_label_preamble="<pre {type}>",
+        sweep_label_step="<s{n} {type}>",
+        sweep_blob_unread="<unread {sha256} {size}>",
+    )
+    rendered = await run.trajectory.render(FULL, texts=given)
+    labels = set(rendered.labels.values())
+    assert {"<pre agent.started>", "<s1 tool.call>"} <= labels
+    assert all(label.startswith(("<pre ", "<s1 ")) for label in labels)
+    assert await run.trajectory._text(MISSING) == f"<unread {'1' * 64} 3>"
+
+
+async def test_the_channel_labels_and_unread_note_come_from_their_texts(
+    store: LocalEventStore,
+) -> None:
+    f = await Feed.open(store)
+    await f.post("a", 1, "run it")
+    await f.read("b", 0, 1)
+    await f.call("b", "sh it")
+    given = texts(channel_label_item="<i{n} {type}>", sweep_blob_unread="<unread {size}>")
+    rendered, _ = await f.log.render(given, max_tokens=60_000, next_calls=1)
+    labels = set(rendered.labels.values())
+    assert labels == {"<i1 channel.message>", "<i1 channel.read>", "<i1 tool.call>"}
+    assert await f.log._text(MISSING, given) == "<unread 3>"
+
+
+async def test_the_review_cut_comes_from_its_texts(store: LocalEventStore) -> None:
+    run = await Run.open(store)
+    [call_event] = await run.add(
+        ToolCall(call_id="c1", name="bash", arguments="x" * (ARGUMENTS_CAP + 10))
+    )
+    reviewer = Reviewer(
+        config=ReviewConfig(),
+        texts=texts(review_chars_cut="<{chars} gone>"),
+        client=cast("Any", None),
+        store=store,
+        source=run.run_id,
+        key=b"k" * 32,
+    )
+    record = json.loads(await reviewer._records([call_event]))
+    assert "<10 gone>" in record["arguments"]
+
+
 # The glossary
 
 
@@ -238,7 +327,7 @@ def test_a_glossary_stored_before_it_was_kept_restores_with_its_defaults() -> No
 
 
 def test_the_glossary_is_read_from_the_texts() -> None:
-    default = glossary({"proc.exec", "mem.exec", "tool.call"})
+    default = glossary({"proc.exec", "mem.exec", "tool.call"}, MonitorTexts())
     assert glossary({"proc.exec", "mem.exec", "tool.call"}, texts()) == default
     given = resolve(
         Prompts(
@@ -274,6 +363,8 @@ GUARDED = [
     "monitor/sweep.py",
     "monitor/channels.py",
     "monitor/render.py",
+    "monitor/review.py",
+    "monitor/core.py",
     "run/scoring.py",
 ]
 # A header: two or more words in capitals, such as "END OF RUN RECORDS".

@@ -19,7 +19,7 @@ from aims.agent.gate import OpenGate
 from aims.channels import Board, ChannelSetup
 from aims.channels.board import PostTool, ReadTool
 from aims.events import BlobRef, ExecEnd, ExecFinished, LocalEventStore, ToolResult
-from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError
+from aims.prompts import OMITTED, PLACEHOLDERS, AgentTexts, Prompts, TextError
 from aims.run.runner import resolve_texts, text_problems
 from aims.sandbox import AuditedSandbox, SandboxStoppedError
 from aims.sandbox.audit import ExecResult
@@ -74,7 +74,9 @@ async def store(tmp_path: Path) -> AsyncIterator[LocalEventStore]:
         yield store
 
 
-def context(store: LocalEventStore, answers: list[Answer | Exception], **kw: Any) -> ToolContext:
+def context(
+    store: LocalEventStore, answers: list[Answer | Exception], omitted: str = OMITTED
+) -> ToolContext:
     return ToolContext(
         sandbox=cast(AuditedSandbox, Stub(answers)),
         store=store,
@@ -84,7 +86,7 @@ def context(store: LocalEventStore, answers: list[Answer | Exception], **kw: Any
         step=1,
         config=CONFIG,
         gate=OpenGate(),
-        **kw,
+        omitted=omitted,
     )
 
 

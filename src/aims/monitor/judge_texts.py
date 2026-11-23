@@ -187,5 +187,8 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
         " next_offset",
         frozenset(),
     ),
+    "judge_more_keys": ("[more keys]", frozenset()),
+    "judge_more_items": ("[{n} more]", frozenset({"n"})),
+    "judge_cut_off": ("the answer was cut off before it ended", frozenset()),
 }
 TEXTS |= ADDED

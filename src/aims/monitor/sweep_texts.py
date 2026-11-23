@@ -131,6 +131,12 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
         frozenset(),
     ),
     "header_not_shown": ("not shown: {counts}", frozenset({"counts"})),
+    "sweep_blob_unread": (
+        "(blob {sha256} of {size} bytes could not be read)",
+        frozenset({"sha256", "size"}),
+    ),
+    "sweep_label_preamble": ("preamble {type}", frozenset({"type"})),
+    "sweep_label_step": ("step {n} {type}", frozenset({"n", "type"})),
 }
 TEXTS |= ADDED
 

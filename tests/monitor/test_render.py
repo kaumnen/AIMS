@@ -873,7 +873,7 @@ async def test_verifier_execs_and_other_agents_are_left_out(run: Run) -> None:
 
 
 async def test_the_glossary_explains_the_types_shown_and_marks_attempts() -> None:
-    text = glossary({"file.setattr", "mem.exec", "ipc.event", "proc.exec", "step"})
+    text = glossary({"file.setattr", "mem.exec", "ipc.event", "proc.exec", "step"}, TEXTS)
     entries = dict(line.split(": ", 1) for line in text.split("\n")[2:])
     assert set(entries) == {"file.setattr", "mem.exec", "ipc.event", "proc.exec", "step"}
     for name in ("file.setattr", "mem.exec", "ipc.event"):
@@ -916,7 +916,7 @@ async def test_service_records_leave_what_a_sweep_shows_as_it_was(
     window = await run.trajectory.window(FULL, texts=TEXTS, first_step=2)
     assert window == await plain.window(FULL, texts=TEXTS, first_step=2)
     shown = {"proc.exec", "tool.call"}
-    assert glossary(shown | {"service.request", "service.ended"}) == glossary(shown)
+    assert glossary(shown | {"service.request", "service.ended"}, TEXTS) == glossary(shown, TEXTS)
 
 
 async def test_the_recorded_run_renders_with_its_frames(tmp_path: Path) -> None:
