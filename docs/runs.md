@@ -22,6 +22,8 @@ A fork replays a step only when the run recorded a result for each of its tool c
 - With `@seq`, an agent that was in such a step at the cut makes it again live. So does an agent that `agent:N` does not name.
 - Without `--fork-at`, a run of one agent forks after the last step that replays. A run of several agents needs `--fork-at`.
 
+The agents of a fork replay their tool calls one at a time, in the order the run made them. An agent waiting for another agent's turn counts as waiting, like a scripted step waiting on its `on` event. The wall limits stand still while one agent is paused and the others are paused or waiting.
+
 ### Monitor and score again
 
 - `aims monitor <run>` feeds a sealed run through the monitor again, with any preset or model.

@@ -192,10 +192,10 @@ class PauseClock:
 class RunBudget:
     """The run's limits, charged by every agent of the run. The wall limit does not count the
     stretches in which a running agent is paused and every other is paused or waits on another
-    agent's event. A stretch that begins once the limit has ended does not stop it, so an agent
-    that joins or pauses late ends at once. A waiting agent's own wall limit stands still while
-    the run's does (`still_s`). `owed` holds what the failed attempts of each agent's call still
-    being tried may have cost, which the agent charges once the call ends."""
+    agent's event or turn. A stretch that begins once the limit has ended does not stop it, so
+    an agent that joins or pauses late ends at once. A waiting agent's own wall limit stands
+    still while the run's does (`still_s`). `owed` holds what the failed attempts of each
+    agent's call still being tried may have cost, which the agent charges once the call ends."""
 
     def __init__(self, limits: Limits) -> None:
         self.limits = limits
@@ -231,7 +231,8 @@ class RunBudget:
 
     @contextlib.contextmanager
     def waiting(self, agent_id: str) -> Generator[None]:
-        """Count running agent `agent_id` as waiting on another agent's event in the block."""
+        """Count running agent `agent_id` as waiting on another agent's event or turn in the
+        block."""
         self._waiting.add(agent_id)
         self._changed()
         try:
@@ -910,7 +911,9 @@ class Agent:
         assert self.replay is not None
         turnstile = self.replay.turnstile
         assert turnstile is not None
-        await turnstile.wait(turn)
+        # Counts as waiting on the others, as a scripted step waiting on its `on` event does.
+        with self.run_budget.waiting(self.id):
+            await turnstile.wait(turn)
         try:
             mark = await self._mark()
             outcome = await self._run_logged(call, replayed)

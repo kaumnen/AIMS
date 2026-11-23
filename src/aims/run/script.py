@@ -257,8 +257,9 @@ class ScriptedAgent:
     paused agent holds there with its sandbox frozen until it is resumed. Its own wall limit
     and the run's end it as they end that agent; of its budget only `wall_s` applies. Like the
     wall limits, a step's `after_s` does not count the time the agent is paused on `clock`.
-    While a step waits on its `on` event, the agent does not keep the run's wall limit going
-    when the others are paused, and its own limit stands still while the run's does."""
+    While a step waits on its `on` event, or in a fork for its turn, the agent does not keep
+    the run's wall limit going when the others are paused, and its own limit stands still
+    while the run's does."""
 
     def __init__(
         self,
@@ -410,7 +411,8 @@ class ScriptedAgent:
         seq = actions[n - 1] if n - 1 < len(actions) else None
         if turnstile is None or seq is None:
             return await self._take(n, step)
-        await turnstile.wait(seq)
+        with self.run_budget.waiting(self.id):
+            await turnstile.wait(seq)
         try:
             return await self._take(n, step)
         finally:

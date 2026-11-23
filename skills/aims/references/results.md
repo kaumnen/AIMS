@@ -119,6 +119,8 @@ aims run --replay <run> --fork-at agent:12 --samples 5
 
 `--fork-at` takes `agent:N` (after that agent's step N), `@seq` (after an event) or `N` (for a run with one agent). Use it to test what one message or one change does from the same point.
 
+In a fork of several agents, an agent waiting for another agent's replayed turn counts as waiting. The wall limits stand still while one agent is paused and the others are paused or waiting.
+
 ## The UI
 
 `aims ui` serves the app at http://localhost:8484 with a local runner and opens a sign-in link. Runs made by `aims run` on the same machine ship there. `aims push <runs folder>` ships runs recorded elsewhere. `aims open` prints a new sign-in link.

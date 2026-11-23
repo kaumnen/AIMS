@@ -40,9 +40,11 @@ from aims.models.types import NO_ROOM
 from aims.prompts import AgentTexts, Prompts
 from aims.run.control import ControlGate
 from aims.run.estimate import _agent_ceiling, step_usd
+from aims.run.script import ScriptedAgent, Watch
 from aims.sandbox import AuditedSandbox
 from aims.sandbox.audit import ExecResult
-from aims.scenario import AgentConfig, Budget, Compaction, Limits, SandboxConfig
+from aims.scenario import AgentConfig, Budget, Compaction, Limits, SandboxConfig, Scenario
+from aims.scenario.model import ScriptStep
 from aims.tools import cap, cap_stream, load_tools
 
 pytestmark = pytest.mark.anyio
@@ -1292,6 +1294,96 @@ async def test_a_wait_before_the_run_wall_ends_with_it_and_stands_still_with_it(
 
     with pytest.raises(TimeoutError):
         await RunBudget(Limits()).before_wall(times_out())
+
+
+async def at_the_turnstile(
+    store: LocalEventStore, kind: str, budget: RunBudget, gate: ControlGate, own_s: float | None
+) -> tuple[Agent | ScriptedAgent, Turnstile]:
+    """Agent a of a fork, model-driven or scripted, whose replayed step waits at the turnstile
+    for turn 10, another agent's."""
+    turnstile = Turnstile([10, 20])
+    own = Budget() if own_s is None else Budget(wall_s=own_s)
+    if kind == "model":
+        script = Script(call("bash", command="x"), call("submit", answer="done"))
+        agent, _ = await make_agent(
+            store, script, run_budget=budget, clock=gate.clock("a"), gate=gate, id="a", budget=own
+        )
+        agent.replay = ReplayPlan(
+            client=agent.client,
+            fork_at=1,
+            schedule=[(None, agent.profile)],
+            outputs={(1, "call_1"): RecordedOutput("x", False)},
+            turnstile=turnstile,
+            order={(1, "call_1"): 20},
+        )
+        return agent, turnstile
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    p = profile()
+    scripted = ScriptedAgent(
+        config=AgentConfig(id="a", budget=own),
+        steps=[ScriptStep(run="echo a"), ScriptStep(run="echo done")],
+        sandbox_config=SandboxConfig(),
+        instruction="do the task",
+        profile=p,
+        sandbox=cast(AuditedSandbox, FakeSandbox(echo)),
+        store=store,
+        run_id=run_id,
+        watch=Watch(store, run_id, cast(Scenario, None)),
+        run_budget=budget,
+        gate=gate,
+        clock=gate.clock("a"),
+        replay=ReplayPlan(
+            client=cast(ModelClient, None),
+            fork_at=1,
+            schedule=[(None, p)],
+            outputs={},
+            turnstile=turnstile,
+            actions=[20],
+        ),
+    )
+    return scripted, turnstile
+
+
+@pytest.mark.timing
+@pytest.mark.parametrize("scope", ["run", "agent"])
+@pytest.mark.parametrize("kind", ["model", "scripted"])
+async def test_a_wait_at_the_turnstile_on_a_paused_agent_holds_the_wall_limits(
+    store: LocalEventStore, kind: str, scope: str
+) -> None:
+    gate = ControlGate()
+    # The wall leaves room for the store writes before the wait, slow on a busy runner.
+    budget = RunBudget(Limits(wall_s=2.0) if scope == "run" else Limits())
+    agent, turnstile = await at_the_turnstile(
+        store, kind, budget, gate, 2.0 if scope == "agent" else None
+    )
+    budget.enter("b", gate.clock("b"), lambda: None)
+    gate.pause(["b"])
+    task = asyncio.create_task(agent.run())
+    async with asyncio.timeout(5):
+        while budget.still_since("a") is None and not task.done():  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(2.5)
+    assert not task.done()
+    gate.resume(["b"])
+    await turnstile.done(10)
+    budget.leave("b")
+    finished = await asyncio.wait_for(task, 5)
+
+    end = ("submitted", "done") if kind == "model" else ("no_submit", "the steps finished")
+    assert (finished.reason, finished.detail or finished.answer) == end
+
+
+@pytest.mark.parametrize("kind", ["model", "scripted"])
+async def test_a_wait_at_the_turnstile_on_a_running_agent_ends_at_the_run_wall(
+    store: LocalEventStore, kind: str
+) -> None:
+    gate = ControlGate()
+    budget = RunBudget(Limits(wall_s=0.5))
+    agent, _ = await at_the_turnstile(store, kind, budget, gate, None)
+    budget.enter("b", gate.clock("b"), lambda: None)
+    finished = await asyncio.wait_for(agent.run(), 5)
+
+    assert (finished.reason, finished.detail) == ("budget_wall", "run wall limit reached")
 
 
 async def test_notify_on_resume_reaches_the_agent(store: LocalEventStore) -> None:
