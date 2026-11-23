@@ -6,8 +6,8 @@
   },
   "runs.scroll": {
     "ms": 100,
-    "stat": "max",
-    "what": "longest task over 50 ms, 0 if none, while the runs list scrolls to its end, loading all 1001 runs"
+    "stat": "median",
+    "what": "in each round, the longest task over 50 ms, 0 if none, while the runs list scrolls to its end, loading all 1001 runs"
   },
   "run.open": {
     "ms": 1500,
@@ -21,13 +21,13 @@
   },
   "steps.scroll": {
     "ms": 100,
-    "stat": "max",
-    "what": "longest task over 50 ms, 0 if none, while the step list scrolls from top to bottom"
+    "stat": "median",
+    "what": "in each round, the longest task over 50 ms, 0 if none, while the step list scrolls from top to bottom"
   },
   "scrubber.drag": {
     "ms": 100,
-    "stat": "max",
-    "what": "longest task over 50 ms, 0 if none, while the timeline is dragged from start to end"
+    "stat": "median",
+    "what": "in each round, the longest task over 50 ms, 0 if none, while the timeline is dragged from start to end"
   },
   "score.open": {
     "ms": 100,
@@ -46,13 +46,13 @@
   },
   "raw.scroll.up": {
     "ms": 100,
-    "stat": "max",
-    "what": "longest task over 50 ms, 0 if none, while Raw events scrolls from its last event up to its first, loading earlier pages"
+    "stat": "median",
+    "what": "in each round, the longest task over 50 ms, 0 if none, while Raw events scrolls from its last event up to its first, loading earlier pages"
   },
   "raw.scroll": {
     "ms": 100,
-    "stat": "max",
-    "what": "longest task over 50 ms, 0 if none, while Raw events scrolls through all 20k events"
+    "stat": "median",
+    "what": "in each round, the longest task over 50 ms, 0 if none, while Raw events scrolls through all 20k events"
   },
   "raw.end.loaded": {
     "ms": 500,

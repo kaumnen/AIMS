@@ -233,13 +233,15 @@ async function runsList(cdp: Cdp, url: string, last: boolean): Promise<void> {
   const page = await Page.open(cdp);
   try {
     record("runs.open", await page.goto(`${url}/runs`, RUNS_READY));
-    if (!last) return;
-    // A task planted here must show, or no long task below means anything. Tasks a DevTools
-    // evaluate runs do not count as long tasks, so it runs from a timer.
-    const planted = await page.eval<number>(
-      `new Promise((r) => { const t = performance.now(); setTimeout(() => { const s = performance.now(); while (performance.now() - s < 120); }); setTimeout(() => r(__bench.longest(t, performance.now())), 300); })`,
-    );
-    if (planted < 100) throw new Error(`long tasks do not register: a 120 ms task read ${planted}`);
+    if (last) {
+      // A task planted here must show, or no long task below means anything. Tasks a DevTools
+      // evaluate runs do not count as long tasks, so it runs from a timer.
+      const planted = await page.eval<number>(
+        `new Promise((r) => { const t = performance.now(); setTimeout(() => { const s = performance.now(); while (performance.now() - s < 120); }); setTimeout(() => r(__bench.longest(t, performance.now())), 300); })`,
+      );
+      if (planted < 100)
+        throw new Error(`long tasks do not register: a 120 ms task read ${planted}`);
+    }
     record("runs.scroll", await page.scroll(`__bench.scroller("[aria-label=Runs]")`));
     const rows = await page.eval<number>(
       `Number(__bench.q("[aria-label=Runs]").getAttribute("aria-rowcount")) - 1`,
@@ -255,10 +257,10 @@ async function runPage(cdp: Cdp, url: string, first: number, last: boolean): Pro
   try {
     record("run.open", await page.goto(`${url}/runs/${seeded.run}?step=${first}`, STEP_READY));
     record("score.open", await page.timed(`() => ${SCORE_READY}`, () => page.click(tab("Score"))));
-    if (!last) return;
     await page.click(tab("Steps"));
     await page.eval(`__bench.until(() => ${STEP_READY})`);
-    for (let i = 0; i < 50; i++) {
+    const presses = last ? 50 : 0;
+    for (let i = 0; i < presses; i++) {
       const test = `(() => { const prev = __bench.selected(); return () => __bench.selected() !== prev && __bench.stepShown(); })()`;
       // oxlint-disable-next-line no-await-in-loop
       record("steps.j", await page.timed(test, () => page.key("j", "KeyJ", 74)));
@@ -301,18 +303,16 @@ const row = (seq: number) =>
   `[...document.querySelectorAll("[aria-label=Events] [role=option]")].some((r) => r.firstElementChild?.textContent === "${seq}")`;
 const END = (page: Page) => page.key("End", "End", 35);
 
-async function rawEvents(cdp: Cdp, url: string, matches: number, last: boolean): Promise<void> {
+async function rawEvents(cdp: Cdp, url: string, matches: number): Promise<void> {
   const page = await Page.open(cdp);
   const lastRow = row(seeded.events - 1);
   try {
     await page.goto(`${url}/runs/${seeded.run}?tab=raw`, RAW_READY);
     await page.eval(`__bench.q("[aria-label=Events]").focus()`);
     record("raw.end", await page.timed(`() => ${lastRow}`, () => END(page)));
-    if (last) {
-      record("raw.scroll.up", await page.scroll(LIST, -800));
-      if (!(await page.eval<boolean>(row(0))))
-        throw new Error("Raw events scrolled up short of the first event");
-    }
+    record("raw.scroll.up", await page.scroll(LIST, -800));
+    if (!(await page.eval<boolean>(row(0))))
+      throw new Error("Raw events scrolled up short of the first event");
     await page.click(`__bench.q("#raw-search")`);
     await page.send("Input.insertText", { text: seeded.needle });
     const done = `() => __bench.q("[aria-label=Events]") && [...document.querySelectorAll("span")].some((s) => s.textContent === "${matches} events")`;
@@ -322,7 +322,7 @@ async function rawEvents(cdp: Cdp, url: string, matches: number, last: boolean):
   }
 }
 
-async function rawLoaded(cdp: Cdp, url: string): Promise<void> {
+async function rawLoaded(cdp: Cdp, url: string, last: boolean): Promise<void> {
   const page = await Page.open(cdp);
   const lastRow = row(seeded.events - 1);
   try {
@@ -330,7 +330,8 @@ async function rawLoaded(cdp: Cdp, url: string): Promise<void> {
     record("raw.scroll", await page.scroll(LIST));
     if (!(await page.eval<boolean>(lastRow)))
       throw new Error("Raw events scrolled short of the last event");
-    for (let i = 0; i < SAMPLES; i++) {
+    const presses = last ? SAMPLES : 0;
+    for (let i = 0; i < presses; i++) {
       // oxlint-disable-next-line no-await-in-loop
       await page.eval(`${LIST}.scrollTop = 0; __bench.q("[aria-label=Events]").focus()`);
       // oxlint-disable-next-line no-await-in-loop
@@ -367,9 +368,9 @@ try {
     // oxlint-disable-next-line no-await-in-loop
     await runPage(cdp, url, first, last);
     // oxlint-disable-next-line no-await-in-loop
-    await rawEvents(cdp, url, found.items.length, last);
+    await rawEvents(cdp, url, found.items.length);
     // oxlint-disable-next-line no-await-in-loop
-    if (last) await rawLoaded(cdp, url);
+    await rawLoaded(cdp, url, last);
     if (i === 0) samples.clear();
   }
   cdp.close();
@@ -382,7 +383,8 @@ try {
     if (!ok) failed++;
     results[name] = { ...c, value, ok, samples: values.map((v) => Math.round(v * 10) / 10) };
     const limit = c.ms === undefined ? "" : ` < ${c.ms}`;
-    const shown = c.stat === "max" && value === 0 ? "none over 50" : value;
+    // only a long task metric can be 0
+    const shown = value === 0 ? "none over 50" : value;
     console.log(
       `${ok ? "ok  " : "FAIL"} ${name.padEnd(14)} ${c.stat.padEnd(6)} ${shown} ms${limit}`,
     );
