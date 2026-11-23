@@ -1800,7 +1800,9 @@ def unchecked_text(model: type[BaseModel], seen: set[type]) -> set[str]:
         if typing.get_origin(tp) is Literal:
             return False
         if isinstance(tp, type) and issubclass(tp, BaseModel):
-            out.update(unchecked_text(tp, seen))
+            # NoLoneSurrogate on a list of models walks the JSON of each one
+            if not checked:
+                out.update(unchecked_text(tp, seen))
             return False
         return any(bare(arg, checked) for arg in typing.get_args(tp))
 
@@ -1826,6 +1828,79 @@ async def test_every_text_field_of_an_api_body_refuses_a_lone_surrogate(tmp_path
     unchecked = set().union(*(unchecked_text(b, seen) for b in bodies))
     # agent names, which the name check refuses with its own error
     assert unchecked == {"BudgetOverride.agents"}
+
+
+async def test_every_text_field_of_a_runner_body_refuses_a_lone_surrogate(tmp_path: Path) -> None:
+    app, _ = await _openapi(tmp_path)
+    bodies: set[type[BaseModel]] = set()
+    for route in iter_route_contexts(app.routes):
+        if route.endpoint is None or not (route.path_format or "").startswith("/runner/"):
+            continue
+        hints = typing.get_type_hints(inspect.unwrap(route.endpoint), include_extras=True)
+        hints.pop("return", None)
+        bodies |= {t for t in hints.values() if isinstance(t, type) and issubclass(t, BaseModel)}
+    assert {"RunnerHello", "RunnerStatus", "Ack", "Release", "Heads", "Labels", "Deltas"} <= {
+        b.__name__ for b in bodies
+    }
+    seen: set[type] = set()
+    assert set().union(*(unchecked_text(b, seen) for b in bodies)) == set()
+
+
+def _hello(**over: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "name": "r",
+        "version": __version__,
+        "arch": "arm64",
+        "tracer": {"alive": True},
+    }
+    return body | over
+
+
+LABEL = {"run_id": RUN, "flag": 1, "label": "real", "by": "op", "at": "2026-11-23T00:00:00Z"}
+DELTA = {"run_id": RUN, "agent_id": "a", "call_id": "c", "attempt": 1, "kind": "text"}
+# a lone surrogate in each text field of a runner body, with the field the refusal names
+RUNNER_TEXT: list[tuple[str, dict[str, Any], list[str | int]]] = [
+    ("/hello", _hello(arch=LONE_TEXT), ["arch"]),
+    ("/hello", _hello(tracer={"alive": False, "detail": LONE_TEXT}), ["tracer", "detail"]),
+    ("/hello", _hello(keys=[LONE_TEXT]), ["keys", 0]),
+    ("/hello", _hello(jobs=[LONE_TEXT]), ["jobs", 0]),
+    ("/hello", _hello(version=LONE_TEXT), ["version"]),
+    ("/hello", _hello(name=LONE_TEXT), ["name"]),
+    ("/status", {"tracer": {"alive": False, "detail": LONE_TEXT}, "free": 2}, ["tracer", "detail"]),
+    ("/status", {"tracer": {"alive": True}, "free": 2, "running": [LONE_TEXT]}, ["running", 0]),
+    ("/status", {"tracer": {"alive": True}, "free": 2, "jobs": [LONE_TEXT]}, ["jobs", 0]),
+    ("/commands/c1/ack", {"ok": True, "outcome": LONE_TEXT}, ["outcome"]),
+    (f"/jobs/{RUN}/release", {"reason": LONE_TEXT}, ["reason"]),
+    ("/heads", {"run_ids": [LONE_TEXT]}, ["run_ids", 0]),
+    (f"/runs/{RUN}/blobs/missing", {"shas": [LONE_TEXT]}, ["shas", 0]),
+    (f"/runs/{RUN}/labels", {"labels": [LABEL | {"note": LONE_TEXT}]}, ["labels"]),
+    (f"/runs/{RUN}/labels", {"labels": [LABEL | {"by": LONE_TEXT}]}, ["labels"]),
+    ("/deltas", {"deltas": [DELTA | {"text": LONE_TEXT}]}, ["deltas", 0, "text"]),
+    ("/deltas", {"deltas": [DELTA | {"run_id": LONE_TEXT}]}, ["deltas", 0, "run_id"]),
+    ("/deltas", {"deltas": [DELTA | {"agent_id": LONE_TEXT}]}, ["deltas", 0, "agent_id"]),
+    ("/deltas", {"deltas": [DELTA | {"call_id": LONE_TEXT}]}, ["deltas", 0, "call_id"]),
+]
+
+
+async def test_runner_text_with_a_lone_surrogate_is_refused_and_the_runners_page_stays_up(
+    cp: CP,
+) -> None:
+    headers = {"X-Aims-Runner": "r", "Content-Type": "application/json"}
+    async with cp.client(cp.runner) as c, cp.client(cp.viewer) as v:
+        # the status, ack and other routes check the runner said hello after its body
+        assert (await c.post("/runner/v1/hello", json=_hello(), headers=headers)).status_code == 200
+        for path, body, loc in RUNNER_TEXT:
+            # json.dumps writes each lone surrogate as its escape, as a client may
+            r = await c.post(f"/runner/v1{path}", content=json.dumps(body), headers=headers)
+            assert r.status_code == 422, (path, loc, r.text)
+            [error] = r.json()["errors"]
+            assert (error["loc"], error["msg"]) == (["body", *loc], f"Value error, {LONE}")
+            assert (await v.get("/api/runners")).status_code == 200, (path, loc)
+        # a valid pair is one character, kept as it is
+        pair = _hello(tracer={"alive": False, "detail": "smile \U0001f600"})
+        assert (await c.post("/runner/v1/hello", json=pair, headers=headers)).status_code == 200
+        [runner] = (await v.get("/api/runners")).json()
+        assert runner["tracer"]["detail"] == "smile \U0001f600"
 
 
 async def test_a_problem_that_repeats_a_lone_surrogate_is_sent_as_its_escape(

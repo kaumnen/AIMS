@@ -9,6 +9,7 @@ from aims.models import Profile
 from aims.models.keys import reported
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.job import Job, JobOptions
+from aims.text import NoLoneSurrogate, Utf8
 
 RUNNER_API = 2
 HEARTBEAT_S = 10.0
@@ -35,7 +36,7 @@ class Head(_Wire):
 
 class TracerHealth(_Wire):
     alive: bool
-    detail: str | None = None
+    detail: Utf8 | None = None
     restarts: int = 0
 
 
@@ -49,14 +50,14 @@ class RunnerHello(_Wire):
     entries of its AIMS_KEYS whose variables it has set: names and URLs, never values. It is
     offered only jobs whose profiles they allow."""
 
-    name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._@-]+$")
-    version: str
+    name: Utf8 = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._@-]+$")
+    version: Utf8
     api: int = RUNNER_API
-    arch: str
+    arch: Utf8
     tracer: TracerHealth
-    keys: list[str] = Field(default_factory=list)
+    keys: list[Utf8] = Field(default_factory=list)
     slots: int = Field(default=2, ge=0)
-    jobs: list[str] = Field(default_factory=list)
+    jobs: list[Utf8] = Field(default_factory=list)
     kinds: list[JobKindName] = Field(default_factory=lambda: list(BASE_KINDS))
 
     @field_validator("keys")
@@ -75,8 +76,8 @@ class HelloReply(_Wire):
 class RunnerStatus(_Wire):
     tracer: TracerHealth
     free: int = Field(ge=0)
-    running: list[str] = Field(default_factory=list)
-    jobs: list[str] = Field(default_factory=list)
+    running: list[Utf8] = Field(default_factory=list)
+    jobs: list[Utf8] = Field(default_factory=list)
 
 
 class CommandAction(_Wire):
@@ -116,7 +117,7 @@ class Ack(_Wire):
     part, with `outcome` saying what did not take effect. A refusal says why in `outcome`."""
 
     ok: bool
-    outcome: str
+    outcome: Utf8
     in_part: bool = False
 
 
@@ -204,15 +205,15 @@ class Claimed(_Wire):
 
 
 class Release(_Wire):
-    reason: str
+    reason: Utf8
 
 
 class Shas(_Wire):
-    shas: list[str] = Field(max_length=10_000)
+    shas: list[Utf8] = Field(max_length=10_000)
 
 
 class Heads(_Wire):
-    run_ids: list[str] = Field(max_length=10_000)
+    run_ids: list[Utf8] = Field(max_length=10_000)
 
 
 class HeadsReply(_Wire):
@@ -220,16 +221,16 @@ class HeadsReply(_Wire):
 
 
 class Labels(_Wire):
-    labels: list[Label] = Field(max_length=10_000)
+    labels: Annotated[list[Label], NoLoneSurrogate] = Field(max_length=10_000)
 
 
 class WireDelta(_Wire):
-    run_id: str
-    agent_id: str | None
-    call_id: str
+    run_id: Utf8
+    agent_id: Utf8 | None
+    call_id: Utf8
     attempt: int
     kind: Literal["start", "text", "reasoning", "tool_call", "tool_args", "end"]
-    text: str = ""
+    text: Utf8 = ""
     index: int | None = None
     ms: int = 0
 
