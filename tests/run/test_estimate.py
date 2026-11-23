@@ -22,6 +22,8 @@ from aims.events import (
     AgentStep,
     CostSource,
     Draft,
+    Event,
+    IndexChanged,
     LocalEventStore,
     ModelParams,
     ModelRequest,
@@ -1158,6 +1160,28 @@ def watcher(settings: Settings, bundle: Bundle, **kw: Any) -> ResolvedMonitor:
     return offline_monitor(
         settings.models, settings.prompts, bundle.scenario, agents, layers=settings.monitor, **kw
     )
+
+
+@pytest.mark.anyio
+async def test_a_past_review_the_index_changed_under_is_left_out_of_the_price(
+    tmp_path: Path, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, path = write(tmp_path, preset="standard")
+    bundle = load_scenario(path)
+    m = watcher(settings, bundle, preset="standard")
+    origin = await stepped(store, "s", 10)
+    await reviewed(store, await stepped(store, "t", 5), m, 1.0)
+    gone = await reviewed(store, await stepped(store, "t", 5), m, 3.0)
+    every = store.every
+
+    async def changing(run_id: str, **kw: Any) -> list[Event]:
+        if run_id == gone:
+            raise IndexChanged(f"run {run_id}: the index changed while it was read")
+        return await every(run_id, **kw)
+
+    monkeypatch.setattr(store, "every", changing)
+    e = await estimate_review(store, origin, m, "full")
+    assert (e.runs, e.typical_usd) == (1, pytest.approx(2.0))
 
 
 @pytest.mark.anyio

@@ -17,6 +17,7 @@ from aims.events import (
     Category,
     CategoryFinding,
     Event,
+    IndexChanged,
     KernelPayload,
     LocalEventStore,
     LogTruncated,
@@ -832,7 +833,12 @@ async def _sources(
             )
         )
     for r in reviews:
-        verdict = _last(await store.every(r.run_id, types=(MonitorVerdict.type,)), MonitorVerdict)
+        try:
+            verdicts = await store.every(r.run_id, types=(MonitorVerdict.type,))
+        except IndexChanged:
+            # a review deleted or indexed again while it was read is left out
+            continue
+        verdict = _last(verdicts, MonitorVerdict)
         out.append(
             Source(
                 run_id=r.run_id,

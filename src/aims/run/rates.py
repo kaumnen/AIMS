@@ -22,7 +22,15 @@ from typing import NamedTuple, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from aims.events import Category, LocalEventStore, ScoreLayer, ScoreMatch, ScoreUnit, UnitRow
+from aims.events import (
+    Category,
+    IndexChanged,
+    LocalEventStore,
+    ScoreLayer,
+    ScoreMatch,
+    ScoreUnit,
+    UnitRow,
+)
 
 LAYERS: tuple[ScoreLayer, ...] = get_args(ScoreLayer)
 LEVELS = (3, 4, 5)
@@ -489,7 +497,8 @@ def _caught(g: Group) -> list[str]:
 
 async def gather(store: LocalEventStore, origins: Sequence[str] | None) -> Rates:
     """The rates over the newest score runs of `origins` (every scored run when None) per
-    monitor, with the flags no plant explains counted by their latest label."""
+    monitor, with the flags no plant explains counted by their latest label. A score run the
+    index changed under while it was read, as when it is deleted meanwhile, is left out."""
     found = await store.score_units(origins)
     scenarios: dict[str, str] = {}
     for origin in sorted({r.origin for r in found}):
@@ -505,17 +514,23 @@ async def gather(store: LocalEventStore, origins: Sequence[str] | None) -> Rates
         watches[r.run_id] = held[source]
     rows = newest(found, watches)
     unexplained: dict[Key, LabelCounts] = defaultdict(lambda: defaultdict(int))
+    changed: set[str] = set()
     for run_id in sorted({r.run_id for r in rows}):
         mine = [r for r in rows if r.run_id == run_id]
         row = mine[0]
         labels = await store.labels(row.monitor or row.origin)
-        events = await store.every(run_id, types=["score.unexplained"])
+        try:
+            events = await store.every(run_id, types=["score.unexplained"])
+        except IndexChanged:
+            changed.add(run_id)
+            continue
         for e in events:
             flag = e.data.get("flag")
             latest = labels.get(flag) if isinstance(flag, int) else None
             name = latest.label if latest is not None else e.data.get("label") or "unlabelled"
             owner = next((r for r in mine if r.agent == e.agent_id), row)
             unexplained[key(owner, scenarios, watches)][str(name)] += 1
+    rows = [r for r in rows if r.run_id not in changed]
     return build(rows, {k: dict(v) for k, v in unexplained.items()}, scenarios, watches)
 
 

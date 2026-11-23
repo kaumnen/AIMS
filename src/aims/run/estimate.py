@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 from aims.config import CONFIRM_ABOVE_USD, Settings
-from aims.events import LocalEventStore, RunInfo
+from aims.events import IndexChanged, LocalEventStore, RunInfo
 from aims.events.store import TRUTH
 from aims.models import Profile, ProfileError
 from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, laid, priced
@@ -1646,7 +1646,11 @@ async def estimate_review(
                     continue
                 if await _past_key(store, p.run_id) != key:
                     continue
-                swept, covered, capped = await _swept(store, p.run_id)
+                try:
+                    swept, covered, capped = await _swept(store, p.run_id)
+                except IndexChanged:
+                    # deleted or indexed again while it was read
+                    continue
                 full = p.cost_usd
                 if covered and swept:
                     per_step.append(swept / covered)

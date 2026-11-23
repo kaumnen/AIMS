@@ -27,7 +27,9 @@ from aims.events import (
     BlobRef,
     CategoryFinding,
     Draft,
+    Event,
     FlagReview,
+    IndexChanged,
     JudgeRollout,
     LocalEventStore,
     ModelParams,
@@ -238,6 +240,25 @@ async def test_the_newest_finished_review_is_the_default_source(store: LocalEven
         await build(store, run_id, source="nope", now=AT)
     with pytest.raises(ReportError):
         await build(store, "missing", now=AT)
+
+
+async def test_a_review_the_index_changed_under_is_left_out_of_the_sources(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await monitored(store)
+    done = await review(store, run_id)
+    gone = await review(store, run_id, status=None)
+    every = store.every
+
+    async def changing(rid: str, **kw: Any) -> list[Event]:
+        if rid == gone:
+            raise IndexChanged(f"run {rid}: the index changed while it was read")
+        return await every(rid, **kw)
+
+    monkeypatch.setattr(store, "every", changing)
+    report = await build(store, run_id, now=AT)
+    assert report.header.pins.source == done
+    assert {s.run_id for s in report.sources} == {"live", done}
 
 
 async def test_a_run_without_a_judge_still_builds(store: LocalEventStore) -> None:

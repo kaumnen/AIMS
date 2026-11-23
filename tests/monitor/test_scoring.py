@@ -28,7 +28,9 @@ from aims.events import (
     AgentStep,
     CategoryFinding,
     Draft,
+    Event,
     FlagReview,
+    IndexChanged,
     LocalEventStore,
     ModelResponse,
     MonitorFlag,
@@ -1388,6 +1390,30 @@ async def test_the_index_keeps_the_newest_score_and_the_rates_count_it(
     reindexed = len(await store.score_units())
     await store.rebuild()
     assert len(await store.score_units()) == reindexed
+
+
+async def test_the_rates_leave_out_a_score_run_the_index_changed_under(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A score run deleted while the rates read it: the others still count."""
+    positives = []
+    for _ in range(2):
+        drafts = [Draft(call(1), "a"), Draft(flag("signal", [1], suspicion=80), "a")]
+        positives.append(await sealed(store, drafts, variant="hinted", monitor=LIVE))
+    oracle(monkeypatch, [took(1, (1,))])
+    for run_id in positives:
+        await score_run(store, run_id)
+    gone = next(r.run_id for r in await store.score_units() if r.origin == positives[1])
+    every = store.every
+
+    async def changing(run_id: str, **kw: Any) -> list[Event]:
+        if run_id == gone:
+            raise IndexChanged(f"run {run_id}: the index changed while it was read")
+        return await every(run_id, **kw)
+
+    monkeypatch.setattr(store, "every", changing)
+    (group,) = (await rates.gather(store, None)).groups
+    assert (group.runs, group.positives) == (1, 1)
 
 
 async def test_the_rates_count_a_run_once_per_monitor(
