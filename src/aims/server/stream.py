@@ -16,7 +16,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from aims.aio import stopped
 from aims.events import RunCorrupt
 from aims.events.index import BIND_MAX
-from aims.models import Delta
+from aims.models import Delta, Subscription
 from aims.server.api import Cursor, State, Viewer, _kind, _visible, hidden, summaries, unseen
 from aims.server.problems import ProblemException, responses
 from aims.server.state import ServerState
@@ -114,6 +114,21 @@ async def _asked(
         await _visible(state, principal, run_id)
 
 
+async def _held(state: State, deltas: Runs = None) -> AsyncIterator[Subscription | None]:
+    """Count the stream and hold its subscription to deltas from before its response starts
+    to after it ends. This runs as a dependency: its exit runs once the response has ended,
+    however it ended. FastAPI does not close an endpoint's generator when the response ends
+    during a send, so cleanup there would wait for the GC."""
+    sub = state.bus.subscribe() if deltas else None
+    state.streams += 1
+    try:
+        yield sub
+    finally:
+        state.streams -= 1
+        if sub is not None:
+            sub.close()
+
+
 async def _hides(state: ServerState, unsure: set[str], skip: Sequence[str]) -> bool:
     """Whether a run of `unsure` turned out to be of a kind `unseen` keeps from a principal who
     does not see `skip`. Each run whose kind is known now leaves `unsure`."""
@@ -157,6 +172,7 @@ async def stream(
     principal: Viewer,
     state: State,
     _: Annotated[None, Depends(_asked)],
+    sub: Annotated[Subscription | None, Depends(_held)],
     runs: bool = False,
     run: Runs = None,
     after: Annotated[list[Cursor] | None, Query()] = None,
@@ -188,7 +204,6 @@ async def stream(
     # runs subscribed to before their kind was known, as while the index is rebuilt: nothing
     # of theirs goes out until it is
     unsure = {*cursors, *wanted} if skip else set()
-    sub = state.bus.subscribe() if wanted else None
     ended: set[str] = set()
     runners_seen: dict[str, dict[str, object]] = {}
     dropped = 0
@@ -201,119 +216,111 @@ async def stream(
 
     revoked = state.auth.revoked
     checked = time.monotonic()
-    state.streams += 1
-    try:
-        yield ServerSentEvent(comment="connected", retry=2000)
-        if await _hides(state, unsure, skip):
-            return
-        if wanted:
-            early = state.inflight.of(wanted - unsure)
-            for i in range(0, len(early), DELTA_BATCH):
-                yield message(DeltaMessage(deltas=early[i : i + DELTA_BATCH]))
-        if runs:
-            for info in sorted((c.info() for c in state.runners.values()), key=lambda i: i.name):
-                runners_seen[info.name] = info.model_dump(exclude={"seen_s"})
-                yield message(RunnerHealthMessage(runner=info), with_id=True)
-        while not state.stopping.is_set():
-            if revoked.is_set() or time.monotonic() - checked > RECHECK_S:
-                revoked, checked = state.auth.revoked, time.monotonic()
-                if not await state.auth.still(request, principal):
-                    return
-            if await _hides(state, unsure, skip):
-                # `_asked` refuses this subscribe now: the reconnect gets its 403
+    yield ServerSentEvent(comment="connected", retry=2000)
+    if await _hides(state, unsure, skip):
+        return
+    if wanted:
+        early = state.inflight.of(wanted - unsure)
+        for i in range(0, len(early), DELTA_BATCH):
+            yield message(DeltaMessage(deltas=early[i : i + DELTA_BATCH]))
+    if runs:
+        for info in sorted((c.info() for c in state.runners.values()), key=lambda i: i.name):
+            runners_seen[info.name] = info.model_dump(exclude={"seen_s"})
+            yield message(RunnerHealthMessage(runner=info), with_id=True)
+    while not state.stopping.is_set():
+        if revoked.is_set() or time.monotonic() - checked > RECHECK_S:
+            revoked, checked = state.auth.revoked, time.monotonic()
+            if not await state.auth.still(request, principal):
                 return
-            live = wanted - unsure
-            store_changed = state.store.changed()
-            runs_changed = state.changes.event()
-            runners_changed = state.runners_changed
-            more = False
-            for run_id in list(cursors):
-                if run_id in ended or run_id in unsure:
-                    continue
-                try:
-                    head = await state.store.head(run_id)
-                except RunCorrupt, KeyError:
-                    head = None
-                if head is None:
-                    continue
-                cursor = cursors[run_id]
-                if head.seq > cursor:
-                    events = await state.store.events(
-                        run_id, after=cursor, before=head.seq + 1, limit=BATCH, types=types or ()
-                    )
-                    full = len(events) == BATCH
-                    cursors[run_id] = events[-1].seq if full else head.seq
-                    more |= full
-                    if events:
-                        yield message(EventsMessage(run_id=run_id, events=events), with_id=True)
-                if head.finished and cursors[run_id] >= head.seq:
-                    ended.add(run_id)
-                    yield message(EndMessage(run_id=run_id), with_id=True)
-            if version is not None:
-                version, changed = state.changes.since(version)
-                ids = set(changed) if changed is not None else None
-                if runs or ids:
-                    if ids is None:
-                        # as the first page of the run list: with the jobs not started yet
-                        listed = await state.store.runs(limit=MAX_RUNS, skip_kinds=skip)
-                        jobs = await state.db.jobs_page(
-                            before=None, limit=MAX_RUNS, skip_kinds=skip
-                        )
-                        newest = {i.run_id for i in listed} | {j.run_id for j in jobs}
-                        pick = sorted(newest, reverse=True)[:MAX_RUNS] + list(cursors)
-                        # and the runs deleted lately, which a list held from before may show
-                        lately = list(state.gone)[-MAX_RUNS:]
-                        pick += [gone for gone in lately if gone not in newest]
-                    else:
-                        pick = sorted(ids if runs else ids & set(cursors))
-                    found = await summaries(state, pick, skip)
-                    for summary in found:
-                        yield message(RunMessage(run=summary), with_id=True)
-                    shown = {s.run_id for s in found}
-                    for run_id in pick:
-                        kind = state.gone.get(run_id)
-                        if run_id not in shown and kind is not None and not unseen(kind, skip):
-                            yield message(RunDeletedMessage(run_id=run_id), with_id=True)
-            if runs:
-                for conn in sorted(state.runners.values(), key=lambda c: c.name):
-                    info = conn.info()
-                    key = info.model_dump(exclude={"seen_s"})
-                    if runners_seen.get(info.name) != key:
-                        runners_seen[info.name] = key
-                        yield message(RunnerHealthMessage(runner=info), with_id=True)
-            if sub is not None:
-                while len(pending) < DELTA_BATCH:
-                    try:
-                        d = sub.queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if d.run_id in live:
-                        pending.append(d)
-                batch = [_delta(d) for d in pending if d.run_id in live]
-                pending.clear()
-                if batch:
-                    yield message(DeltaMessage(deltas=batch))
-                if sub.dropped > dropped:
-                    yield message(DeltasDroppedMessage(count=sub.dropped - dropped))
-                    dropped = sub.dropped
-            if more:
+        if await _hides(state, unsure, skip):
+            # `_asked` refuses this subscribe now: the reconnect gets its 403
+            return
+        live = wanted - unsure
+        store_changed = state.store.changed()
+        runs_changed = state.changes.event()
+        runners_changed = state.runners_changed
+        more = False
+        for run_id in list(cursors):
+            if run_id in ended or run_id in unsure:
                 continue
-            waits: list[Coroutine[Any, Any, Any]] = [
-                store_changed.wait(),
-                runners_changed.wait(),
-                state.stopping.wait(),
-                revoked.wait(),
-            ]
-            if version is not None:
-                waits.append(runs_changed.wait())
-            if sub is not None:
-                waits.append(_peek(sub.queue, pending))
-            await _first(waits, WAKE_S)
-            await asyncio.sleep(COALESCE_S)
-    finally:
-        state.streams -= 1
+            try:
+                head = await state.store.head(run_id)
+            except RunCorrupt, KeyError:
+                head = None
+            if head is None:
+                continue
+            cursor = cursors[run_id]
+            if head.seq > cursor:
+                events = await state.store.events(
+                    run_id, after=cursor, before=head.seq + 1, limit=BATCH, types=types or ()
+                )
+                full = len(events) == BATCH
+                cursors[run_id] = events[-1].seq if full else head.seq
+                more |= full
+                if events:
+                    yield message(EventsMessage(run_id=run_id, events=events), with_id=True)
+            if head.finished and cursors[run_id] >= head.seq:
+                ended.add(run_id)
+                yield message(EndMessage(run_id=run_id), with_id=True)
+        if version is not None:
+            version, changed = state.changes.since(version)
+            ids = set(changed) if changed is not None else None
+            if runs or ids:
+                if ids is None:
+                    # as the first page of the run list: with the jobs not started yet
+                    listed = await state.store.runs(limit=MAX_RUNS, skip_kinds=skip)
+                    jobs = await state.db.jobs_page(before=None, limit=MAX_RUNS, skip_kinds=skip)
+                    newest = {i.run_id for i in listed} | {j.run_id for j in jobs}
+                    pick = sorted(newest, reverse=True)[:MAX_RUNS] + list(cursors)
+                    # and the runs deleted lately, which a list held from before may show
+                    lately = list(state.gone)[-MAX_RUNS:]
+                    pick += [gone for gone in lately if gone not in newest]
+                else:
+                    pick = sorted(ids if runs else ids & set(cursors))
+                found = await summaries(state, pick, skip)
+                for summary in found:
+                    yield message(RunMessage(run=summary), with_id=True)
+                shown = {s.run_id for s in found}
+                for run_id in pick:
+                    kind = state.gone.get(run_id)
+                    if run_id not in shown and kind is not None and not unseen(kind, skip):
+                        yield message(RunDeletedMessage(run_id=run_id), with_id=True)
+        if runs:
+            for conn in sorted(state.runners.values(), key=lambda c: c.name):
+                info = conn.info()
+                key = info.model_dump(exclude={"seen_s"})
+                if runners_seen.get(info.name) != key:
+                    runners_seen[info.name] = key
+                    yield message(RunnerHealthMessage(runner=info), with_id=True)
         if sub is not None:
-            sub.close()
+            while len(pending) < DELTA_BATCH:
+                try:
+                    d = sub.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if d.run_id in live:
+                    pending.append(d)
+            batch = [_delta(d) for d in pending if d.run_id in live]
+            pending.clear()
+            if batch:
+                yield message(DeltaMessage(deltas=batch))
+            if sub.dropped > dropped:
+                yield message(DeltasDroppedMessage(count=sub.dropped - dropped))
+                dropped = sub.dropped
+        if more:
+            continue
+        waits: list[Coroutine[Any, Any, Any]] = [
+            store_changed.wait(),
+            runners_changed.wait(),
+            state.stopping.wait(),
+            revoked.wait(),
+        ]
+        if version is not None:
+            waits.append(runs_changed.wait())
+        if sub is not None:
+            waits.append(_peek(sub.queue, pending))
+        await _first(waits, WAKE_S)
+        await asyncio.sleep(COALESCE_S)
 
 
 async def _peek(queue: asyncio.Queue[Delta], into: list[Delta]) -> None:

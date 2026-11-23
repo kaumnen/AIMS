@@ -73,7 +73,7 @@ from aims.server.db import UI_TOKEN
 from aims.server.files import builtin_root
 from aims.server.problems import ProblemError, ProblemException
 from aims.server.state import CODES, InFlight, LaunchCodes, close_state, open_state
-from aims.server.stream import parse_id
+from aims.server.stream import DELTA_BATCH, parse_id
 from aims.text import LONE, NoLoneSurrogate
 from aims.wire import (
     Ack,
@@ -2535,6 +2535,28 @@ async def test_a_runner_stream_before_hello_is_refused_with_a_status(cp: CP) -> 
         assert (caught.value.status, caught.value.code) == (409, "hello")
     finally:
         await client.aclose()
+
+
+async def test_a_ui_stream_that_stalls_and_drops_releases_its_subscription(cp: CP) -> None:
+    run_id = str(uuid.uuid4())
+    for call in range(10):
+        cp.state.inflight.add(
+            [
+                WireDelta(
+                    run_id=run_id,
+                    agent_id="a",
+                    call_id=f"c{call}",
+                    attempt=1,
+                    kind="text",
+                    text="x",
+                )
+                for _ in range(DELTA_BATCH)
+            ]
+        )
+    with gc_held():
+        await stalled(cp, "/api/stream", cp.operator, query=f"deltas={run_id}")
+        assert cp.state.streams == 0
+        assert not cp.state.bus.subscribers
 
 
 async def test_a_stream_ends_when_its_session_does(cp: CP) -> None:

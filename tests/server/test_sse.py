@@ -81,7 +81,7 @@ async def test_a_runner_that_says_hello_while_the_stream_sends_health_keeps_it_o
     viewer = Principal("viewer", "viewer", "bearer")
     events = cast(
         AsyncGenerator[ServerSentEvent],
-        stream(Request({"type": "http"}), viewer, state, None, runs=True),
+        stream(Request({"type": "http"}), viewer, state, None, None, runs=True),
     )
 
     async def health() -> RunnerInfo:
