@@ -231,8 +231,8 @@ beforeEach(() => {
       return Response.json({ run_ids: ids, group: ids.length > 1 ? "g" : null }, { status: 202 });
     }
     if (path === "/api/runs") return Response.json({ items: [], next: null });
-    if (path === `/api/runs/${NEW}`) {
-      return Response.json({ run: run(NEW), monitor_runs: [], score_runs: [] });
+    if (path === `/api/runs/${NEW}` || path === "/api/runs/c2") {
+      return Response.json({ run: run(path.slice(10)), monitor_runs: [], score_runs: [] });
     }
     return Response.json({ items: [], next: null });
   });

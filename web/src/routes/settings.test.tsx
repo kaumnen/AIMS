@@ -307,6 +307,9 @@ beforeEach(() => {
       };
       return Response.json({ run_ids: [CHECK] }, { status: 202 });
     }
+    if (url.pathname === `/api/runs/${CHECK}`) {
+      return Response.json({ run: run(CHECK, { kind: "models.check" }) });
+    }
     if (url.pathname === "/api/runners")
       return Response.json([
         runnerInfo({ name: "box", local: false, connected: false, stale: true, seen_s: 7200 }),

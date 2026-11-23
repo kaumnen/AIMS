@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { checkModels, modelsQuery, type ProfileInfo } from "@/api/launch";
+import { runQuery } from "@/api/run";
 import { ended } from "@/api/runs";
 import { isProblem } from "@/api/session";
 
@@ -16,7 +17,8 @@ export const CHECK_TEXT = {
   cut: "check stopped before it got here",
 } as const;
 
-// how often the models are read while a check runs, in case the stream misses its end
+// how often the models and the check's run are read while a check runs, in case the stream
+// misses its end
 const POLL_MS = 3000;
 
 // Whether the models read name check run `run` as ended.
@@ -42,13 +44,27 @@ export function useModelCheck() {
       void qc.invalidateQueries({ queryKey: modelsQuery.queryKey });
     });
   }, [live, qc, run]);
+  // No profile names a check cancelled in the queue, so its run is read too. Once it ended,
+  // the models are read once more for the result.
+  const job = useQuery({
+    ...runQuery(run ?? ""),
+    enabled: run !== null,
+    refetchInterval: (q) => (q.state.data && ended(q.state.data.run) ? false : POLL_MS),
+  });
+  const over = job.data !== undefined && ended(job.data.run);
+  useEffect(() => {
+    if (over) void qc.invalidateQueries({ queryKey: modelsQuery.queryKey });
+  }, [over, qc]);
   const models = useQuery({
     ...modelsQuery,
     enabled: run !== null,
-    refetchInterval: (q) => (run === null || checkEnded(q.state.data, run) ? false : POLL_MS),
+    refetchInterval: (q) =>
+      run === null || over || checkEnded(q.state.data, run) ? false : POLL_MS,
   });
   const current =
-    checking !== null && (run === null || !checkEnded(models.data, run)) ? checking : null;
+    checking !== null && (run === null || !(over || checkEnded(models.data, run)))
+      ? checking
+      : null;
   const check = async (profiles: string[]) => {
     if (starting.current || current !== null) return;
     starting.current = true;
