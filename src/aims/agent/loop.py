@@ -755,7 +755,7 @@ class Agent:
         try:
             try:
                 reply = await client.call(
-                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt), cut=self._cut
                 )
             except ReplayError:
                 if self._replaying() or not self._kept():
@@ -764,7 +764,7 @@ class Agent:
                 client, profile = self._model()
                 self._open_profile = profile
                 reply = await client.call(
-                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt), cut=self._cut
                 )
             finally:
                 self.run_budget.owed.pop(self.id, None)
@@ -830,6 +830,11 @@ class Agent:
                     self.profile.name,
                     self.id,
                 )
+
+    def _cut(self, reply: Reply) -> None:
+        """Charge what a call that was cut cost, such as one a kill or the wall limit cancelled
+        as it retried. A cut attempt reports no cost; that leaves the agent's cost complete."""
+        self._charge(reply.model_copy(update={"cost_usd": reply.cost_usd or 0.0}), step=False)
 
     def _over_budget(self) -> tuple[AgentEnd, str] | None:
         b = self._budget()
@@ -1166,7 +1171,7 @@ class Agent:
         try:
             try:
                 reply = await client.call(
-                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt), cut=self._cut
                 )
             except ReplayError:
                 # A summary the recording lacks sends a kept agent live, as a step's request does.
@@ -1175,7 +1180,7 @@ class Agent:
                 self._left_recording = True
                 client, profile = self._model()
                 reply = await client.call(
-                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt), cut=self._cut
                 )
             finally:
                 self.run_budget.owed.pop(self.id, None)

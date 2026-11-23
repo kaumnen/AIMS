@@ -2138,6 +2138,39 @@ async def test_every_rollout_timed_out_keeps_the_cost(store: LocalEventStore) ->
     await check_events(store, run.id)
 
 
+async def test_a_timeout_keeps_the_cost_of_a_call_cut_as_it_tried_again(
+    store: LocalEventStore,
+) -> None:
+    """The provider billed a failed attempt; the timeout cuts the next one. The judge's cost,
+    which the monitor adds to its spend, keeps the failure."""
+    run = await make_run(store)
+    asked: list[dict[str, Any]] = []
+
+    def second(body: dict[str, Any]) -> bool:
+        asked.append(body)
+        return len(asked) >= 2
+
+    # 100k input tokens at $1 per million
+    usage = {"prompt_tokens": 100_000, "completion_tokens": 0}
+    script = stalls(Script(call("events") | {"usage": usage, "finish": "error"}), second)
+    p = profile(retries=Retries(attempts=2, backoff=0, max=0), max_output_tokens=16384)
+    judge = make_judge(store, run, script, budget=1000.0, p=p, timeout_s=1.0)
+    with anyio.fail_after(10):
+        result = await judge.run(flags=[], sweeps=[])
+    assert result.timed_out
+    responses = await store.events(run.id, types=["model.response"])
+    assert [(e.data["status"], e.data["cost_usd"]) for e in responses] == [
+        ("error", 0.1),
+        ("cancelled", None),
+    ]
+    assert judge.cost_usd == pytest.approx(0.1)
+    assert result.cost_usd == pytest.approx(0.1)
+    # the cut attempt counts against the rollout's share at what it may have cost
+    (rollout,) = judge._rollouts
+    assert rollout.owed > 0
+    await check_events(store, run.id)
+
+
 async def test_a_cancel_from_outside_is_not_a_timeout(store: LocalEventStore) -> None:
     run = await make_run(store)
     asked: list[dict[str, Any]] = []

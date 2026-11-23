@@ -142,6 +142,7 @@ class ModelClient:
         role: ModelRole | None = None,
         recorded: Callable[[str], None] | None = None,
         cap: SpendCap | None = None,
+        cut: Callable[[Reply], None] | None = None,
     ) -> Reply:
         """One model call, retried per the profile. The reply's cost sums every attempt, since a
         failed one may have been billed. Raises ModelCallError when every attempt failed, and
@@ -149,7 +150,41 @@ class ModelClient:
         monitor makes. `recorded` gets the call's id once its first `model.request` is in the
         log, so a caller knows the id of a call that is then cancelled or raises. A live call
         under a `cap` is tried again only when the cap says another attempt fits. A replay
-        stops where the recorded call did."""
+        stops where the recorded call did. `cut` gets a reply when the call is cancelled, or
+        raises other than ModelCallError, after an attempt was logged: what its attempts cost,
+        the cut one as unseen under a `cap`. The caller charges it as it charges a reply."""
+        logged: list[Reply] = []
+        try:
+            return await self._tries(
+                profile,
+                prompt,
+                agent_id=agent_id,
+                overrides=overrides,
+                role=role,
+                recorded=recorded,
+                cap=cap,
+                logged=logged,
+            )
+        except ModelCallError:
+            raise
+        except BaseException:
+            if cut is not None and logged:
+                cut(logged[-1])
+            raise
+
+    async def _tries(
+        self,
+        profile: str | Profile,
+        prompt: Prompt,
+        *,
+        agent_id: str | None,
+        overrides: Overrides | None,
+        role: ModelRole | None,
+        recorded: Callable[[str], None] | None,
+        cap: SpendCap | None,
+        logged: list[Reply],
+    ) -> Reply:
+        """The attempts of `call`. Each attempt's reply goes on `logged` once it is logged."""
         if isinstance(profile, str):
             profile = self.config.get(profile)
         if prompt.output_schema is not None and not profile.structured_output:
@@ -256,6 +291,7 @@ class ModelClient:
                 )
             )
             spent, billed = reply.cost_usd, reply.billed
+            logged.append(reply)
             asked = limited or outcome.ratelimit.retry_after_ms is not None
             if account is not None and outcome.status == "error" and asked:
                 account.pause(wait)
@@ -576,10 +612,11 @@ class ModelClient:
         return round((given * price.input + made * price.output) / 1_000_000, 10)
 
     def _unseen(self, o: _Outcome, cost: float | None) -> bool:
-        """Whether a failed live attempt may have been billed with no cost reported. A provider
-        may bill an answer it began, or the whole of it, when the answer does not arrive. One
-        that could not connect or answered with an error status did not take the request."""
-        if o.status != "error" or cost is not None or self.replay is not None:
+        """Whether a failed or cancelled live attempt may have been billed with no cost reported.
+        A provider may bill an answer it began, or the whole of it, when the answer does not
+        arrive. One that could not connect or answered with an error status did not take the
+        request."""
+        if o.status not in ("error", "cancelled") or cost is not None or self.replay is not None:
             return False
         if o.error_kind == "connect":
             return False

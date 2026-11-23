@@ -755,7 +755,7 @@ async def _ask[T: BaseModel](
     cap = purse.cap(classifier.profile.apply(overrides), prompt)
     try:
         reply = await classifier.client.call(
-            classifier.profile, prompt, role="score", overrides=overrides, cap=cap
+            classifier.profile, prompt, role="score", overrides=overrides, cap=cap, cut=purse.charge
         )
     except ModelCallError as e:
         log.warning("the %s of agent %s in run %s was not classified: %s", what, agent, origin, e)

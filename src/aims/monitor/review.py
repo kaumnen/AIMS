@@ -186,7 +186,11 @@ class Reviewer:
             return None, 0.0, True
         try:
             reply = await self.client.call(
-                profile, prompt, role="review", cap=None if hold is None else hold.cap
+                profile,
+                prompt,
+                role="review",
+                cap=None if hold is None else hold.cap,
+                cut=None if hold is None else hold.settle,
             )
             if hold is not None:
                 hold.settle(reply)

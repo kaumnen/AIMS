@@ -1327,6 +1327,7 @@ class Judge:
             overrides=overrides,
             recorded=r.calls.append,
             cap=cap,
+            cut=r.charge,
         )
         r.charge(reply, prompt)
         return reply

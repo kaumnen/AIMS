@@ -1,3 +1,4 @@
+import asyncio
 import itertools
 import json
 import string
@@ -9,6 +10,7 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 from scripted import Script, models, profile, say
+from test_judge import stalls
 from test_render import KEY, TASK, TEXTS, Run
 
 from aims.events import (
@@ -636,6 +638,30 @@ async def test_a_billed_failure_is_tried_again_only_while_the_budget_has_room(ru
     s = sweeper(run, busy, p=PLANNED, purse=purse, lanes=lanes, window=False)
     result = await s.sweep("every")
     assert (result.no_room, result.failed, len(busy.requests)) == (False, False, 2)
+
+
+async def test_a_lane_cut_as_it_tries_again_keeps_its_billed_attempt(run: Run) -> None:
+    """A stop cancels a lane while its call tries again after a failure the provider billed.
+    The budget keeps what the failure cost and counts the cut attempt at its planned cost."""
+    asked: list[dict[str, Any]] = []
+
+    def second(body: dict[str, Any]) -> bool:
+        asked.append(body)
+        return len(asked) >= 2
+
+    billed = {"finish": "error", "usage": {"prompt_tokens": 0, "completion_tokens": 500}}
+    script = stalls(Script(billed), second)
+    purse = Purse(0.01)
+    lanes = [EVIDENCE_LANE.model_dump()]
+    s = sweeper(run, script, p=PLANNED, purse=purse, lanes=lanes, window=False)
+    task = asyncio.create_task(s.sweep("every"))
+    async with asyncio.timeout(5):
+        while len(asked) < 2:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (purse.spent, purse.unseen, purse.held) == (0.001, 0.001, 0.0)
 
 
 async def test_a_review_score_with_no_room_raises_no_room_with_its_cost(run: Run) -> None:

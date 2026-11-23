@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pytest
 from scripted import Script, call, models, profile, raw_call, say
+from test_judge import stalls
 
 from aims import prompts
 from aims.agent import (
@@ -499,6 +500,50 @@ async def test_token_counts_past_what_the_log_holds_stop_at_its_bound(
     assert [r.usage.input_tokens for r in responses] == [None, MAX_INT, MAX_INT, 100]
     assert finished.usage.input_tokens == MAX_INT
     assert finished.usage.output_tokens == 40
+
+
+async def test_a_kill_as_a_call_tries_again_keeps_the_billed_attempt(
+    store: LocalEventStore,
+) -> None:
+    """A kill cancels the agent while its call tries again after a failure the provider billed.
+    The agent's end keeps what the failure cost."""
+    asked: list[dict[str, Any]] = []
+
+    def second(body: dict[str, Any]) -> bool:
+        asked.append(body)
+        return len(asked) >= 2
+
+    agent, run_id = await make_agent(store, stalls(Script(BILLED), second), p=retrying())
+    agent.killed = "killed by the operator"
+    task = asyncio.create_task(agent.run())
+    async with asyncio.timeout(5):
+        while len(asked) < 2:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (finished,) = await payloads(store, run_id, AgentFinished)
+    assert (finished.reason, finished.steps) == ("killed", 0)
+    assert finished.cost_usd == pytest.approx(0.002)
+    assert finished.usage.output_tokens == 500
+    assert finished.cost_complete
+
+
+async def test_a_wall_limit_that_cuts_a_call_leaves_the_cost_complete(
+    store: LocalEventStore,
+) -> None:
+    """The cut attempt reports no cost. It counts against the caps alone, so a priced agent's
+    cost stays complete."""
+    script = stalls(Script(), lambda body: True)
+    budget = Budget(wall_s=0.3)
+    agent, _ = await make_agent(store, script, p=retrying(), budget=budget)
+    finished = await agent.run()
+    assert (finished.reason, finished.cost_usd, finished.cost_complete) == (
+        "budget_wall",
+        0.0,
+        True,
+    )
+    assert agent.totals.unseen_usd > 0
 
 
 async def test_the_cost_cap_holds_a_call_s_billed_retries(store: LocalEventStore) -> None:

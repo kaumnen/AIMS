@@ -303,7 +303,11 @@ async def ask(
         raise NoRoom(f"{schema.name}: {NO_ROOM} on {profile.name}")
     try:
         reply = await client.call(
-            profile, prompt, role=role, cap=None if hold is None else hold.cap
+            profile,
+            prompt,
+            role=role,
+            cap=None if hold is None else hold.cap,
+            cut=None if hold is None else hold.settle,
         )
         if hold is not None:
             hold.settle(reply)

@@ -17,6 +17,7 @@ from typing import Any, cast
 import httpx2
 import pytest
 from scripted import Script, models, profile, respond, say
+from test_judge import stalls
 from typer.testing import CliRunner
 
 from aims.cli import EXIT_CANCELLED, app
@@ -966,6 +967,39 @@ async def test_answers_with_no_token_counts_count_against_the_score_s_cap_by_siz
     assert result.cost_usd == 0
     sized = "; answers with no token counts count at $0.0021"
     assert result.stopped == f"the score spent $0.0000 of its $0.0025{sized}"
+
+
+async def test_a_check_cut_as_it_tries_again_keeps_its_billed_attempt(
+    store: LocalEventStore,
+) -> None:
+    """A stop cancels a check while its call tries again after a failure the provider billed.
+    The score's purse keeps what the failure cost and counts the cut attempt as unseen."""
+    asked: list[dict[str, Any]] = []
+
+    def second(body: dict[str, Any]) -> bool:
+        asked.append(body)
+        return len(asked) >= 2
+
+    price = {"input": 0.0, "cached": 0.0, "output": 1.0}
+    p = profile(max_output_tokens=100, price=price, retries=Retries(attempts=2, backoff=0, max=0))
+    billed = {"finish": "error", "usage": {"prompt_tokens": 0, "completion_tokens": 100}}
+    run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+    client = ModelClient(
+        store, run_id, models(p), transport=stalls(Script(billed), second).transport(), env={}
+    )
+    classifier = Classifier(profile=p, client=client, texts=TEXTS)
+    purse = scoring.Purse(1.0)
+    prompt = Prompt(items=[Message(role="user", content="x")])
+    check = scoring._ask(classifier, prompt, Turn, "awareness", "a", run_id, purse)
+    task = asyncio.create_task(check)
+    async with asyncio.timeout(5):
+        while len(asked) < 2:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # 100 output tokens at $1 per million, twice
+    assert (purse.spent, purse.unseen) == (0.0001, 0.0001)
 
 
 def test_the_purse_counts_unseen_attempts_against_its_budget_only() -> None:

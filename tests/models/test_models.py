@@ -743,6 +743,45 @@ async def test_a_retry_under_a_spend_cap_runs_only_while_it_fits(
     assert (first.cost_usd, first.retry) == (None, fits)
 
 
+async def test_a_call_cut_as_it_tries_again_hands_what_it_cost_to_its_caller(
+    store: LocalEventStore,
+) -> None:
+    """A stop cancels a call while it tries again after a failure the provider billed. `cut`
+    gets what the attempts cost: the failure, and under the cap the cut attempt as unseen."""
+    run_id = await new_run(store)
+    # a 502 behind the router's 200, after the provider counted the tokens it bills
+    billed = {"prompt_tokens": 1000, "completion_tokens": 500}
+    raw = json.dumps(failing(502, usage=billed)).encode()
+
+    def failed() -> httpx2.Response:
+        return stream([raw], content_type="application/json")
+
+    handler, sent = scripted(failed, lambda: stream([3600.0], content_type="application/json"))
+    got: list[Reply] = []
+    cap = SpendCap(attempt_usd=0.005, fits=lambda _: True)
+    async with client(store, run_id, profile(stream=False), handler) as mc:
+        task = asyncio.create_task(mc.call("test", PROMPT, cap=cap, cut=got.append))
+        async with asyncio.timeout(5):
+            while len(sent) < 2:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    (reply,) = got
+    # 1000 input at $1 and 500 output at $2 per million
+    assert (reply.attempts, reply.status, reply.cost_usd) == (2, "cancelled", 0.002)
+    assert (reply.unseen_usd, reply.billed.output_tokens) == (0.005, 500)
+    responses = payloads(await store.events(run_id, types=["model.response"]))
+    assert [(r.status, r.cost_usd) for r in responses] == [("error", 0.002), ("cancelled", None)]
+    # a call that ends with an answer or a ModelCallError leaves `cut` alone
+    handler, _ = scripted(lambda: stream(sse(CHAT_EVENTS)), failed)
+    async with client(store, run_id, profile(retries=Retries(attempts=1)), handler) as mc:
+        await mc.call("test", PROMPT, cut=got.append)
+        with pytest.raises(ModelCallError):
+            await mc.call("test", PROMPT, cut=got.append)
+    assert len(got) == 1
+
+
 @pytest.mark.parametrize(
     ("usage", "limit", "price", "sized"),
     [
