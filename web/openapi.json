@@ -11552,7 +11552,7 @@
         "type": "object"
       },
       "PromptsInfo": {
-        "description": "`agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's\nown texts (`[prompts.monitor]`) and `categories` its category definitions\n(`[prompts.monitor.categories]`). `tools` holds the channel tools too, by the names their\nkinds give them unless a scenario names them otherwise.",
+        "description": "`agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's\nown texts (`[prompts.monitor]`), `categories` its category definitions\n(`[prompts.monitor.categories]`) and `glossary` what each record type is\n(`[prompts.monitor.glossary]`). `tools` holds the channel tools too, by the names their\nkinds give them unless a scenario names them otherwise.",
         "properties": {
           "agent": {
             "additionalProperties": {
@@ -11566,6 +11566,13 @@
               "$ref": "#/components/schemas/Text"
             },
             "title": "Categories",
+            "type": "object"
+          },
+          "glossary": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Text"
+            },
+            "title": "Glossary",
             "type": "object"
           },
           "monitor": {
@@ -11590,7 +11597,8 @@
           "agent",
           "tools",
           "monitor",
-          "categories"
+          "categories",
+          "glossary"
         ],
         "title": "PromptsInfo",
         "type": "object"

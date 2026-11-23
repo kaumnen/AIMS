@@ -914,8 +914,9 @@ app.add_typer(prompts_app, name="prompts")
 def prompts_show(config: ConfigOption = None) -> None:
     """Print the texts agents and the monitor get with this aims.toml, as \\[prompts] tables to
     edit: the agent's, among them the `denied` reply and `notify_on_resume`, each tool's, the
-    monitor's and its category definitions. Channel tools are listed by the names their kinds
-    give them; a scenario that names them otherwise takes their texts under its own names.
+    monitor's, its category definitions and its glossary of record types. Channel tools are
+    listed by the names their kinds give them; a scenario that names them otherwise takes their
+    texts under its own names.
 
     A scenario agent's `prompts` mapping overrides the agent's texts for that agent.
     """
@@ -957,6 +958,9 @@ def prompts_show(config: ConfigOption = None) -> None:
     lines += [f"{key} = {value(text)}" for key, text in sorted(monitor.texts.items())]
     lines += ["", "[prompts.monitor.categories]"]
     lines += [f"{key} = {value(text)}" for key, text in monitor.categories.items()]
+    # a record type has dots, so its key is quoted
+    lines += ["", "[prompts.monitor.glossary]"]
+    lines += [f"{value(key)} = {value(text)}" for key, text in monitor.glossary.items()]
     typer.echo("\n".join(lines))
 
 

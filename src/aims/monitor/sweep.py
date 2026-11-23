@@ -452,7 +452,7 @@ class Sweeper:
             [
                 rendered.text,
                 f"{self.texts['header_action']}\n{record}",
-                glossary(rendered.types | {"proposal"}),
+                glossary(rendered.types | {"proposal"}, self.texts),
                 self.texts["score_proposal"],
             ]
         )
@@ -557,7 +557,7 @@ class Sweeper:
         instruction = self.texts["extract"].format(
             step_from=rendered.step_from, step_to=rendered.step_to
         )
-        parts = [rendered.text, glossary(rendered.types), instruction]
+        parts = [rendered.text, glossary(rendered.types, self.texts), instruction]
         if lead is not None:
             parts.append(lead)
         body = "\n\n".join(parts)
@@ -608,7 +608,7 @@ class Sweeper:
             lane.parts, texts=self.texts, first_step=first, upto=upto
         )
         instruction = self.texts["window"].format(step_from=view.step_from, step_to=view.step_to)
-        body = "\n\n".join([view.text, glossary(view.types), instruction])
+        body = "\n\n".join([view.text, glossary(view.types, self.texts), instruction])
         band = self.config.escalate
         cheap = self.extractor if band is not None else None
         try:

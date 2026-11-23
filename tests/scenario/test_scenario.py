@@ -665,6 +665,7 @@ def test_prompts_show_prints_an_editable_table(tmp_path: Path) -> None:
     config.write_text(
         '[prompts]\nnudge = "carry on"\nomitted = "<{bytes}>"\n'
         '[prompts.tools.bash]\ntimeout = "slow"\n[prompts.tools.edit]\nparam_path = "Where."\n'
+        '[prompts.monitor.glossary]\n"proc.exec" = "A program."\n'
     )
     out = CliRunner().invoke(app, ["prompts", "show", "--config", str(config)])
     assert out.exit_code == 0, out.output
@@ -674,6 +675,8 @@ def test_prompts_show_prints_an_editable_table(tmp_path: Path) -> None:
     assert table["tools"]["bash"]["timeout"] == "slow"
     assert table["tools"]["bash"]["exit_code"] == "exit code: {code}"
     assert table["tools"]["edit"]["param_path"] == "Where."
+    assert table["monitor"]["glossary"]["proc.exec"] == "A program."
+    assert table["monitor"]["glossary"]["tool.call"].startswith("What the agent asked for")
     tools = {"bash", "edit", "submit", "report_to_operator", "post_message", "read_messages"}
     assert set(table["tools"]) == tools
     assert table["tools"]["post_message"]["param_text"] == "The message."

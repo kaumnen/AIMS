@@ -61,7 +61,7 @@ from aims.models.check import Verdict, to_check
 from aims.models.keys import listable
 from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, survey
 from aims.models.profiles import Role as ModelRole
-from aims.monitor import sweep_texts
+from aims.monitor import glossary_texts, sweep_texts
 from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset, named_profiles
 from aims.monitor.setup import ResolvedMonitor
@@ -2427,14 +2427,16 @@ class Text(Out):
 
 class PromptsInfo(Out):
     """`agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's
-    own texts (`[prompts.monitor]`) and `categories` its category definitions
-    (`[prompts.monitor.categories]`). `tools` holds the channel tools too, by the names their
+    own texts (`[prompts.monitor]`), `categories` its category definitions
+    (`[prompts.monitor.categories]`) and `glossary` what each record type is
+    (`[prompts.monitor.glossary]`). `tools` holds the channel tools too, by the names their
     kinds give them unless a scenario names them otherwise."""
 
     agent: dict[str, Text]
     tools: dict[str, dict[str, Text]]
     monitor: dict[str, Text]
     categories: dict[str, Text]
+    glossary: dict[str, Text]
 
 
 def _text(
@@ -2490,6 +2492,11 @@ def _categories(prompts: Prompts) -> dict[str, str]:
     return value if isinstance(value, dict) else {}
 
 
+def _glossary(prompts: Prompts) -> dict[str, str]:
+    value = prompts.monitor.get("glossary")
+    return value if isinstance(value, dict) else {}
+
+
 @router.get("/prompts", tags=["prompts"])
 async def list_prompts(principal: Viewer, state: State) -> PromptsInfo:
     """Every text AIMS writes for the agent or its monitor, what each layer sets and which one
@@ -2522,6 +2529,15 @@ async def list_prompts(principal: Viewer, state: State) -> PromptsInfo:
                 _categories(project).get(c),
             )
             for c, v in resolved.categories.items()
+        },
+        glossary={
+            kind: _text(
+                v,
+                glossary_texts.default(kind),
+                _glossary(user).get(kind),
+                _glossary(project).get(kind),
+            )
+            for kind, v in resolved.glossary.items()
         },
     )
 

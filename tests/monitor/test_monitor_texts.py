@@ -19,13 +19,15 @@ from test_render import AGENT, FULL, Run
 
 from aims.events import LocalEventStore
 from aims.models import ModelClient, ToolSpec
+from aims.monitor import glossary_texts
 from aims.monitor.channels import evaluate_schema
 from aims.monitor.config import JudgeConfig, MonitorConfig
 from aims.monitor.judge import Judge, clip
+from aims.monitor.render import glossary
 from aims.monitor.setup import identity
 from aims.monitor.sweep import schemas, system
 from aims.monitor.texts import MonitorTexts, added, defaults, resolve
-from aims.prompts import Prompts
+from aims.prompts import Prompts, TextError
 
 pytestmark = pytest.mark.anyio
 
@@ -196,6 +198,58 @@ async def test_the_render_headers_come_from_their_texts(store: LocalEventStore) 
     assert any(re.fullmatch(r"S1@\d\d:\d\d:\d\d", line) for line in lines)
     assert "DONE" in lines
     assert "RUN RECORDS OF AGENT" not in text
+
+
+# The glossary
+
+
+def test_the_glossary_at_its_defaults_leaves_the_identity_as_it_was() -> None:
+    now = texts()
+    stamped = identity(MonitorConfig(), now, {}, {})
+    assert "glossary" not in now.hashed()
+    bare = MonitorTexts(dict(now.texts), dict(now.categories))
+    assert identity(MonitorConfig(), bare, {}, {}) == stamped
+    changed = resolve(Prompts(monitor={"glossary": {"proc.exec": "A program."}}))
+    assert identity(MonitorConfig(), changed, {}, {}) != stamped
+    assert changed.hashed()["glossary"] == {"proc.exec": "A program."}
+
+
+def test_a_glossary_stored_before_it_was_kept_restores_with_its_defaults() -> None:
+    stored = texts().snapshot()
+    del stored["glossary"]
+    back = MonitorTexts.restore(stored)
+    assert back.glossary == glossary_texts.defaults()
+    assert back.gloss("proc.exec").startswith("A program the kernel did start")
+
+
+def test_the_glossary_is_read_from_the_texts() -> None:
+    default = glossary({"proc.exec", "mem.exec", "tool.call"})
+    assert glossary({"proc.exec", "mem.exec", "tool.call"}, texts()) == default
+    given = resolve(
+        Prompts(
+            monitor={
+                "header_glossary": "TYPES",
+                "glossary_format": "One record a line.",
+                "glossary_attempt": "Tried: {doc}",
+                "glossary": {
+                    "proc.exec": "A program.",
+                    "mem.exec": "Memory made runnable.",
+                    "tool.call": "",
+                },
+            }
+        )
+    )
+    assert glossary({"proc.exec", "mem.exec", "tool.call"}, given).split("\n") == [
+        "TYPES",
+        "One record a line.",
+        "mem.exec: Tried: Memory made runnable.",
+        "proc.exec: A program.",
+    ]
+
+
+def test_a_glossary_entry_for_an_unknown_type_is_refused() -> None:
+    with pytest.raises(TextError, match=r"unknown record type 'no\.such'"):
+        resolve(Prompts(monitor={"glossary": {"no.such": "x"}}))
 
 
 # The guard

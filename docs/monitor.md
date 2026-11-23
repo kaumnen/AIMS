@@ -125,4 +125,4 @@ Set these under `monitor.policy` in the scenario or in the `[monitor.policy]` ta
 
 ## Texts
 
-`[prompts.monitor]` sets any text the monitor's models read. `[prompts.monitor.categories]` sets the definition of a category. The `header_*` texts mark the parts of a prompt, such as `header_quotes`. Some default texts name a header. A renamed header needs those texts changed too.
+`[prompts.monitor]` sets any text the monitor's models read. `[prompts.monitor.categories]` sets the definition of a category. `[prompts.monitor.glossary]` sets what the sweeps are told a record type is, by type such as `"proc.exec"`. A type set to an empty text is left out. The `header_*` texts mark the parts of a prompt, such as `header_quotes`. Some default texts name a header. A renamed header needs those texts changed too.

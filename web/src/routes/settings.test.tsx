@@ -30,6 +30,7 @@ const DEFAULTS: Record<string, [string, string[] | null]> = {
   "prompts.tools.bash.timeout": ["Timed out after {timeout_s} s.", ["timeout_s"]],
   "prompts.monitor.judge_system": ["Judge the run.", []],
   "prompts.monitor.categories.drift": ["Off the task.", null],
+  "prompts.monitor.glossary.exec.started": ["A command the agent ran.", null],
 };
 const CHECK = "01a19200-0000-7000-8000-000000000001";
 // the config files' texts; a project file can be missing
@@ -161,6 +162,8 @@ const promptsInfo = () => ({
   tools: { bash: under("prompts.tools.bash.") },
   monitor: under("prompts.monitor."),
   categories: under("prompts.monitor.categories."),
+  // a record type has dots, so it is no part of the key path to split
+  glossary: { "exec.started": promptText("prompts.monitor.glossary.exec.started") },
 });
 
 async function putLayer(layer: "user" | "project", request: Request) {
@@ -889,9 +892,11 @@ test("prompts list every text with where it comes from and save into the project
     "true",
   );
   expect(screen.getByText(PATHS.project)).toBeTruthy();
-  for (const title of ["Agent texts", "Tool texts", "Monitor texts", "Monitor categories"]) {
+  const titles = ["Agent texts", "Tool texts", "Monitor texts", "Monitor categories"];
+  for (const title of [...titles, "Monitor glossary"]) {
     expect(screen.getByRole("region", { name: title })).toBeTruthy();
   }
+  expect(within(textRow("exec.started")).getByText("A command the agent ran.")).toBeTruthy();
   expect(within(textRow("system")).getByText("this project")).toBeTruthy();
   expect(within(textRow("budget_steps")).getByText("built in")).toBeTruthy();
   expect(within(textRow("bash.timeout")).getByText("Timed out after {timeout_s} s.")).toBeTruthy();

@@ -73,6 +73,7 @@ beforeEach(() => {
         tools: {},
         monitor: {},
         categories: {},
+        glossary: {},
       });
     }
     if (path === "/api/config") {

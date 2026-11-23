@@ -835,21 +835,30 @@ async def test_config_edits_take_the_monitor_tables(cp: CP) -> None:
                 (["monitor", "judge", "blind"], 2),
                 (["prompts", "monitor", name], f"User {name}."),
                 (["prompts", "monitor", "categories", "drift"], "Off task."),
+                (["prompts", "monitor", "glossary", "proc.exec"], "A program started."),
             ],
         )
         assert r.status_code == 200, r.text
         saved = tomllib.loads(r.json()["text"])
         assert saved["monitor"]["preset"] == "research"
         assert saved["monitor"]["sweeps"] == [{"name": "fast", "every": 3}]
+        assert saved["prompts"]["monitor"]["glossary"] == {"proc.exec": "A program started."}
         prompts = (await c.get("/api/prompts")).json()
         assert prompts["monitor"][name]["source"] == "user"
         assert prompts["categories"]["drift"]["source"] == "user"
+        glossed = prompts["glossary"]["proc.exec"]
+        assert (glossed["text"], glossed["source"]) == ("A program started.", "user")
+        assert glossed["default"].startswith("A program the kernel did start")
+        assert prompts["glossary"]["tool.call"]["source"] == "default"
 
         r = await patch(c, "user", [(["prompts", "monitor", "no_such_text"], "x")])
         assert (r.status_code, r.json()["code"]) == (422, "config")
         assert "no_such_text" in r.json()["detail"]
         r = await patch(c, "user", [(["prompts", "monitor", "categories", "nope"], "x")])
         assert (r.status_code, r.json()["code"]) == (422, "config")
+        r = await patch(c, "user", [(["prompts", "monitor", "glossary", "no.such"], "x")])
+        assert (r.status_code, r.json()["code"]) == (422, "config")
+        assert "unknown record type 'no.such'" in r.json()["detail"]
         r = await patch(c, "user", [(["prompts", "budget_steps"], "{bad} steps")])
         assert (r.status_code, r.json()["code"]) == (422, "config")
         assert "unknown placeholder bad" in r.json()["detail"]

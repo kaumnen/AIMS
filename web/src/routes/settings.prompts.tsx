@@ -57,6 +57,10 @@ function sections(info: PromptsInfo): Section[] {
       title: "Monitor categories",
       rows: entries(info.categories, (k) => ["prompts", "monitor", "categories", k]),
     },
+    {
+      title: "Monitor glossary",
+      rows: entries(info.glossary, (k) => ["prompts", "monitor", "glossary", k]),
+    },
   ];
 }
 

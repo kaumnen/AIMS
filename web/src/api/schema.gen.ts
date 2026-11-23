@@ -6230,8 +6230,9 @@ export interface components {
         /**
          * PromptsInfo
          * @description `agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's
-         *     own texts (`[prompts.monitor]`) and `categories` its category definitions
-         *     (`[prompts.monitor.categories]`). `tools` holds the channel tools too, by the names their
+         *     own texts (`[prompts.monitor]`), `categories` its category definitions
+         *     (`[prompts.monitor.categories]`) and `glossary` what each record type is
+         *     (`[prompts.monitor.glossary]`). `tools` holds the channel tools too, by the names their
          *     kinds give them unless a scenario names them otherwise.
          */
         PromptsInfo: {
@@ -6241,6 +6242,10 @@ export interface components {
             };
             /** Categories */
             categories: {
+                [key: string]: components["schemas"]["Text"];
+            };
+            /** Glossary */
+            glossary: {
                 [key: string]: components["schemas"]["Text"];
             };
             /** Monitor */

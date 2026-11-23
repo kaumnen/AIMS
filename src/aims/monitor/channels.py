@@ -542,7 +542,7 @@ class ChannelSweeper:
         short = False
         try:
             body = "\n\n".join(
-                [rendered.text, glossary(rendered.types), self.texts["channel_extract"]]
+                [rendered.text, glossary(rendered.types, self.texts), self.texts["channel_extract"]]
             )
             extracted = await self._extract(body, calls)
             summary = extracted.summary

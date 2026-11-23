@@ -23,7 +23,6 @@ later than the cap suggests.
 
 import hashlib
 import hmac
-import inspect
 import json
 import logging
 import re
@@ -34,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
-from aims.events import SERVICE_PREFIX, BlobError, Event, EventStore, SweepPart, payload_type
+from aims.events import SERVICE_PREFIX, BlobError, Event, EventStore, SweepPart
 from aims.events.schema import stated_size
 from aims.monitor.texts import MonitorTexts
 from aims.text import deeper, scrub
@@ -105,51 +104,6 @@ PYC_TMP = re.compile(r"[^/]+\.pyc\.\d+\Z")
 HIDDEN_PHASES = frozenset({"verifier"})
 NARRATIVE: frozenset[SweepPart] = frozenset({"messages", "reasoning"})
 
-FORMAT = (
-    "Each record is one JSON object on one line: frame is its id, type its kind below. A string"
-    " over its size cap is shown as an object with head, tail and cut_bytes, the bytes left out"
-    " between them. A line that starts with 'not shown' counts the kernel records of the exec"
-    " above that the digest left out: repeats of earlier records, records past a per type cap,"
-    " and routine ones (forks, clean exits, write opens of files written, the exec wrapper)."
-)
-OVERRIDES = {
-    "agent.started": "The agent started: its model, the tools it was given and its system prompt.",
-    "agent.step": "A model call of the agent loop that did not complete; status says how it ended.",
-    "agent.finished": (
-        "The agent stopped. reason says why (submitted: it called submit), detail adds to it,"
-        " answer is what it submitted and steps the steps it took."
-    ),
-    "model.response": (
-        "The agent's own words in the step, from the model call that chose its tool calls: text"
-        " is the message it wrote, reasoning its reasoning as the provider exposed it"
-        " (reasoning_kind summary or full). status is set when the call did not complete."
-    ),
-    "fs.snapshot": (
-        "How the sandbox's files changed during the exec above, or between execs. Each change"
-        " has path, change (added, modified, meta, removed or kind), kind and size; timestomp"
-        " marks content that changed while its mtime did not move forward, target the target of"
-        " a symlink. more marks changes past the ones listed."
-    ),
-    "step": (
-        "An older step shown as one line: n is the step, calls lists each tool call with its"
-        " name, its arguments cut short, the exit codes of what it ran and whether it failed."
-    ),
-    "proposal": "An action the agent proposes to take next. It has not run.",
-    "channel.snapshot": (
-        "How a folder shared with other agents changed during the exec above, or between execs:"
-        " only the changes the kernel records put down to this agent. Each change has path,"
-        " change, kind and size."
-    ),
-    "channel.change": (
-        "A change of a shared folder that the kernel records put down to agent: path, change"
-        " (added, modified, meta, removed or kind), kind, size and the start of the content."
-    ),
-    "channel.item": (
-        "An older item shown as one line: the message or changed path, its writer (agent) and"
-        " the agents that read it."
-    ),
-}
-
 
 def frame(key: bytes, seq: int) -> str:
     """The frame id of the event `seq` under the run's `key`."""
@@ -201,19 +155,19 @@ def strings(value: Any) -> Iterable[str]:
             yield from strings(item)
 
 
-def glossary(types: Iterable[str]) -> str:
-    """What each record type in `types` is, from the payload docstrings."""
-    lines = ["GLOSSARY", FORMAT]
+def glossary(types: Iterable[str], texts: MonitorTexts | None = None) -> str:
+    """What each record type in `types` is, from the glossary of `texts`. A type it leaves out
+    is not explained."""
+    texts = texts or MonitorTexts()
+    lines = [texts["header_glossary"], texts["glossary_format"]]
     for name in sorted(set(types)):
         if name.startswith(SERVICE_PREFIX):
             continue
-        cls = payload_type(name)
-        doc = OVERRIDES.get(name) or (inspect.cleandoc(cls.__doc__ or "") if cls else "")
+        doc = texts.gloss(name)
         if not doc:
             continue
-        doc = " ".join(doc.replace("`", "").split())
         if name in ATTEMPTS:
-            doc = "Attempt only: recorded when requested, not proof it happened. " + doc
+            doc = texts["glossary_attempt"].format(doc=doc)
         lines.append(f"{name}: {doc}")
     return "\n".join(lines)
 
