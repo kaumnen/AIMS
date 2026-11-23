@@ -1484,6 +1484,7 @@ async def _run(**o: Any) -> int:
         history,
         priced_fork,
         priced_runs,
+        warning_lines,
     )
     from aims.run.fork import (
         CutAt,
@@ -1675,7 +1676,7 @@ async def _run(**o: Any) -> int:
             if o["json_out"]:
                 stdout(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
             else:
-                for text in cost.lines:
+                for text in warning_lines(cost) if o["quiet"] else cost.lines:
                     err.print(shown(text))
         terminal = sys.stdin.isatty() and sys.stderr.isatty()
         interactive = terminal and not o["quiet"] and not o["json_out"]
@@ -2690,7 +2691,13 @@ async def _monitor_runs(**o: Any) -> int:
     )
     from aims.node.client import ApiError
     from aims.prompts import TextError
-    from aims.run.estimate import ask_why, estimate_review, priced_review, reviews_confirm
+    from aims.run.estimate import (
+        ask_why,
+        estimate_review,
+        priced_review,
+        reviews_confirm,
+        warning_lines,
+    )
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
@@ -2780,8 +2787,8 @@ async def _monitor_runs(**o: Any) -> int:
         for cost in costs:
             if o["json_out"]:
                 stdout(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
-            elif not o["quiet"]:
-                for text in cost.lines:
+            else:
+                for text in warning_lines(cost) if o["quiet"] else cost.lines:
                     err.print(shown(text))
         refused = ask_why(
             None if o["yes"] else reviews_confirm(costs),

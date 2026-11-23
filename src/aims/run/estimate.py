@@ -1347,8 +1347,7 @@ def describe(e: Estimate) -> list[str]:
         lines.append(f"Blended input per million tokens: {rates}.")
     lines += [listed_line(entry) for entry in e.listed]
     lines += [_credit_line(c) for c in e.credits]
-    lines += [unpriced_line(n, e.unlisted.get(n)) for n in e.unpriced]
-    lines += [f"warning: {w}" for w in e.warnings]
+    lines += warning_lines(e)
     return lines
 
 
@@ -1377,6 +1376,17 @@ def unpriced_line(name: str, why: str | None = None) -> str:
     """The warning for profile `name`, which has no price; `why` it got no list price."""
     reason = "" if why is None else f" and {why}"
     return f"warning: profile {name} has no price{reason}, so its calls are not counted"
+
+
+def warning_lines(e: Estimate | ReviewEstimate) -> list[str]:
+    """The warnings of `e`: a profile with no price, an agent no cap bounds, a monitor budget
+    too small to sweep every step. `--quiet` prints these alone."""
+    if isinstance(e, Estimate):
+        unpriced = [unpriced_line(n, e.unlisted.get(n)) for n in e.unpriced]
+        return [*unpriced, *(f"warning: {w}" for w in e.warnings)]
+    if e.preset not in MODEL_PRESETS:
+        return []
+    return [unpriced_line(n, why) for n, why in e.unlisted.items()]
 
 
 def _replayed_line(part: VariantCost) -> str:
@@ -1799,7 +1809,7 @@ def describe_review(e: ReviewEstimate) -> list[str]:
     if not e.priced:
         return [
             f"{head}; its models have no price, so its cost is not counted.",
-            *(unpriced_line(n, why) for n, why in e.unlisted.items()),
+            *warning_lines(e),
         ]
     steps = "1 agent step" if e.steps == 1 else f"{e.steps} agent steps"
     words = [f"{head}, over {steps}."]
@@ -1836,7 +1846,7 @@ def describe_review(e: ReviewEstimate) -> list[str]:
             parts.append(f"at most {usd(t.ceiling_usd)}.")
         lines.append(" ".join(parts).rstrip(","))
     lines += [listed_line(entry) for entry in e.listed]
-    lines += [unpriced_line(n, why) for n, why in e.unlisted.items()]
+    lines += warning_lines(e)
     return lines
 
 

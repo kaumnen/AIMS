@@ -382,6 +382,58 @@ def test_aims_monitor_prints_its_estimate_and_refuses_above_the_limit_unless_yes
     )
 
 
+UNLISTED = """
+[profiles.watch]
+backend = "chat"
+base_url = "https://api.example.com/v1"
+model = "watch-model"
+weights = "watch-weights"
+api_key_env = "MODEL_API_KEY"
+reasoning = "full"
+max_output_tokens = 32768
+context_tokens = 1048576
+price_key = "vendor-x/nothing"
+
+[roles]
+sweep = "watch"
+judge = "watch"
+"""
+
+
+def test_aims_monitor_quiet_prints_no_estimate_but_the_no_price_warning(
+    runs: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aims.models.listprice import MIN_ROWS, PriceLists
+
+    root, origin = runs
+    # a kept copy of the price map that lists no row for the monitor's key
+    rows = {f"filler/model-{i}": {"mode": "chat"} for i in range(MIN_ROWS)}
+    found = httpx2.MockTransport(lambda request: httpx2.Response(200, json=rows))
+    asyncio.run(PriceLists(transport=found).get())
+    config = tmp_path / "aims.toml"
+    config.write_text(UNLISTED)
+    monkeypatch.setenv("MODEL_API_KEY", "unused")
+    monkeypatch.setenv("AIMS_KEYS", "MODEL_API_KEY=https://api.example.com/v1")
+
+    async def stopped(*args: Any, **kwargs: Any) -> Any:
+        raise RunError("not run")
+
+    monkeypatch.setattr(offline, "monitor_offline", stopped)
+    args = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--config", str(config)]
+    warning = (
+        "warning: profile watch has no price and LiteLLM lists no key vendor-x/nothing, so its"
+        " calls are not counted"
+    )
+    loud = invoke(*args, "--monitor", "standard")
+    assert loud.exit_code == 1, loud.output
+    said = " ".join(loud.stderr.split())
+    assert "Review: standard monitor; its models have no price" in said
+    assert warning in said
+    quiet = invoke(*args, "--monitor", "standard", "--quiet")
+    assert quiet.exit_code == 1, quiet.output
+    assert " ".join(quiet.stderr.split()) == f"{warning} error: not run"
+
+
 def test_aims_monitor_lays_the_config_file_over_the_scenario(
     runs: tuple[Path, str], tmp_path: Path
 ) -> None:
@@ -525,6 +577,35 @@ def run_stubbed(
 
 def statuses(result: Any) -> list[str]:
     return [line.split()[1] for line in result.stdout.splitlines()]
+
+
+def test_aims_run_quiet_prints_no_estimate_but_its_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, _ = run_stubbed(tmp_path, monkeypatch, sealed, "--no-score")
+    assert result.exit_code == 0, result.output
+    assert statuses(result) == ["completed"]
+    # the agent's profile has no price; the estimate's other lines are left out
+    warning = "warning: profile agent has no price, so its calls are not counted"
+    assert result.stderr.splitlines() == [warning]
+    # a priced profile with no output cap, and no cost caps: nothing bounds the cost
+    priced = tmp_path / "priced.toml"
+    priced.write_text(
+        '[profiles.agent]\nbackend = "chat"\nbase_url = "http://agent.invalid/v1"\n'
+        'model = "agent-model"\nweights = "agent-weights"\nreasoning = "full"\n'
+        "price = { input = 1.0, cached = 0.1, output = 2.0 }\n"
+        '[roles]\nagent = "agent"\n'
+    )
+    uncapped = ["--config", str(priced), "--budget", "cost_usd=none,run.cost_usd=none"]
+    result, _ = run_stubbed(tmp_path, monkeypatch, sealed, "--no-score", *uncapped)
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.stderr.split())
+    assert said.endswith(
+        "warning: no cap bounds the cost of agent a; set its budget.cost_usd or the scenario's"
+        " limits.cost_usd"
+    )
+    assert "Cost estimate" not in said
+    assert "Total:" not in said
 
 
 @pytest.mark.parametrize(
