@@ -153,8 +153,10 @@ rawtracepoint:task_newtask /@sandbox[cgroup] && !(arg1 & 0x10000)/ {
   printf("F %llu %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $t->pid, $ns);
 }
 
-// A sandbox is a cgroup where a root process started a /.aims/ binary. The runner's helpers
-// match too; their cgroups are unmarked on rmdir.
+// A sandbox is a cgroup where a process started a /.aims/ binary from outside. The process is in
+// a pid namespace below the tracer's, and its parent is in the tracer's own, as with docker exec
+// or a container's first process. The runner's helpers match too; their cgroups are unmarked on
+// rmdir.
 fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
   $f = str(args.bprm->filename);
   if (!@sandbox[cgroup] && curtask->real_parent->thread_pid->level <= @base && strncmp($f, "/.aims/", 7) == 0) {
