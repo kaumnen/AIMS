@@ -42,6 +42,7 @@ LINE_TYPES = {
     "monitor.verdict": "verdict",
     "monitor.degraded": "degraded",
     "monitor.cleared": "cleared",
+    "monitor.judging": "judging",
 }
 
 
@@ -584,8 +585,8 @@ def summary(results: list[Result], digests: Sequence[Digest] = ()) -> Renderable
 
 class JsonLines:
     """The monitor's events of each run added, one JSON line each as they land: flags,
-    actions, sweeps, verdicts, degradations and clears. `failed` says a line was lost, other
-    than to a closed pipe, as from `| head`."""
+    actions, sweeps, the judge's start, verdicts, degradations and clears. `failed` says a line
+    was lost, other than to a closed pipe, as from `| head`."""
 
     def __init__(self, store: EventStore, emit: Callable[[str], None]) -> None:
         self.store = store

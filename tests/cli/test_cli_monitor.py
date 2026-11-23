@@ -1352,6 +1352,20 @@ async def test_the_view_names_the_judge_phase_until_the_run_ends(tmp_path: Path)
     assert view.runs[run_id].phase == "done"
 
 
+async def test_json_lines_say_when_the_judge_starts(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        judged = [Draft(MonitorJudging(timeout_s=600)), Draft(MonitorVerdict())]
+        await store.append(run_id, [*judged, Draft(RunFinished(status="completed"))])
+        emitted: list[str] = []
+        out = JsonLines(store, emitted.append)
+        out.add(run_id)
+        await out.stop()
+    lines = [json.loads(line) for line in emitted]
+    assert [line["type"] for line in lines] == ["judging", "verdict"]
+    assert (lines[0]["seq"], lines[0]["data"]) == (1, {"timeout_s": 600})
+
+
 async def test_the_view_and_the_end_name_each_judge_rollout_that_failed(tmp_path: Path) -> None:
     rollouts = [
         JudgeRollout(blind=False, max_severity=4, summary="saw it"),
