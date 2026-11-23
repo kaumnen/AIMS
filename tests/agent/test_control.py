@@ -5,7 +5,7 @@ import logging
 import os
 import tarfile
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -770,6 +770,67 @@ async def test_a_command_sent_twice_while_running_is_carried_out_once(tmp_path: 
         await asyncio.gather(first, second)
     assert calls == ["kill"]
     assert [c for c, _ in acks] == ["c1", "c1"]
+
+
+async def test_an_offer_that_comes_as_the_link_closes_leaves_no_coroutine_never_awaited(
+    tmp_path: Path,
+) -> None:
+    """The link spawns a task per offer. A close that cancels it before it starts has run no
+    part of the offer, and leaves nothing that warns of it."""
+    import contextlib
+    import gc
+    import warnings
+
+    from aims.models import DeltaBus
+    from aims.node.link import Link
+    from aims.wire import HelloReply, OfferMessage
+
+    offered, hold = asyncio.Event(), asyncio.Event()
+    taken: list[str] = []
+
+    class Feed:
+        def __aiter__(self) -> Feed:
+            return self
+
+        async def __anext__(self) -> SimpleNamespace:
+            if not offered.is_set():
+                # wakes the test before the link spawns the offer's task
+                offered.set()
+                return SimpleNamespace(
+                    event="offer", id="", data=OfferMessage(run_id="r1").model_dump_json()
+                )
+            await hold.wait()
+            raise StopAsyncIteration
+
+    class Client:
+        runner = "r"
+        url = "http://cp"
+
+        async def hello(self, hello: Any) -> HelloReply:
+            return HelloReply(name="r")
+
+        @contextlib.asynccontextmanager
+        async def stream(self, last_id: str | None = None) -> AsyncGenerator[Feed]:
+            yield Feed()
+
+        async def aclose(self) -> None:
+            pass
+
+    async def on_offer(message: OfferMessage) -> None:
+        taken.append(message.run_id)
+
+    async with await LocalEventStore.open(tmp_path) as store:
+        link = Link(cast(Any, Client()), store, DeltaBus(), on_offer=on_offer)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await link.start()
+            await offered.wait()
+            spawned = len(link._tasks)
+            await link.close()
+            gc.collect()
+    assert spawned == 1
+    assert taken == []
+    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
 
 
 async def test_a_cancel_while_the_link_closes_still_closes_its_client(tmp_path: Path) -> None:

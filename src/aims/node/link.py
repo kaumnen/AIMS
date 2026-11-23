@@ -3,6 +3,7 @@ commands on its runs, ships every run and forwards model deltas."""
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import platform
@@ -200,7 +201,7 @@ class Link:
 
     def _deleted(self, run_id: str) -> None:
         if self.on_deleted is not None:
-            self._spawn(self.on_deleted(run_id))
+            self._spawn(functools.partial(self.on_deleted, run_id))
 
     async def ship_all(self) -> None:
         """Ship every local run the server does not hold sealed, but none it deleted and none
@@ -253,9 +254,12 @@ class Link:
         except (ApiError, httpx2.TransportError, OSError) as e:
             log.warning("run %s: labels not sent: %s", run_id, e)
 
-    def _spawn(self, coro: Awaitable[None]) -> None:
+    def _spawn(self, call: Callable[[], Awaitable[None]]) -> None:
+        """Run `call()` in a task of its own. Its coroutine is made only once the task starts,
+        so a task cancelled before then, as by a close, leaves none that never ran."""
+
         async def wrap() -> None:
-            await coro
+            await call()
 
         task = asyncio.create_task(wrap())
         self._tasks.add(task)
@@ -283,9 +287,9 @@ class Link:
                         message = FEED.validate_json(sse.data)
                         if isinstance(message, CommandMessage):
                             self._last_id = sse.id or self._last_id
-                            self._spawn(self._command(message))
+                            self._spawn(functools.partial(self._command, message))
                         elif self.on_offer is not None:
-                            self._spawn(self.on_offer(message))
+                            self._spawn(functools.partial(self.on_offer, message))
             except asyncio.CancelledError:
                 raise
             except ApiError as e:
