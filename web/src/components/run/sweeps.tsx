@@ -131,19 +131,22 @@ function SweepRow({
       </tr>
       <tr>
         <td colSpan={multi ? 9 : 8} className="pb-2">
-          {error ? (
-            <p className={noRoom ? "text-muted-foreground" : "text-flag"}>
-              {noRoom ? "Out of budget" : "Failed"}: {error}
-            </p>
-          ) : (
-            <TextOf
-              runId={runId}
-              value={d["summary"]}
-              mono={false}
-              className="border-0 px-0 py-0"
-            />
-          )}
-          {notes.length > 0 && <p className="text-muted-foreground">{notes.join(" · ")}</p>}
+          {/* as wide as the screen at most: on a phone the table scrolls sideways, the text wraps */}
+          <div className="max-w-[calc(100vw-2rem)]">
+            {error ? (
+              <p className={noRoom ? "text-muted-foreground" : "text-flag"}>
+                {noRoom ? "Out of budget" : "Failed"}: {error}
+              </p>
+            ) : (
+              <TextOf
+                runId={runId}
+                value={d["summary"]}
+                mono={false}
+                className="border-0 px-0 py-0"
+              />
+            )}
+            {notes.length > 0 && <p className="text-muted-foreground">{notes.join(" · ")}</p>}
+          </div>
         </td>
       </tr>
     </tbody>
