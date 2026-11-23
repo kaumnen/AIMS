@@ -9,7 +9,7 @@ from typing import Any, Literal
 import httpx2
 import rfc8785
 
-from aims.events import EventStore, ModelError, ModelRequest, ModelResponse
+from aims.events import BlobError, BlobRef, EventStore, ModelError, ModelRequest, ModelResponse
 from aims.models.transport import current, decode_chunks
 from aims.models.types import NO_ROOM
 
@@ -62,7 +62,7 @@ class Recording:
         self.run_id = run_id
         self.entries: dict[str, deque[Recorded]] = {}
         self.served: dict[str, int] = {}
-        self.bodies: dict[str, str] = {}
+        self.bodies: dict[str, BlobRef] = {}
 
     @classmethod
     async def load(cls, store: EventStore, run_id: str) -> Recording:
@@ -82,7 +82,7 @@ class Recording:
                         continue
                     entry = await rec._entry(event.seq, payload)
                     rec.entries.setdefault(request.key, deque()).append(entry)
-                    rec.bodies[request.key] = request.body.sha256
+                    rec.bodies[request.key] = request.body
         return rec
 
     async def _entry(self, seq: int, r: ModelResponse) -> Recorded:
@@ -129,12 +129,18 @@ class Recording:
             return None, None
         canonical = rfc8785.dumps(json.loads(body))
         best: tuple[int, str, bytes] | None = None
-        for key, sha in self.bodies.items():
-            other = rfc8785.dumps(json.loads(await self.store.get_blob(self.run_id, sha)))
+        for key, ref in self.bodies.items():
+            # a body that does not read as its reference states is no candidate
+            try:
+                recorded = await self.store.get_blob(self.run_id, ref.sha256, ref.size)
+            except BlobError, KeyError:
+                continue
+            other = rfc8785.dumps(json.loads(recorded))
             common = _common_prefix(canonical, other)
             if best is None or common > best[0]:
                 best = (common, key, other)
-        assert best is not None
+        if best is None:
+            return None, None
         return best[1], first_difference(json.loads(body), json.loads(best[2]))
 
 

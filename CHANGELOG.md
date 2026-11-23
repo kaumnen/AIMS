@@ -73,6 +73,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- A replay miss reads a recorded request body only up to the size its reference states.
 - A fork takes a recorded scenario input only through an exact blob reference with its size. A loose reference read its blob whole.
 - A UI live stream whose client drops is released at once. It kept its place in the stream count and its feed of live model output until Python's garbage collector ran.
 - A runner whose stream drops gives back the jobs offered to it at once. A drop during a send kept the stream open until Python's garbage collector ran. Until then the runner showed as connected, so each job offered to it waited 10 s. A drop could also keep a job in the runner's offers for good, so a runner with one slot got no more jobs until the server restarted. A stream opened before the runner's hello gets a 409.

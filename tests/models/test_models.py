@@ -6,6 +6,7 @@ import os
 import signal
 import time
 import traceback
+import tracemalloc
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,8 +21,11 @@ from typer.testing import CliRunner
 
 from aims.cli import EXIT_CANCELLED, app
 from aims.events import (
+    BlobRef,
+    Draft,
     Event,
     LocalEventStore,
+    ModelParams,
     ModelRequest,
     ModelResponse,
     RateLimit,
@@ -1002,6 +1006,39 @@ async def test_replay_serves_recorded_answers_in_order(store: LocalEventStore) -
     ]
     origin = await store.events(source, types=["model.response"])
     assert [e.data["origin_seq"] for e in responses[:3]] == [e.seq for e in origin]
+
+
+async def test_a_replay_miss_reads_a_recorded_body_no_further_than_it_states(
+    store: LocalEventStore,
+) -> None:
+    source = await new_run(store)
+    big = await store.put_blob(source, b'{"m":"' + b"a" * (64 * 1024 * 1024) + b'"}')
+    request = ModelRequest(
+        call_id="c",
+        attempt=1,
+        profile="p",
+        backend="chat",
+        model="m",
+        url="u",
+        params=ModelParams(stream=False),
+        body=BlobRef(sha256=big.sha256, size=10),
+        key="0" * 64,
+    )
+    small = await store.put_blob(source, b"{}")
+    response = ModelResponse(
+        call_id="c", attempt=1, status="completed", http_status=200, latency_ms=1, body=small
+    )
+    await store.append(source, [Draft(request, "a"), Draft(response, "a")])
+    recording = await Recording.load(store, source)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ReplayMiss) as info:
+            await recording.take(b'{"x":1}')
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert info.value.nearest is None
+    assert peak < 8 * 1024 * 1024
 
 
 @pytest.mark.timing
