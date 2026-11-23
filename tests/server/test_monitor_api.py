@@ -750,6 +750,12 @@ async def test_prompts_list_monitor_texts_with_their_layer(cp: CP) -> None:
     bash = info["tools"]["bash"]
     assert all(t["source"] == "default" and t["text"] == t["default"] for t in bash.values())
     assert bash["timeout"]["placeholders"] == ["timeout_s"]
+    assert bash["stdout_cut"]["placeholders"] == ["bytes", "text"]
+    assert bash["param_command"]["placeholders"] is None
+    edit = info["tools"]["edit"]
+    assert edit["many_matches"]["placeholders"] == ["count", "lines", "path"]
+    assert info["agent"]["omitted"]["placeholders"] == ["bytes"]
+    assert info["agent"]["arguments_not_object"]["placeholders"] is None
 
 
 async def test_config_edits_take_the_monitor_tables(cp: CP) -> None:

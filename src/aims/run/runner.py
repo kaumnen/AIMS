@@ -989,6 +989,7 @@ class Runner:
                     config=agent,
                     steps=steps,
                     tools=tools,
+                    texts=self.texts[agent.id].agent,
                     gate=self._control,
                     clock=self._control.clock(agent.id),
                     sandbox_config=self.scenario.sandbox,

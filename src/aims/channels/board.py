@@ -75,11 +75,13 @@ class PostTool(_BoardTool):
             "The message is {bytes} bytes, over the {max_bytes} bytes the {channel} board takes."
             " Nothing was posted."
         ),
+        "param_text": "The message.",
     }
     placeholders: ClassVar[dict[str, frozenset[str]]] = {
         "description": frozenset({"channel", "members", "max_bytes"}),
         "posted": frozenset({"channel", "id"}),
         "too_long": frozenset({"channel", "bytes", "max_bytes"}),
+        "param_text": frozenset({"channel"}),
     }
 
     def spec(self, config: object) -> ToolSpec:
@@ -89,7 +91,7 @@ class PostTool(_BoardTool):
         )
         parameters = {
             "type": "object",
-            "properties": {"text": {"type": "string", "description": "The message."}},
+            "properties": {"text": {"type": "string", "description": self._format("param_text")}},
             "required": ["text"],
             "additionalProperties": False,
         }

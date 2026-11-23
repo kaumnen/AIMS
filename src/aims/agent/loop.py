@@ -696,7 +696,7 @@ class Agent:
                 if outcome.answer is not None:
                     for skipped in calls[i + 1 :]:
                         await self._pass_turn(skipped)
-                        await self._result(skipped, "Not run: the task was submitted.", True)
+                        await self._result(skipped, self.texts.not_run, True)
                     return outcome.answer
             self._open = None
             self._warn_budget()
@@ -952,9 +952,10 @@ class Agent:
             config=self.sandbox_config,
             gate=self.gate,
             phase="replay" if replayed else "agent",
+            omitted=self.texts.omitted,
         )
         outcome = await self._run_tool(ctx, call)
-        text, truncated = cap(outcome.output.encode())
+        text, truncated = cap(outcome.output.encode(), marker=self.texts.omitted)
         error = outcome.error
         if replayed:
             assert self.replay is not None
@@ -975,7 +976,7 @@ class Agent:
         return outcome
 
     async def _run_tool(self, ctx: ToolContext, call: ToolRequest) -> ToolOutcome:
-        return await run_tool(self.tools, ctx, call.name, call.arguments)
+        return await run_tool(self.tools, ctx, call.name, call.arguments, self.texts)
 
     async def _result(
         self,
@@ -1218,20 +1219,20 @@ async def pass_gate(
 
 
 async def run_tool(
-    tools: Mapping[str, Tool], ctx: ToolContext, name: str, arguments: str
+    tools: Mapping[str, Tool], ctx: ToolContext, name: str, arguments: str, texts: AgentTexts
 ) -> ToolOutcome:
     """Run tool `name` of `tools` with `arguments`, a JSON object as text. An unknown tool, bad
-    arguments or a tool that raises give an error outcome, never an exception."""
+    arguments or a tool that raises give an error outcome from `texts`, never an exception."""
     tool = tools.get(name)
     if tool is None:
-        known = ", ".join(tools)
-        return ToolOutcome(f"There is no tool named {name!r}. Tools: {known}.", True)
+        unknown = texts.unknown_tool.format(name=repr(name), tools=", ".join(tools))
+        return ToolOutcome(unknown, error=True)
     try:
         raw = scrub(json.loads(arguments)) if arguments.strip() else {}
     except (ValueError, RecursionError) as e:
-        return ToolOutcome(f"The arguments are not valid JSON: {e}", error=True)
+        return ToolOutcome(texts.arguments_not_json.format(error=e), error=True)
     if not isinstance(raw, dict):
-        return ToolOutcome("The arguments must be a JSON object.", error=True)
+        return ToolOutcome(texts.arguments_not_object, error=True)
     try:
         args = tool.args.model_validate(raw)
     except ValidationError as e:
@@ -1239,14 +1240,15 @@ async def run_tool(
             f"{'.'.join(str(p) for p in err['loc']) or 'arguments'}: {err['msg']}"
             for err in e.errors(include_url=False)
         )
-        return ToolOutcome(f"Invalid arguments: {problems}", error=True)
+        return ToolOutcome(texts.arguments_invalid.format(problems=problems), error=True)
     try:
         return await tool.run(ctx, args)
     except asyncio.CancelledError:
         raise
     except Exception as e:
         log.exception("tool %s failed", name)
-        return ToolOutcome(f"The tool failed: {type(e).__name__}: {e}", error=True)
+        failed = texts.tool_failed.format(error=f"{type(e).__name__}: {e}")
+        return ToolOutcome(failed, error=True)
 
 
 def _size(items: Sequence[Item]) -> int:

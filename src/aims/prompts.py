@@ -33,15 +33,27 @@ BUDGET_STEPS = "You have used {used} of your {limit} steps."
 BUDGET_OUTPUT_TOKENS = "You have used {used} of your {limit} output tokens."
 BUDGET_COST_USD = "You have spent {used:.2f} of your {limit:.2f} USD."
 BUDGET = frozenset({"used", "limit"})
+DENIED = "This action was not permitted."
+NOTIFY_ON_RESUME = ""
+UNKNOWN_TOOL = "There is no tool named {name}. Tools: {tools}."
+ARGUMENTS_NOT_JSON = "The arguments are not valid JSON: {error}"
+ARGUMENTS_NOT_OBJECT = "The arguments must be a JSON object."
+ARGUMENTS_INVALID = "Invalid arguments: {problems}"
+TOOL_FAILED = "The tool failed: {error}"
+NOT_RUN = "Not run: the task was submitted."
+OMITTED = "[... {bytes} bytes omitted ...]"
 # The agent texts filled in with str.format, and the names each may use; the rest are sent as
 # written.
 PLACEHOLDERS = {
     "budget_steps": BUDGET,
     "budget_output_tokens": BUDGET,
     "budget_cost_usd": BUDGET,
+    "unknown_tool": frozenset({"name", "tools"}),
+    "arguments_not_json": frozenset({"error"}),
+    "arguments_invalid": frozenset({"problems"}),
+    "tool_failed": frozenset({"error"}),
+    "omitted": frozenset({"bytes"}),
 }
-DENIED = "This action was not permitted."
-NOTIFY_ON_RESUME = ""
 
 
 class TextError(ValueError):
@@ -69,7 +81,15 @@ class AgentTexts(_Strict):
     """The texts of the agent loop, resolved. `nudge` follows a reply without a tool call;
     `trimmed` replaces old tool outputs when compaction trims; the budget texts take `{used}`
     and `{limit}`. `denied` is the output of a tool call that was denied. `notify_on_resume`,
-    when not empty, is given to the agent when it is resumed after a pause."""
+    when not empty, is given to the agent when it is resumed after a pause.
+
+    The output of a tool call that does not run: `unknown_tool` names no tool the agent has
+    (`{name}` quoted, `{tools}` the ones it has); `arguments_not_json` and
+    `arguments_not_object` refuse arguments that are not a JSON object; `arguments_invalid`
+    lists what the tool's arguments got wrong in `{problems}`; `tool_failed` holds the error
+    the tool raised. `not_run` is the output of the calls after a submit in the same reply.
+    `omitted` stands in for the middle of an output cut to size, with `{bytes}` the bytes it
+    leaves out."""
 
     system: str = SYSTEM
     nudge: str = NUDGE
@@ -81,6 +101,13 @@ class AgentTexts(_Strict):
     budget_cost_usd: str = BUDGET_COST_USD
     denied: str = DENIED
     notify_on_resume: str = NOTIFY_ON_RESUME
+    unknown_tool: str = UNKNOWN_TOOL
+    arguments_not_json: str = ARGUMENTS_NOT_JSON
+    arguments_not_object: str = ARGUMENTS_NOT_OBJECT
+    arguments_invalid: str = ARGUMENTS_INVALID
+    tool_failed: str = TOOL_FAILED
+    not_run: str = NOT_RUN
+    omitted: str = OMITTED
 
     @model_validator(mode="after")
     def _placeholders(self) -> Self:
@@ -107,6 +134,13 @@ class Prompts(_Strict):
     budget_cost_usd: str | None = None
     denied: str | None = None
     notify_on_resume: str | None = None
+    unknown_tool: str | None = None
+    arguments_not_json: str | None = None
+    arguments_not_object: str | None = None
+    arguments_invalid: str | None = None
+    tool_failed: str | None = None
+    not_run: str | None = None
+    omitted: str | None = None
     tools: dict[str, dict[str, str]] = Field(default_factory=dict)
     monitor: dict[str, str | dict[str, str]] = Field(default_factory=dict)
 

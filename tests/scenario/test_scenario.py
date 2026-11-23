@@ -662,12 +662,18 @@ def test_prompts_show_prints_an_editable_table(tmp_path: Path) -> None:
     import tomllib
 
     config = tmp_path / "aims.toml"
-    config.write_text('[prompts]\nnudge = "carry on"\n[prompts.tools.bash]\ntimeout = "slow"\n')
+    config.write_text(
+        '[prompts]\nnudge = "carry on"\nomitted = "<{bytes}>"\n'
+        '[prompts.tools.bash]\ntimeout = "slow"\n[prompts.tools.edit]\nparam_path = "Where."\n'
+    )
     out = CliRunner().invoke(app, ["prompts", "show", "--config", str(config)])
     assert out.exit_code == 0, out.output
     table = tomllib.loads(out.stdout)["prompts"]
-    assert table["nudge"] == "carry on"
+    assert (table["nudge"], table["omitted"]) == ("carry on", "<{bytes}>")
+    assert table["not_run"] == "Not run: the task was submitted."
     assert table["tools"]["bash"]["timeout"] == "slow"
+    assert table["tools"]["bash"]["exit_code"] == "exit code: {code}"
+    assert table["tools"]["edit"]["param_path"] == "Where."
     assert set(table["tools"]) == {"bash", "edit", "submit", "report_to_operator"}
     config.write_text("[prompts]\nbogus = 1\n")
     bad = CliRunner().invoke(app, ["prompts", "show", "--config", str(config)])

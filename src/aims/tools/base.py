@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 from aims.events import Draft, EventStore, ExecPhase, Payload
 from aims.models import ToolSpec
-from aims.prompts import TextError, check_format
+from aims.prompts import OMITTED, TextError, check_format
 from aims.scenario import SandboxConfig
 
 if TYPE_CHECKING:
@@ -24,7 +24,8 @@ class Args(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
-    """What a tool may use for one call. Execs go through `sandbox`, which records them."""
+    """What a tool may use for one call. Execs go through `sandbox`, which records them.
+    `omitted` is the agent's text for the middle of an output cut to size."""
 
     sandbox: AuditedSandbox
     store: EventStore
@@ -35,6 +36,7 @@ class ToolContext:
     config: SandboxConfig
     gate: Gate
     phase: ExecPhase = "agent"
+    omitted: str = OMITTED
 
     async def emit(self, payload: Payload) -> None:
         await self.store.append(self.run_id, [Draft(payload, self.agent_id)])
@@ -70,7 +72,9 @@ class Tool(Protocol):
 
 
 class TextTool:
-    """Keeps a tool's texts: its defaults with the replacements it was built with."""
+    """Keeps a tool's texts: its defaults with the replacements it was built with. `say` gives
+    one of them, filled in with exactly the names its `placeholders` entry lists, or as written
+    when it has none."""
 
     name: ClassVar[str]
     texts: ClassVar[dict[str, str]] = {}
@@ -85,6 +89,12 @@ class TextTool:
         self.text = {**self.texts, **texts}
         for key, allowed in self.placeholders.items():
             check_format(self.text[key], allowed, f"tools.{self.name}.{key}")
+
+    def say(self, key: str, /, **values: object) -> str:
+        allowed = self.placeholders.get(key)
+        if set(values) != set(allowed or ()):
+            raise TypeError(f"tool {self.name}: text {key} takes {sorted(allowed or ())}")
+        return self.text[key] if allowed is None else self.text[key].format(**values)
 
 
 class UnknownTool(Exception):
@@ -114,18 +124,21 @@ def load_tools(
     return [known[n](texts.get(n)) for n in names]
 
 
-def cap(data: bytes, limit: int = OUTPUT_LIMIT) -> tuple[str, bool]:
+def cap(data: bytes, limit: int = OUTPUT_LIMIT, marker: str = OMITTED) -> tuple[str, bool]:
     """`data` as text, cut to its first and last `limit / 2` bytes when longer than `limit`."""
-    return cap_stream(data, data[-(limit // 2) :], len(data), limit)
+    return cap_stream(data, data[-(limit // 2) :], len(data), limit, marker)
 
 
-def cap_stream(head: bytes, tail: bytes, total: int, limit: int = OUTPUT_LIMIT) -> tuple[str, bool]:
+def cap_stream(
+    head: bytes, tail: bytes, total: int, limit: int = OUTPUT_LIMIT, marker: str = OMITTED
+) -> tuple[str, bool]:
     """A stream of `total` bytes as text, from its first bytes `head` and last bytes `tail`,
-    cut to its first and last `limit / 2` bytes when longer than `limit`."""
+    cut to its first and last `limit / 2` bytes when longer than `limit`. `marker` stands in
+    for the bytes left out, its `{bytes}` their count, on a line of its own."""
     if total <= limit and len(head) >= total:
         return head[:total].decode(errors="replace"), False
     half = limit // 2
     first = head[:half].decode(errors="ignore")
     last = tail[-half:].decode(errors="ignore") if total > half else ""
     omitted = total - len(first.encode()) - len(last.encode())
-    return f"{first}\n[... {omitted} bytes omitted ...]\n{last}", True
+    return f"{first}\n{marker.format(bytes=omitted)}\n{last}", True

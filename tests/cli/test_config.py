@@ -76,6 +76,8 @@ def test_unknown_tables_and_missing_files_are_errors(tmp_path: Path) -> None:
         ('[prompts]\nbudget_steps = "{n} steps"\n', "budget_steps: unknown placeholder n"),
         ('[prompts.tools.bash]\ntimeout = "{s}"\n', r"tools\.bash\.timeout: unknown placeholder s"),
         ('[prompts.tools.submit]\ncolor = "red"\n', "tool submit has no text color"),
+        ('[prompts]\nunknown_tool = "{tool}"\n', "unknown_tool: unknown placeholder tool"),
+        ('[prompts.tools.edit]\nedited = "{lines}"\n', r"tools\.edit\.edited: unknown placeholder"),
     ],
 )
 def test_agent_and_tool_texts_a_run_would_refuse_do_not_load(

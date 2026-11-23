@@ -44,6 +44,7 @@ from aims.events import (
 from aims.events.schema import stated_size
 from aims.models import Profile
 from aims.plants.canary import Canary, render
+from aims.prompts import AgentTexts
 from aims.sandbox import AuditedSandbox
 from aims.scenario import AgentConfig, Scenario
 from aims.scenario.model import Call, FolderChannel, ScriptStep, Start, Trigger
@@ -259,7 +260,8 @@ class ScriptedAgent:
     wall limits, a step's `after_s` does not count the time the agent is paused on `clock`.
     While a step waits on its `on` event, or in a fork for its turn, the agent does not keep
     the run's wall limit going when the others are paused, and its own limit stands still
-    while the run's does."""
+    while the run's does. Its tool calls take their error outputs and their cut marker from
+    `texts`, as a model-driven agent's do."""
 
     def __init__(
         self,
@@ -280,11 +282,13 @@ class ScriptedAgent:
         tools: Sequence[Tool] = (),
         gate: Gate | None = None,
         clock: PauseClock | None = None,
+        texts: AgentTexts | None = None,
     ) -> None:
         self.config = config
         self.id = config.id
         self.sandbox_config = sandbox_config
         self.instruction = instruction
+        self.texts = texts or AgentTexts()
         self.profile = profile
         self.sandbox = sandbox
         self.store = store
@@ -486,10 +490,11 @@ class ScriptedAgent:
             step=n,
             config=self.sandbox_config,
             gate=self.gate,
+            omitted=self.texts.omitted,
         )
-        outcome = await run_tool(self.tools, ctx, call.tool, arguments)
+        outcome = await run_tool(self.tools, ctx, call.tool, arguments, self.texts)
         data = outcome.output.encode()
-        text, truncated = cap(data)
+        text, truncated = cap(data, marker=self.texts.omitted)
         await self._emit(
             ToolResult(
                 call_id=call_id,
