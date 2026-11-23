@@ -119,6 +119,8 @@ aims run --replay <run> --fork-at agent:12 --samples 5
 
 `--fork-at` takes `agent:N` (after that agent's step N), `@seq` (after an event) or `N` (for a run with one agent). Use it to test what one message or one change does from the same point.
 
+The live steps call each agent's profile as the run recorded it. The config needs a profile of that name with the same backend, URL and key variable. `--profile` gives every agent another one.
+
 In a fork of several agents, an agent waiting for another agent's replayed turn counts as waiting. The wall limits stand still while one agent is paused and the others are paused or waiting.
 
 ## The UI

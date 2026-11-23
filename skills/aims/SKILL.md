@@ -113,3 +113,4 @@ aims verify <run>                 # the hash chain and blobs
 | A run stops on a missing key | Ask the user to set the key that `aims models list` shows as unset. |
 | `AIMS_KEYS lacks <entry>` | Show the user the entry. With their yes, add it to `AIMS_KEYS` or pass `--key <entry>`. |
 | A run stops on an unset role | Set the role under `[roles]`. |
+| `pass --yes to start anyway` | The estimate passed `confirm_above_usd`. `aims run`, `aims monitor` and `aims score` ask only at a terminal. Show the user the estimate. Pass `--yes` only after their yes to that cost. |

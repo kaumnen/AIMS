@@ -48,7 +48,7 @@ my-scenario/
 ## Task and verifier
 
 - `instruction` is the text the agent gets.
-- `environment` sets exactly one of `image` (pulled by name) or `dockerfile` (built, its folder is the context). Root-level setup belongs in the Dockerfile. Keep the Dockerfile in a folder of its own such as `env/`. Run viewers can fetch the context. Their copy leaves out only the scenario file, plant sources and self-test scripts.
+- `environment` sets exactly one of `image` (pulled by name) or `dockerfile` (built, its folder is the context). Root-level setup belongs in the Dockerfile. Keep the Dockerfile in a folder of its own such as `env/`. Run viewers can fetch the context. Their copy leaves out only the scenario file, plant sources and self-test scripts. Commands cannot use io_uring or make 32-bit calls, so a 32-bit program in the image fails.
 - `files` places files before setup. Each has `path` (absolute, or relative to the workdir) and exactly one of `source` or `content`, plus an optional `mode` such as `"0600"`. Paths must be under the workdir, `/tmp`, `/home/agent` or `/dev/shm`.
 - `setup` is a list of shell commands run as the agent's user before the agent starts. `setup_timeout_s` defaults to 600. A setup, verifier, command or script step timeout is at most 86400 seconds, a day.
 - `verifier` scores the task after the agent stops, in the same sandbox:
@@ -233,7 +233,7 @@ Common event types and their main fields:
 | Event | Fields |
 | --- | --- |
 | `fs.change` | `path`, `change` (`added`, `modified`, `meta`, `removed`, `kind`), `kind`, `size`, `content`, `channel` |
-| `proc.exec` | `path`, `argv`, `cwd`, `uid`, `env` |
+| `proc.exec` | `path`, `argv` (the first 16 KiB), `argv_partial`, `cwd`, `uid`, `env` |
 | `file.access` | `op`, `path`, `target`, `errno` |
 | `file.look` | `op` (`stat`, `access`, `readlink`, `chdir`, `list`), `path`, `errno` |
 | `file.write` | `path`, `size` |
@@ -247,7 +247,9 @@ Common event types and their main fields:
 <details>
 <summary>Every event type a rule can name</summary>
 
-`agent.compacted`, `agent.finished`, `agent.held`, `agent.input`, `agent.report`, `agent.started`, `agent.step`, `audit.lost`, `audit.spill`, `cache.probe`, `channel.message`, `channel.read`, `channel.snapshot`, `exec.finished`, `exec.started`, `file.access`, `file.look`, `file.setattr`, `file.sync`, `file.write`, `file.xattr`, `fs.change`, `fs.snapshot`, `ipc.event`, `log.truncated`, `mem.exec`, `model.checked`, `model.request`, `model.response`, `net.connect`, `net.listen`, `ns.event`, `operator.action`, `plant.triggered`, `proc.exec`, `proc.exit`, `proc.fork`, `proc.output`, `proc.signal`, `ptrace.event`, `replay.divergence`, `resource.sample`, `run.finished`, `run.started`, `sandbox.archived`, `sandbox.freeze_failed`, `sandbox.outside_pause`, `sandbox.started`, `sandbox.stopped`, `score.answer`, `score.awareness`, `score.degraded`, `score.unexplained`, `score.unit`, `selftest.case`, `sys.denied`, `task.scored`, `tool.call`, `tool.result`.
+`agent.compacted`, `agent.finished`, `agent.held`, `agent.input`, `agent.report`, `agent.started`, `agent.step`, `audit.lost`, `audit.spill`, `cache.probe`, `channel.message`, `channel.read`, `channel.snapshot`, `exec.finished`, `exec.started`, `file.access`, `file.look`, `file.setattr`, `file.sync`, `file.write`, `file.xattr`, `fs.change`, `fs.snapshot`, `ipc.event`, `log.truncated`, `mem.exec`, `model.checked`, `model.request`, `model.response`, `net.connect`, `net.listen`, `ns.event`, `operator.action`, `plant.triggered`, `proc.exec`, `proc.exit`, `proc.fork`, `proc.output`, `proc.signal`, `ptrace.event`, `replay.divergence`, `resource.sample`, `run.finished`, `run.started`, `sandbox.archived`, `sandbox.freeze_failed`, `sandbox.outside_pause`, `sandbox.started`, `sandbox.stopped`, `score.answer`, `score.awareness`, `score.degraded`, `score.unexplained`, `score.unit`, `selftest.case`, `service.ended`, `service.request`, `sys.denied`, `task.scored`, `tool.call`, `tool.result`.
+
+The monitor never sees `service.request` or `service.ended`, so a rule in `monitor.rules` never matches them.
 
 </details>
 
