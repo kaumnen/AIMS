@@ -875,10 +875,9 @@ def images_prune(
     the self-test do this when they start."""
     import asyncio
 
-    import aiodocker
-
     from aims.config import ConfigError, image_keep_days, layers
     from aims.sandbox import images
+    from aims.sandbox.execs import DockerClient
 
     try:
         keep = image_keep_days(layers(config)) if days is None else days
@@ -887,7 +886,7 @@ def images_prune(
         raise typer.Exit(EXIT_FAILED) from None
 
     async def main() -> list[str]:
-        docker = aiodocker.Docker()
+        docker = DockerClient()
         try:
             return await images.remove_old(docker, keep, dry_run=dry_run)
         finally:

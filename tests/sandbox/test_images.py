@@ -30,7 +30,7 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.sandbox import docker as docker_module
-from aims.sandbox import images
+from aims.sandbox import execs, images
 from aims.sandbox.docker import DockerBackend, SandboxError
 from aims.sandbox.images import context, ensure_built, ensure_image, ensure_pulled
 
@@ -1279,7 +1279,7 @@ def test_images_prune_takes_its_days_from_the_flag_else_the_config(
             raise aiodocker.DockerError(900, "Cannot connect to Docker Engine")
         return ["aims-env:0123456789abcdef"] if keep_days < 10 else []
 
-    monkeypatch.setattr(aiodocker, "Docker", NoDocker)
+    monkeypatch.setattr(execs, "DockerClient", NoDocker)
     monkeypatch.setattr(images, "remove_old", remove_old)
     project = tmp_path / "aims.toml"
     project.write_text("[images]\nkeep_days = 7\n")

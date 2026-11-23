@@ -21,7 +21,9 @@ import pytest
 from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec
 from aiodocker.stream import Stream
+from typer.testing import CliRunner
 
+from aims.cli import app
 from aims.events import LocalEventStore, RunStarted
 from aims.sandbox import (
     AuditedSandbox,
@@ -41,6 +43,13 @@ pytestmark = pytest.mark.anyio
 def frame(data: bytes) -> bytes:
     """`data` as one stdout frame of Docker's multiplexed stream."""
     return struct.pack(">BxxxL", 1, len(data)) + data
+
+
+# two scenario images no container uses, last tagged long ago
+IMAGES = [
+    {"Id": f"sha256:{n * 64}", "RepoTags": [f"aims-env:{n * 4}"], "Labels": {"aims.managed": "1"}}
+    for n in "ab"
+]
 
 
 class Daemon:
@@ -129,6 +138,16 @@ class Daemon:
             self.reply(writer, "200 OK", {"Id": "c1", "Config": {"Tty": False}}, whole)
         elif path == "containers/c1/top":
             self.reply(writer, "200 OK", {"Titles": ["PID", "PPID", "UID", "CMD"], "Processes": []})
+        elif path == "/version":
+            self.reply(writer, "200 OK", {"ApiVersion": "1.45"})
+        elif path == "containers/json":
+            self.reply(writer, "200 OK", [])
+        elif path == "images/json":
+            self.reply(writer, "200 OK", IMAGES)
+        elif method == "GET" and path.startswith("images/"):
+            self.reply(writer, "200 OK", {"Metadata": {"LastTagTime": "2020-01-01T00:00:00Z"}})
+        elif method == "DELETE" and path.startswith("images/"):
+            self.reply(writer, "200 OK", [{"Untagged": path.removeprefix("images/")}], whole)
         elif not whole:
             self.reply(writer, "409 Conflict", {"message": f"{path} is busy"}, whole)
         elif method in ("POST", "DELETE"):
@@ -138,7 +157,7 @@ class Daemon:
         return whole
 
     def reply(
-        self, writer: asyncio.StreamWriter, status: str, body: dict[str, Any], whole: bool = True
+        self, writer: asyncio.StreamWriter, status: str, body: Any, whole: bool = True
     ) -> None:
         data = json.dumps(body).encode()
         writer.write(
@@ -198,6 +217,20 @@ async def test_a_reply_the_daemon_cuts_raises_a_docker_error() -> None:
         with pytest.raises(aiodocker.DockerError, match="GET containers/c1/json was cut") as caught:
             await DockerContainer(docker, id="c1").show()
     assert isinstance(caught.value.__cause__, aiohttp.ClientPayloadError)
+
+
+async def test_images_prune_goes_on_past_an_image_whose_delete_reply_the_daemon_cuts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The image whose reply is cut is skipped; the prune still lists those it removed."""
+    async with serving({"DELETE images/aims-env:bbbb"}) as (daemon, docker):
+        monkeypatch.setenv("DOCKER_CONTEXT", "default")
+        monkeypatch.setenv("DOCKER_HOST", docker.docker_host)
+        args = ["images", "prune", "--days", "30"]
+        out = await asyncio.to_thread(CliRunner().invoke, app, args)
+    assert (out.exit_code, out.stdout) == (0, "removed aims-env:aaaa\n"), out.output
+    deleted = [c for c in daemon.calls if c.startswith("DELETE")]
+    assert deleted == ["DELETE images/aims-env:aaaa", "DELETE images/aims-env:bbbb"]
 
 
 async def test_a_close_whose_container_delete_the_daemon_cuts_still_removes_the_volumes() -> None:
