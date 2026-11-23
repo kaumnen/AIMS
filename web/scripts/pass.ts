@@ -4,10 +4,11 @@
 // a scratch user config dir so edits never touch the repo or this machine's config, and ships
 // the live run with scripts/live.py. Then opens each state in shots/pass.json in headless Chrome
 // as its role, shoots it light and dark at 1440 px and, for pages, light at 390 px, and runs
-// axe-core on each. Writes the PNGs and report.json to --out. Fails on a serious or critical
-// violation, a page wider than the screen, or a state that never gets ready. A state naming a
-// run the data lacks is skipped and listed; --set adds runs, say bee5=<id> against a copy of
-// real data with --server-dir.
+// axe-core on each. A state with steps is loaded and stepped through again at 390 px. Writes
+// the PNGs and report.json to --out. Fails on a serious or critical violation, a page wider
+// than the screen, or a state that never gets ready. A state naming a run the data lacks is
+// skipped and listed; --set adds runs, say bee5=<id> against a copy of real data with
+// --server-dir.
 
 import { appendFile, cp as copy, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -378,10 +379,10 @@ async function shoot(
 ): Promise<void> {
   const tab = await Tab.open(browser, ctx);
   const shots: Record<string, Violation[]> = {};
-  try {
-    await tab.view(VARIANTS[0]);
+  const steps = state.steps ?? [];
+  // the state from a fresh load at the screen's width
+  const load = async () => {
     await tab.goto(url + fill(state.path, ids));
-    const steps = state.steps ?? [];
     await tab.ready(steps.length ? "#main, main" : state.ready);
     for (const s of steps) {
       // oxlint-disable-next-line no-await-in-loop
@@ -399,10 +400,20 @@ async function shoot(
     }
     if (steps.length) await tab.ready(state.ready);
     await tab.eval(axe);
+  };
+  try {
+    await tab.view(VARIANTS[0]);
+    await load();
+    let width: number = VARIANTS[0].width;
     for (const v of VARIANTS) {
       if (v.name === "mobile" && state.dialog) continue;
       // oxlint-disable-next-line no-await-in-loop
       await tab.view(v);
+      // A state its steps reach is reached again at a new width, so the shot shows the same
+      // moment: a scroll or a fold the steps made at the last width stays where it was.
+      // oxlint-disable-next-line no-await-in-loop
+      if (steps.length && v.width !== width) await load();
+      width = v.width;
       // oxlint-disable-next-line no-await-in-loop
       await tab.settle(300);
       // oxlint-disable-next-line no-await-in-loop
