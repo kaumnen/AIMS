@@ -444,7 +444,7 @@ def unbuilt(lock_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Unbuilt:
     async def nothing(*_: Any) -> None:
         return None
 
-    monkeypatch.setattr(docker_module, "DockerClient", lambda url=None: docker)
+    monkeypatch.setattr(docker_module, "docker_client", lambda url=None: docker)
     monkeypatch.setattr(docker_module, "_own_container", nothing)
     monkeypatch.setattr(docker_module, "_sweep", nothing)
     return docker
@@ -1279,7 +1279,7 @@ def test_images_prune_takes_its_days_from_the_flag_else_the_config(
             raise aiodocker.DockerError(900, "Cannot connect to Docker Engine")
         return ["aims-env:0123456789abcdef"] if keep_days < 10 else []
 
-    monkeypatch.setattr(execs, "DockerClient", NoDocker)
+    monkeypatch.setattr(execs, "docker_client", lambda url=None: NoDocker())
     monkeypatch.setattr(images, "remove_old", remove_old)
     project = tmp_path / "aims.toml"
     project.write_text("[images]\nkeep_days = 7\n")

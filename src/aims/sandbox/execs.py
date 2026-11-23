@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import os
 from collections.abc import Callable, Generator
 from typing import Any
 
@@ -40,6 +41,13 @@ class DockerClient(aiodocker.Docker):
     async def _query_json(self, path: Any, method: str = "GET", **kw: Any) -> Any:
         with streamed(f"the reply to {method} {path}"):
             return await super()._query_json(path, method, **kw)
+
+
+def docker_client(url: str | None = None) -> DockerClient:
+    """A client of the Docker daemon at `url`, else of the one the docker CLI uses: the one
+    DOCKER_HOST names, else that of the context DOCKER_CONTEXT names, else that of the current
+    context. aiodocker on its own takes a context before DOCKER_HOST."""
+    return DockerClient(url=url or os.environ.get("DOCKER_HOST") or None)
 
 
 async def open_stream(stream: Stream, on_send: Callable[[], None] | None = None) -> Stream:

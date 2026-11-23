@@ -36,7 +36,7 @@ from aims.sandbox.base import (
     check_name,
 )
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import DockerClient, ended, lost_socket, open_stream, refused, streamed
+from aims.sandbox.execs import docker_client, ended, lost_socket, open_stream, refused, streamed
 from aims.sandbox.images import (
     KEEP_DAYS,
     LockError,
@@ -136,7 +136,7 @@ class DockerBackend:
         `ring_pages` sizes the tracer's kernel ring in 4 KiB pages, a power of two. Scenario
         images no container used in `image_keep_days` days are removed.
         """
-        docker = DockerClient(url=url)
+        docker = docker_client(url)
         sampler: Sampler | None = None
         tracer: Tracer | None = None
         try:

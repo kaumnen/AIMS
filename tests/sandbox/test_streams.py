@@ -4,6 +4,7 @@ local port."""
 import asyncio
 import contextlib
 import errno
+import hashlib
 import json
 import re
 import socket
@@ -31,9 +32,10 @@ from aims.sandbox import (
     SandboxInfo,
     SandboxSpec,
     SandboxStoppedError,
+    execs,
 )
 from aims.sandbox.base import TOOLBOX, Capture
-from aims.sandbox.docker import _call, _helper
+from aims.sandbox.docker import DockerBackend, _call, _helper
 from aims.sandbox.execs import DockerClient, exec_output, open_stream, refused
 from aims.sandbox.reader import stream_archive
 
@@ -147,6 +149,8 @@ class Daemon:
             self.reply(writer, "200 OK", {"Titles": ["PID", "PPID", "UID", "CMD"], "Processes": []})
         elif path == "/version":
             self.reply(writer, "200 OK", {"ApiVersion": "1.45"})
+        elif path == "info":
+            self.reply(writer, "500 Internal Server Error", {"message": "the fake daemon"})
         elif path == "containers/json":
             self.reply(writer, "200 OK", [])
         elif path == "images/json":
@@ -256,6 +260,75 @@ async def test_a_short_exec_whose_stream_is_lost_raises_a_docker_error(call: str
             await run(docker)
     async with serving(set()) as (_, docker):
         assert await run(docker) == (b"hi\n" if call == "output" else 0)
+
+
+def docker_config(home: Path, current: str, hosts: dict[str, str]) -> None:
+    """A docker CLI config in `home` whose current context is `current`, with a context of each
+    name in `hosts` and the daemon it names."""
+    config = home / ".docker"
+    for name, host in hosts.items():
+        meta = config / "contexts" / "meta" / hashlib.sha256(name.encode()).hexdigest()
+        meta.mkdir(parents=True)
+        endpoint = {"Host": host, "SkipTLSVerify": False}
+        (meta / "meta.json").write_text(
+            json.dumps({"Name": name, "Endpoints": {"docker": endpoint}})
+        )
+    (config / "config.json").write_text(json.dumps({"currentContext": current}))
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A home with a docker CLI config whose current context names a daemon that is not there,
+    as Docker Desktop's does on a host where DOCKER_HOST names another."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for name in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    gone = f"unix://{tmp_path}/gone.sock"
+    docker_config(tmp_path, "desktop", {"desktop": gone, "other": "tcp://10.0.0.8:2375"})
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("host", "context", "target"),
+    [
+        (None, None, "unix://localhost"),
+        (None, "other", "tcp://10.0.0.8:2375"),
+        ("tcp://127.0.0.1:1", None, "tcp://127.0.0.1:1"),
+        ("tcp://127.0.0.1:1", "other", "tcp://127.0.0.1:1"),
+        ("", None, "unix://localhost"),
+    ],
+)
+async def test_aims_picks_the_docker_daemon_as_the_docker_cli_does(
+    home: Path, monkeypatch: pytest.MonkeyPatch, host: str | None, context: str | None, target: str
+) -> None:
+    """DOCKER_HOST, then DOCKER_CONTEXT, then the current context. The docker CLI takes an empty
+    variable as unset."""
+    for name, value in (("DOCKER_HOST", host), ("DOCKER_CONTEXT", context)):
+        if value is not None:
+            monkeypatch.setenv(name, value)
+    docker = execs.docker_client()
+    try:
+        assert docker.docker_host == target
+    finally:
+        await docker.close()
+    docker = execs.docker_client("tcp://127.0.0.1:2")
+    try:
+        assert docker.docker_host == "tcp://127.0.0.1:2"
+    finally:
+        await docker.close()
+
+
+async def test_aims_reaches_the_daemon_docker_host_names_over_the_current_context(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with serving(set()) as (_, docker):
+        monkeypatch.setenv("DOCKER_HOST", docker.docker_host)
+        args = ["images", "prune", "--days", "30", "--dry-run"]
+        out = await asyncio.to_thread(CliRunner().invoke, app, args)
+        with pytest.raises(aiodocker.DockerError, match="the fake daemon"):
+            await DockerBackend.open(audit="snapshot")
+    removed = "would remove aims-env:aaaa\nwould remove aims-env:bbbb\n"
+    assert (out.exit_code, out.stdout) == (0, removed), out.output
 
 
 async def test_a_close_whose_container_delete_the_daemon_cuts_still_removes_the_volumes() -> None:

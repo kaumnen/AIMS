@@ -214,7 +214,7 @@ def started(monkeypatch: pytest.MonkeyPatch) -> Started:
 
 
 def use(monkeypatch: pytest.MonkeyPatch, found: dict[str, Any]) -> None:
-    monkeypatch.setattr(docker_module, "DockerClient", lambda url=None: Daemon(found))
+    monkeypatch.setattr(docker_module, "docker_client", lambda url=None: Daemon(found))
 
 
 def warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
