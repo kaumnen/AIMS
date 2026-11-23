@@ -890,8 +890,8 @@ async def test_a_call_is_held_only_to_its_own_writes_of_a_shared_folder(
     origin = Origin(run_id, cast(Any, None), {}, {})
     await _order(store, run_id, origin)
     # a call before any step of its agent
-    assert origin.versions["a"][0, "c1"].writes == {"/shared/mine": "s1"}
-    assert origin.versions["a"][0, "c1"].channels == {"/shared/mine": "notes"}
+    assert origin.versions["a"][0, 0].writes == {"/shared/mine": "s1"}
+    assert origin.versions["a"][0, 0].channels == {"/shared/mine": "notes"}
 
 
 async def test_calls_that_share_an_id_keep_their_own_turn_and_board_reads(
@@ -923,16 +923,16 @@ async def test_calls_that_share_an_id_keep_their_own_turn_and_board_reads(
     made = [e.seq for e in await store.events(run_id, types=["tool.call"], limit=10)]
     origin = Origin(run_id, cast(Any, None), {}, {})
     await _order(store, run_id, origin)
-    assert origin.step_calls == {"a": [{"c1": made[0]}, {"c1": made[2]}], "b": [{"c1": made[1]}]}
+    assert origin.step_calls == {"a": [[made[0]], [made[2]]], "b": [[made[1]]]}
     seen = {
         (agent, key): (v.seq, v.reads)
         for agent, calls in origin.versions.items()
         for key, v in calls.items()
     }
     assert seen == {
-        ("a", (1, "c1")): (made[0], {"chat": 1}),
-        ("b", (1, "c1")): (made[1], {"chat": 2}),
-        ("a", (2, "c1")): (made[2], {"chat": 3}),
+        ("a", (1, 0)): (made[0], {"chat": 1}),
+        ("b", (1, 0)): (made[1], {"chat": 2}),
+        ("a", (2, 0)): (made[2], {"chat": 3}),
     }
 
 

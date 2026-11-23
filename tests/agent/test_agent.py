@@ -675,7 +675,7 @@ async def summary_fork(
     fork_at: int,
     keep: bool = False,
     ran_on: Profile,
-    outputs: dict[tuple[int, str], RecordedOutput] | None = None,
+    outputs: dict[tuple[int, int], RecordedOutput] | None = None,
 ) -> tuple[AgentFinished, list[AgentCompacted]]:
     """A fork of `origin` after `fork_at` on a profile with 150 tokens of context, which
     compacts by summary; its schedule says the origin ran on `ran_on`."""
@@ -714,7 +714,7 @@ async def test_a_fork_compacts_where_its_origin_did_until_it_goes_live(
     assert (live.requests, compacted) == ([], [])
 
     live = Script(say("Said a and b, ran true."), call("submit", answer="live"))
-    recorded = {(3, "call_1"): RecordedOutput("stdout:\nran true\nexit code: 0", False)}
+    recorded = {(3, 0): RecordedOutput("stdout:\nran true\nexit code: 0", False)}
     finished, compacted = await summary_fork(
         store, origin, live, fork_at=3, ran_on=big, outputs=recorded
     )
@@ -793,7 +793,7 @@ async def test_the_estimate_bounds_the_calls_of_a_fork_that_compacts(
         await agent.run()
         # one tool call a step
         recorded = {
-            (n, r.call_id): RecordedOutput(str(r.output), r.error)
+            (n, 0): RecordedOutput(str(r.output), r.error)
             for n, r in enumerate(await payloads(store, origin, ToolResult), 1)
         }
         for fork_at in (1, 3, 5):
@@ -900,7 +900,7 @@ async def test_a_fork_feeds_recorded_outputs_and_logs_divergence(store: LocalEve
 
     # one tool call a step
     recorded = {
-        (n, r.call_id): RecordedOutput(str(r.output), r.error)
+        (n, 0): RecordedOutput(str(r.output), r.error)
         for n, r in enumerate(await payloads(store, origin, ToolResult), 1)
     }
 
@@ -1080,11 +1080,11 @@ async def test_a_denied_replayed_call_gives_up_its_turn(store: LocalEventStore) 
         fork_at=2,
         schedule=[(None, agent.profile)],
         outputs={
-            (1, "call_1"): RecordedOutput("x", False),
-            (2, "call_2"): RecordedOutput("y", False),
+            (1, 0): RecordedOutput("x", False),
+            (2, 0): RecordedOutput("y", False),
         },
         turnstile=turnstile,
-        order={(1, "call_1"): 10, (2, "call_2"): 30},
+        order={(1, 0): 10, (2, 0): 30},
     )
 
     async def other() -> None:
@@ -1399,9 +1399,9 @@ async def at_the_turnstile(
             client=agent.client,
             fork_at=1,
             schedule=[(None, agent.profile)],
-            outputs={(1, "call_1"): RecordedOutput("x", False)},
+            outputs={(1, 0): RecordedOutput("x", False)},
             turnstile=turnstile,
-            order={(1, "call_1"): 20},
+            order={(1, 0): 20},
         )
         return agent, turnstile
     run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))

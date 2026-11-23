@@ -19,6 +19,7 @@ from aims.events import (
     Draft,
     LocalEventStore,
     ModelUsage,
+    ReplayDivergence,
     RunFinished,
     RunStarted,
     ToolCall,
@@ -382,7 +383,7 @@ async def test_a_call_id_used_again_in_a_later_step_replays_its_own_output(
     run_id = await origin_run(store, script)
     origin = await load_origin(store, run_id)
     made = [e.seq for e in await store.events(run_id, types=["tool.call"], limit=10)]
-    assert [list(calls) for calls in origin.step_calls["agent"]] == [["call_1"]] * 3
+    assert origin.step_calls["agent"] == [[seq] for seq in made]
     outputs = ["stdout:\nran ls\nexit code: 0", "stdout:\nran pwd\nexit code: 0"]
 
     fork_id = await fork_live(store, origin, 2, Script(call("submit", answer="forked")))
@@ -394,10 +395,57 @@ async def test_a_call_id_used_again_in_a_later_step_replays_its_own_output(
     bench = Bench(store, cast(Any, None), models(profile()))
     fork_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
     plan = (await planner(bench, origin, fork)(fork_id))["agent"]
-    assert plan.order == {(1, "call_1"): made[0], (2, "call_1"): made[1]}
+    assert plan.order == {(1, 0): made[0], (2, 0): made[1]}
     finished = await agent(store, fork_id, Script(call("submit", answer="cut")), replay=plan).run()
     assert (finished.reason, finished.answer) == ("submitted", "cut"), finished.detail
     assert [r.output for r in await payloads(store, fork_id, ToolResult)][:2] == outputs
+
+
+TWO = calls(call("bash", command="echo first"), call("bash", command="echo second"))
+
+
+async def test_a_step_whose_calls_share_an_id_is_whole_only_with_a_result_for_each(
+    store: LocalEventStore,
+) -> None:
+    """A provider that gives two calls of one reply the same id. The run was killed after the
+    first of them ran, so its step has one result of two and a fork cannot replay it."""
+    script = Script(call("bash", command="ls"), TWO)
+    script.calls = itertools.count(7, 0)
+    gate = Gate({("after_tool", 2): Verdict("kill", reason="policy")})
+    origin = await load_origin(store, await origin_run(store, script, gate))
+    assert (origin.steps, origin.replayable) == ({"agent": 2}, {"agent": 1})
+    with pytest.raises(RunError, match=ENDED):
+        check_fork(origin, 2)
+
+
+async def test_calls_of_one_step_that_share_an_id_replay_their_own_outputs(
+    store: LocalEventStore,
+) -> None:
+    """Each call keeps the output and the turn of its place in the step."""
+    script = Script(TWO, call("submit", answer="x"))
+    script.calls = itertools.count(7, 0)
+    run_id = await origin_run(store, script)
+    origin = await load_origin(store, run_id)
+    outputs = ["stdout:\nran echo first\nexit code: 0", "stdout:\nran echo second\nexit code: 0"]
+    assert [origin.outputs["agent"][1, place].output for place in (0, 1)] == outputs
+
+    fork_id = await fork_live(store, origin, 1, Script(call("submit", answer="forked")))
+    replayed = [r for r in await payloads(store, fork_id, ToolResult) if r.replayed]
+    assert [(r.call_id, r.output) for r in replayed] == [("call_7", out) for out in outputs]
+    assert await payloads(store, fork_id, ReplayDivergence) == []
+
+    made = [e.seq for e in await store.events(run_id, types=["tool.call"], limit=10)]
+    at = cut_at(origin, f"@{origin.step_seqs['agent'][0]}")
+    assert isinstance(at, CutAt)
+    fork = Fork(origin=run_id, step=1, steps=at.steps, cut=at.seq)
+    bench = Bench(store, cast(Any, None), models(profile()))
+    fork_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    plan = (await planner(bench, origin, fork)(fork_id))["agent"]
+    assert plan.order == {(1, 0): made[0], (1, 1): made[1]}
+    finished = await agent(store, fork_id, Script(call("submit", answer="cut")), replay=plan).run()
+    assert (finished.reason, finished.answer) == ("submitted", "cut"), finished.detail
+    assert [r.output for r in await payloads(store, fork_id, ToolResult)][:2] == outputs
+    assert await payloads(store, fork_id, ReplayDivergence) == []
 
 
 async def test_a_step_without_tool_calls_is_whole(store: LocalEventStore) -> None:
