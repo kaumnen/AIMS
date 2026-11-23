@@ -12,7 +12,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from aims.server.app import create_app
-from aims.server.serve import _port, _Server
+from aims.server.serve import _Server, listen
 from aims.server.state import ServerState, close_state, open_state
 
 CONFIG = """\
@@ -92,14 +92,21 @@ async def start(app: FastAPI, port: int = 0) -> tuple[uvicorn.Server, asyncio.Ta
         lifespan="on",
         timeout_graceful_shutdown=1,
     )
+    # as `aims ui` starts it: on sockets it made first
+    sockets = await listen("127.0.0.1", port)
     server = _Server(config)
-    task = asyncio.create_task(server.serve())
-    async with asyncio.timeout(10):
-        while not server.started:
-            if task.done():
-                task.result()
-            await asyncio.sleep(0.02)
-    return server, task, _port(server, port)
+    task = asyncio.create_task(server.serve(sockets=sockets))
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                if task.done():
+                    task.result()
+                await asyncio.sleep(0.02)
+    except BaseException:
+        for sock in sockets:
+            sock.close()
+        raise
+    return server, task, sockets[0].getsockname()[1]
 
 
 async def stop(server: uvicorn.Server, task: asyncio.Task[None]) -> None:

@@ -2193,6 +2193,8 @@ def ui(
                     signal.signal(sig, signal.SIG_IGN)
     except ServeError as e:
         _echo(f"error: {e}", err=True)
+        if e.hint:
+            _echo(e.hint, err=True)
         raise typer.Exit(EXIT_FAILED) from None
     raise typer.Exit(code)
 

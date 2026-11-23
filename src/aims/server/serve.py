@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import errno
 import html
 import json
 import logging
@@ -18,6 +19,7 @@ import webbrowser
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -37,6 +39,14 @@ LOCAL_RUNNER = "local"
 UI_RUNNER = "AIMS_UI_RUNNER"
 # What `aims ui` writes on its runner's stdin for a later stop: kill now
 KILL_NOW = b"k"
+# uvicorn.Config's default backlog
+BACKLOG = 2048
+# As asyncio's create_server sets it by default
+REUSE_ADDRESS = os.name == "posix" and sys.platform != "cygwin"
+IN_USE_HINT = (
+    "another `aims ui` may be running with this data dir; `aims open` prints a link to it,"
+    " or give another --port"
+)
 
 
 def server_dir(env: dict[str, str] | None = None) -> Path:
@@ -62,7 +72,11 @@ def connect_host(host: str) -> str:
 
 
 class ServeError(Exception):
-    pass
+    """Why `aims ui` cannot start, with a line of advice if any."""
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
 
 
 @dataclass(slots=True)
@@ -126,6 +140,79 @@ class _Server(uvicorn.Server):
     def capture_signals(self) -> Generator[None]:
         yield
 
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        """uvicorn ends a start that fails, as when the app's lifespan fails, with sys.exit
+        once it logged why. From the server's task that SystemExit would leave the event loop
+        at once, with a traceback."""
+        try:
+            await super().startup(sockets)
+        except SystemExit:
+            raise ServeError("the server did not start") from None
+
+
+def cannot_listen(host: str, port: int, e: OSError) -> str:
+    where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    reason = e.strerror or (os.strerror(e.errno) if e.errno else str(e))
+    return f"cannot listen on {where}: {reason[:1].lower()}{reason[1:]}"
+
+
+async def listen(host: str, port: int, *, in_use: str | None = None) -> list[socket.socket]:
+    """Sockets that listen on `host` and `port`. `aims ui` opens them before any of its state,
+    so a start that cannot listen leaves that state alone. `in_use` is a hint for a port in
+    use."""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host or None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+        )
+        return open_sockets(list(dict.fromkeys(infos)))
+    except OSError as e:
+        taken = not isinstance(e, socket.gaierror) and e.errno == errno.EADDRINUSE
+        raise ServeError(cannot_listen(host, port, e), hint=in_use if taken else None) from None
+
+
+def open_sockets(addresses: list[tuple[Any, ...]]) -> list[socket.socket]:
+    """A listening socket for each getaddrinfo entry in `addresses`, made as uvicorn makes its
+    own: its Server.startup calls asyncio's create_server with only its backlog. So
+    SO_REUSEADDR is on for POSIX. SO_REUSEPORT is off. An IPv6 socket is IPv6 only. An
+    address this host lacks is skipped. With port 0 each later socket takes the port the
+    first one got, so one URL reaches them all."""
+    sockets: list[socket.socket] = []
+    skipped: OSError | None = None
+    try:
+        for family, kind, proto, _, address in addresses:
+            if sockets:
+                address = (address[0], sockets[0].getsockname()[1], *address[2:])
+            try:
+                sock = socket.socket(family, kind, proto)
+            except OSError as e:
+                # a family this host cannot make, as IPv6 when it is off
+                skipped = e
+                continue
+            try:
+                if REUSE_ADDRESS:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                sock.bind(address)
+                # At once, as asyncio does: on Linux a socket that binds with SO_REUSEADDR
+                # shares a port nobody listens on yet.
+                sock.listen(BACKLOG)
+            except OSError as e:
+                sock.close()
+                if e.errno != errno.EADDRNOTAVAIL:
+                    raise
+                # an address this host does not have, as ::1 with no IPv6 on loopback
+                skipped = e
+                continue
+            sockets.append(sock)
+        if not sockets:
+            raise skipped or OSError("no address to listen on")
+    except BaseException:
+        for sock in sockets:
+            sock.close()
+        raise
+    return sockets
+
 
 def private_temp(path: Path, data: str) -> Path:
     """A new file beside `path` that holds `data`, synced, readable by its owner only. Its name
@@ -155,6 +242,19 @@ def write_private(path: Path, data: str) -> None:
 
 async def serve(o: UiOptions) -> int:
     check(o)
+    # Before any state: a start that cannot listen leaves the data dir as it was, with the
+    # server.json and the token of an `aims ui` that may still use it.
+    in_use = IN_USE_HINT if (o.data / SERVER_JSON).exists() else None
+    sockets = await listen(o.host.strip("[]"), o.port, in_use=in_use)
+    try:
+        return await _serve(o, sockets)
+    finally:
+        # uvicorn closes them when it stops; this covers a start that ended before
+        for sock in sockets:
+            sock.close()
+
+
+async def _serve(o: UiOptions, sockets: list[socket.socket]) -> int:
     if not o.data.exists():
         o.data.mkdir(mode=0o700, parents=True)
     tls = o.tls_cert is not None
@@ -235,9 +335,10 @@ async def serve(o: UiOptions) -> int:
             ssl_certfile=None if o.tls_cert is None else str(o.tls_cert),
             ssl_keyfile=None if o.tls_key is None else str(o.tls_key),
             timeout_graceful_shutdown=5,
+            backlog=BACKLOG,
         )
         server = _Server(config)
-        task = asyncio.create_task(server.serve())
+        task = asyncio.create_task(server.serve(sockets=sockets))
         while not server.started:
             if task.done():
                 try:
@@ -246,7 +347,8 @@ async def serve(o: UiOptions) -> int:
                     raise ServeError(f"the server did not start: {e}") from None
                 raise ServeError("the server did not start")
             await asyncio.sleep(0.05)
-        port = _port(server, o.port)
+        # every socket listens on the same port
+        port = sockets[0].getsockname()[1]
         scheme = "https" if tls else "http"
         local = f"{scheme}://{connect_host(o.host)}:{port}"
         shown = shown or local
@@ -464,15 +566,6 @@ def _snapped(command: str, env: Mapping[str, str]) -> bool:
     except OSError:
         return False
     return head.startswith(b"#!") and b"/snap/bin/" in head
-
-
-def _port(server: uvicorn.Server, wanted: int) -> int:
-    for s in server.servers:
-        for sock in s.sockets:
-            name = sock.getsockname()
-            if sock.family in (socket.AF_INET, socket.AF_INET6):
-                return int(name[1])
-    return wanted
 
 
 async def _spawn_runner(

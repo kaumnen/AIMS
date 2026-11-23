@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
+from urllib.parse import urlsplit
 
 import aiodocker
 import httpx2
@@ -42,6 +43,7 @@ from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server import serve as serve_module
 from aims.server.db import ServerDB
 from aims.server.serve import (
+    IN_USE_HINT,
     KILL_NOW,
     UI_RUNNER,
     ServeError,
@@ -50,7 +52,9 @@ from aims.server.serve import (
     _spawn_runner,
     check,
     connect_host,
+    listen,
     open_link,
+    open_sockets,
     public_url,
     serve,
     server_dir,
@@ -1972,6 +1976,233 @@ async def test_aims_ui_answers_on_the_address_it_binds(tmp_path: Path) -> None:
             assert (await c.get("/api/health")).status_code == 401
         proc.send_signal(signal.SIGTERM)
         await proc.wait()
+
+
+async def ui_that_ends(data: Path, *args: str) -> tuple[int, list[str]]:
+    """The exit code and output lines of an `aims ui` on the data dir `data` that is to end
+    on its own."""
+    env = {**os.environ, "XDG_DATA_HOME": str(data.parent / "xdg")}
+    env.pop("AIMS_TOKEN", None)
+    proc = await create_child(
+        sys.executable,
+        "-m",
+        "aims",
+        "ui",
+        "--no-open",
+        "--no-runner",
+        "--data-dir",
+        str(data),
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env=env,
+        cwd=data.parent,
+    )
+    async with asyncio.timeout(60):
+        out, _ = await proc.communicate()
+    assert proc.returncode is not None
+    return proc.returncode, out.decode().splitlines()
+
+
+async def test_aims_ui_on_a_port_in_use_ends_in_one_error_line(tmp_path: Path) -> None:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        port = s.getsockname()[1]
+        code, lines = await ui_that_ends(tmp_path / "server", "--port", str(port))
+    assert (code, lines) == (
+        1,
+        [f"error: cannot listen on 127.0.0.1:{port}: address already in use"],
+    )
+    # nothing was opened before it tried to listen
+    assert not (tmp_path / "server").exists()
+
+
+async def test_aims_ui_on_an_address_not_on_this_host_ends_in_one_error_line(
+    tmp_path: Path,
+) -> None:
+    # The path of --host ::1 on a host without IPv6: each address is skipped, none is left.
+    code, lines = await ui_that_ends(
+        tmp_path / "server", "--host", "2001:db8::1", "--behind-proxy", "127.0.0.1"
+    )
+    assert code == 1
+    assert len(lines) == 1
+    assert lines[0].startswith("error: cannot listen on [2001:db8::1]:8484: ")
+
+
+async def test_a_second_aims_ui_on_its_port_leaves_the_first_alone(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner") as (proc, _):
+        info = tmp_path / "server" / "server.json"
+        before = info.read_text()
+        local = json.loads(before)
+        port = local["url"].rpartition(":")[2]
+        code, lines = await ui_that_ends(tmp_path / "server", "--port", port)
+        assert code == 1
+        assert lines == [
+            f"error: cannot listen on 127.0.0.1:{port}: address already in use",
+            IN_USE_HINT,
+        ]
+        assert info.read_text() == before
+        async with httpx2.AsyncClient(
+            base_url=local["url"],
+            headers={"Authorization": f"Bearer {local['operator']}"},
+            trust_env=False,
+        ) as c:
+            assert (await c.get("/api/health")).status_code == 200
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await proc.wait() == 0
+
+
+async def test_aims_ui_on_the_port_of_another_is_refused(tmp_path: Path) -> None:
+    """Both set SO_REUSEADDR, which lets neither take a port the other listens on."""
+    async with ui_process(tmp_path, "--no-runner") as (proc, url):
+        port = urlsplit(url).port
+        code, lines = await ui_that_ends(tmp_path / "other", "--port", str(port))
+        assert (code, lines) == (
+            1,
+            [f"error: cannot listen on 127.0.0.1:{port}: address already in use"],
+        )
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await proc.wait() == 0
+
+
+async def test_aims_ui_starts_again_at_once_on_the_port_it_left(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner") as (proc, url):
+        base = url.partition("/#code=")[0]
+        port = str(urlsplit(base).port)
+        # A connection open as it stops: the server closes it, which leaves the port in
+        # TIME_WAIT. Only SO_REUSEADDR lets a new socket listen there now.
+        async with httpx2.AsyncClient(base_url=base, trust_env=False) as c:
+            assert (await c.get("/api/health")).status_code == 401
+            proc.send_signal(signal.SIGTERM)
+            async with asyncio.timeout(30):
+                assert await proc.wait() == 0
+    async with ui_process(tmp_path, "--no-runner", "--port", port) as (proc, url):
+        assert urlsplit(url).port == int(port)
+        async with httpx2.AsyncClient(base_url=url.partition("/#code=")[0], trust_env=False) as c:
+            assert (await c.get("/api/health")).status_code == 401
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await proc.wait() == 0
+
+
+async def test_aims_ui_on_localhost_with_port_0_answers_on_its_url(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner", "--host", "localhost") as (proc, _):
+        local = json.loads((tmp_path / "server" / "server.json").read_text())
+        port = urlsplit(local["url"]).port
+        # each loopback address localhost names here: the server listens on all it can bind
+        names = {i[4][0] for i in socket.getaddrinfo("localhost", port, type=socket.SOCK_STREAM)}
+        urls = [local["url"]]
+        if "127.0.0.1" in names:
+            urls.append(f"http://127.0.0.1:{port}")
+        if "::1" in names and binds_ipv6_loopback():
+            urls.append(f"http://[::1]:{port}")
+        for url in urls:
+            async with httpx2.AsyncClient(base_url=url, trust_env=False) as c:
+                assert (await c.get("/api/health")).status_code == 401, url
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await proc.wait() == 0
+
+
+async def test_every_socket_for_localhost_takes_one_port() -> None:
+    sockets = await listen("localhost", 0)
+    try:
+        assert len({s.getsockname()[1] for s in sockets}) == 1
+    finally:
+        for s in sockets:
+            s.close()
+
+
+async def test_listening_sockets_are_set_as_asyncio_sets_those_of_uvicorn() -> None:
+    """uvicorn listens through asyncio's create_server with its defaults."""
+
+    def options(s: socket.socket) -> dict[str, bool]:
+        found = {"reuseaddr": bool(s.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR))}
+        if hasattr(socket, "SO_REUSEPORT"):
+            found["reuseport"] = bool(s.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT))
+        if s.family == socket.AF_INET6:
+            found["v6only"] = bool(s.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY))
+        return found
+
+    hosts = ["127.0.0.1", "::1"] if binds_ipv6_loopback() else ["127.0.0.1"]
+    loop = asyncio.get_running_loop()
+    for host in hosts:
+        theirs = await loop.create_server(asyncio.Protocol, host, 0)
+        ours = await listen(host, 0)
+        try:
+            assert theirs.sockets
+            assert [options(s) for s in ours] == [options(s) for s in theirs.sockets]
+        finally:
+            theirs.close()
+            for s in ours:
+                s.close()
+
+
+def test_listening_skips_an_address_this_host_lacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = socket.socket
+
+    def no_ipv6(family: int = -1, *args: Any) -> socket.socket:
+        if family == socket.AF_INET6:
+            raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+        return real(family, *args)
+
+    tcp = (socket.SOCK_STREAM, socket.IPPROTO_TCP, "")
+    lacks = (socket.AF_INET6, *tcp, ("2001:db8::1", 0, 0, 0))
+    ipv4 = (socket.AF_INET, *tcp, ("127.0.0.1", 0))
+    sockets = open_sockets([lacks, ipv4])
+    with contextlib.closing(sockets[0]):
+        assert [s.family for s in sockets] == [socket.AF_INET]
+    monkeypatch.setattr(socket, "socket", no_ipv6)
+    sockets = open_sockets([(socket.AF_INET6, *tcp, ("::1", 0, 0, 0)), ipv4])
+    with contextlib.closing(sockets[0]):
+        assert [s.family for s in sockets] == [socket.AF_INET]
+    with pytest.raises(OSError, match="not supported") as caught:
+        open_sockets([(socket.AF_INET6, *tcp, ("::1", 0, 0, 0))])
+    assert caught.value.errno == errno.EAFNOSUPPORT
+
+
+async def test_a_host_that_does_not_resolve_ends_in_one_error_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unknown(*args: object, **kwargs: object) -> object:
+        raise socket.gaierror(socket.EAI_NONAME, "no such host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unknown)
+    with pytest.raises(ServeError) as caught:
+        await listen("nowhere.invalid", 8484, in_use="hint")
+    assert str(caught.value) == "cannot listen on nowhere.invalid:8484: no such host"
+    assert caught.value.hint is None
+
+
+async def test_aims_ui_whose_app_fails_to_start_ends_in_one_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    @contextlib.asynccontextmanager
+    async def broken(app: object) -> AsyncGenerator[None]:
+        raise RuntimeError("the app broke")
+        yield
+
+    real = serve_module.create_app
+
+    def failing(*args: Any, **kwargs: Any) -> Any:
+        app = real(*args, **kwargs)
+        app.router.lifespan_context = broken
+        return app
+
+    monkeypatch.setattr(serve_module, "create_app", failing)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    options = UiOptions(port=port, data=tmp_path / "server", runner=False, open_browser=False)
+    with pytest.raises(ServeError, match=r"^the server did not start$"):
+        await serve(options)
+    assert not (tmp_path / "server" / "server.json").exists()
+    # its socket is closed: the port is free
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", port))
 
 
 async def test_a_ctrl_c_after_aims_ui_closed_leaves_its_exit_code(tmp_path: Path) -> None:
