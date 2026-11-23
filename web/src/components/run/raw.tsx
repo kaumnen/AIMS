@@ -206,6 +206,9 @@ function EventList({
   // Rows read in above, or let go above as a live list grows, keep the rows on screen where
   // they were.
   const before = useRef(events);
+  // Where the reader was when the list last looked for its start. A read back waits for the
+  // reader to move up, so a list that shows both its ends does not read on and back without end.
+  const seen = useRef(0);
   useLayoutEffect(() => {
     const was = before.current;
     before.current = events;
@@ -220,6 +223,8 @@ function EventList({
       const gone = was.findIndex((e) => e.seq === to);
       if (gone > 0) el.scrollTop = Math.max(0, el.scrollTop - gone * ROW);
     }
+    // this move is the list's, not the reader's
+    seen.current = el.scrollTop;
   }, [events]);
   const done = useRef(0);
   useLayoutEffect(() => {
@@ -244,7 +249,10 @@ function EventList({
   const at = events.findIndex((e) => e.seq === selected);
   const shown = items.some((it) => it.index === at);
   useEffect(() => {
-    if (first < 40 && (scroller.current?.scrollTop ?? 0) < 40 * ROW) onNearStart();
+    const top = scroller.current?.scrollTop ?? 0;
+    const up = top < seen.current;
+    seen.current = top;
+    if (up && first < 40 && top < 40 * ROW) onNearStart();
   }, [first, onNearStart]);
   return (
     <div
