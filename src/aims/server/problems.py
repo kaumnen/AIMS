@@ -9,9 +9,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from aims.events import IndexChanged
 from aims.text import scrub
 
 MEDIA = "application/problem+json"
+# Seconds a client waits before it asks again for a run the index does not hold yet.
+INDEXING_RETRY_S = 1
 
 
 class ProblemError(BaseModel):
@@ -118,6 +121,16 @@ def install(app: FastAPI, headers: Sequence[tuple[bytes, bytes]]) -> None:
         request.state.problem = problem
         return problem_response(problem)
 
+    async def on_index_changed(request: Request, exc: Exception) -> JSONResponse:
+        """A read that found the index changed under it, as while another process resets it
+        or a run is deleted: the same answer as for a run not indexed yet."""
+        assert isinstance(exc, IndexChanged)
+        problem = Problem(
+            title=TITLES[503], status=503, detail=f"{exc}; ask again soon", code="indexing"
+        )
+        request.state.problem = problem
+        return problem_response(problem, {"Retry-After": str(INDEXING_RETRY_S)})
+
     async def on_error(request: Request, exc: Exception) -> JSONResponse:
         detail = "the server could not answer; its log says why"
         problem = Problem(title=TITLES[500], status=500, detail=detail)
@@ -126,6 +139,7 @@ def install(app: FastAPI, headers: Sequence[tuple[bytes, bytes]]) -> None:
     app.add_exception_handler(ProblemException, on_problem)
     app.add_exception_handler(StarletteHTTPException, on_http)
     app.add_exception_handler(RequestValidationError, on_validation)
+    app.add_exception_handler(IndexChanged, on_index_changed)
     app.add_exception_handler(Exception, on_error)
 
 

@@ -19,11 +19,13 @@ from aims.events import (
     AgentReport,
     BlobRef,
     Draft,
+    Event,
     LocalEventStore,
     MonitorVerdict,
     RunFinished,
     RunStarted,
 )
+from aims.events.index import Index
 from aims.report import build as build_module
 from aims.report import texts
 from aims.report.build import TEXT_BYTES, TEXTS_BYTES
@@ -156,6 +158,34 @@ async def test_unknown_runs_and_sources_are_not_found(cp: CP, run_id: str) -> No
         assert r.json()["detail"] == f"nope is not a monitor run over {run_id}"
         r = await c.get(url(run_id), params={"source": str(uuid.uuid7()), "format": "md"})
         assert r.status_code == 404
+
+
+async def test_a_report_of_a_run_deleted_while_it_is_read_asks_again_soon(
+    cp: CP, run_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another process takes the run's row after the first page of its events: the read
+    stops with IndexChanged, which answers as a run not indexed yet."""
+    real = Index.events
+    taken: list[str] = []
+
+    async def events(index: Index, rid: str, **kw: Any) -> list[Event]:
+        page = await real(index, rid, **kw)
+        if rid == run_id and kw.get("types") and not taken:
+            taken.append(rid)
+            other = await Index.open(cp.state.store.root / "index.sqlite")
+            try:
+                await other._remove_row(rid)
+            finally:
+                await other.close()
+        return page
+
+    monkeypatch.setattr(Index, "events", events)
+    async with cp.client(cp.viewer) as c:
+        r = await c.get(url(run_id))
+    assert taken == [run_id]
+    assert r.status_code == 503, r.text
+    assert (r.headers["retry-after"], r.json()["code"]) == ("1", "indexing")
+    assert r.json()["detail"].endswith("the index changed while it was read; ask again soon")
 
 
 async def test_the_source_picks_the_monitor(

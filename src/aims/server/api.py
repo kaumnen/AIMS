@@ -113,7 +113,13 @@ from aims.server import series as sseries
 from aims.server.auth import Principal, require
 from aims.server.codings import allowed
 from aims.server.files import Source, Sources
-from aims.server.problems import TITLES, ProblemError, ProblemException, responses
+from aims.server.problems import (
+    INDEXING_RETRY_S,
+    TITLES,
+    ProblemError,
+    ProblemException,
+    responses,
+)
 from aims.server.responses import ClosingStreamingResponse
 from aims.server.runner_api import JOBS, send
 from aims.server.state import Connected, FileCache, ServerState
@@ -578,10 +584,6 @@ def unseen(kind: str, skip: Sequence[str]) -> bool:
     """Whether a run of `kind` is kept from a principal who does not see the kinds `skip`: one
     of them or, when `skip` keeps any, a kind this version does not know."""
     return bool(skip) and (kind in skip or kind not in KNOWN_KINDS)
-
-
-# Seconds a client waits before it asks again for a run the index does not hold yet.
-INDEXING_RETRY_S = 1
 
 
 def _indexing(why: str) -> ProblemException:
