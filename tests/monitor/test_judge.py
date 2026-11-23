@@ -634,6 +634,23 @@ async def test_an_event_with_a_large_object_is_shortened(store: LocalEventStore)
     assert out["events"][0]["data"]["metrics"] == wide
 
 
+async def test_an_event_past_the_row_size_in_its_second_form_gets_its_shortest(
+    store: LocalEventStore,
+) -> None:
+    """Cutting texts to a quarter leaves a wide object about as long: the next form cuts its
+    keys."""
+    config: dict[str, Any] = {f"key{i}": "x" * 80 for i in range(100)}
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", config=config))
+    run = Run(store, run_id)
+    judge = make_judge(store, run, Script())
+    out = await tool(judge, "events", from_seq=0)
+    [first] = out["events"]
+    shown = first["data"]["config"]
+    assert len(shown) == 5
+    assert shown[MORE_KEYS] == 96
+    assert len(dumps(first)) < EVENT_CHARS
+
+
 async def test_an_event_too_long_for_one_output_is_cut(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

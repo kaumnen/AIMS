@@ -678,8 +678,8 @@ class Reader:
     async def row(
         self, e: Event, *, drop: Iterable[str] = (), short: bool = False
     ) -> dict[str, Any]:
-        """`e` as one compact record, its long values cut: once more when its data is past
-        EVENT_CHARS, and then shown as it is. `short` gives the shortest form, for an event
+        """`e` as one compact record, its long values cut, then further by each next form of
+        FITS while its data is past EVENT_CHARS. `short` gives the shortest form, for an event
         whose row no tool output could hold."""
         data = {k: v for k, v in e.data.items() if k not in drop}
         if short:
@@ -688,7 +688,7 @@ class Reader:
                 e.run_id, data, TEXT_CHARS // by, items, keys=keys, kind=e.type
             )
         else:
-            compact = await self.fit(e.run_id, data, (EVENT_CHARS,), kind=e.type)
+            compact = await self.fit(e.run_id, data, (EVENT_CHARS, EVENT_CHARS), kind=e.type)
         out: dict[str, Any] = {"seq": e.seq, "type": e.type, "ts": format_ts(e.ts)}
         if e.agent_id is not None:
             out["agent"] = e.agent_id

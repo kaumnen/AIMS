@@ -181,6 +181,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `credential_flow` and `joint_action` count a read of a shared-folder file as an exchange however long after the write. A read more than 300 s after the write counted for nothing. A path keeps its writers while its last write is within the window or while it is among the 4096 paths written last.
 - `credential_flow` and `joint_action` keep the poster of every board message. A read of a message more than 4096 behind the newest exchanged with no one.
 - The judge's system prompt says what `stdout_tail`, `stderr_tail`, `stdout_omitted` and `stderr_omitted` hold in an `exec.finished` event.
+- The judge's `events` tool shows a long event in its shortest form. A `run.started` event could fill 3,000 to 5,000 tokens of one tool output. The crew replay fixture's monitor run is recorded again for it.
 - The monitor warns when a blob read skips JSON lines over the line cap.
 - The `deny_retry` signal no longer keeps every word an agent sends. It reads the agent's earlier calls when a call is denied.
 - `aims images prune` goes on past an image whose delete reply Docker cuts. It still lists the images it removed.
