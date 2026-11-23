@@ -80,9 +80,6 @@ OUTPUT_CHARS = 16_000
 TOOL_CHARS = 20_000
 TOO_LONG = judge_texts.ADDED["judge_too_long"][0]
 CHARS_CUT = judge_texts.ADDED["judge_chars_cut"][0]
-BLOB_CUT = (
-    "fewer bytes than asked, as their escapes would pass the output cap; read on from next_offset"
-)
 EVENT_CHARS = 3_000
 TEXT_CHARS = 400
 LIST_ITEMS = 20
@@ -1522,7 +1519,7 @@ class Judge:
                 "next_offset": end if end < size else None,
             }
             if cut:
-                out["cut"] = BLOB_CUT
+                out["cut"] = self._text("judge_blob_cut")
             return dumps(out)
 
         out = page(len(chunk))

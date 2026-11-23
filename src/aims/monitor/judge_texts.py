@@ -182,5 +182,10 @@ ADDED: dict[str, tuple[str, frozenset[str]]] = {
     "judge_chars_cut": ("[{chars} chars cut]", frozenset({"chars"})),
     "judge_blob_missing": ("[blob {sha256} is missing]", frozenset({"sha256"})),
     "judge_too_long": ("too long to show", frozenset()),
+    "judge_blob_cut": (
+        "fewer bytes than asked, as their escapes would pass the output cap; read on from"
+        " next_offset",
+        frozenset(),
+    ),
 }
 TEXTS |= ADDED

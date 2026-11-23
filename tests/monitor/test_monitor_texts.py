@@ -5,6 +5,7 @@ check that byte for byte. The texts added since identities were first stamped le
 identity as it was while they hold their defaults."""
 
 import ast
+import json
 import re
 import string
 from collections.abc import AsyncIterator
@@ -18,11 +19,11 @@ from test_judge import make_run, tool
 from test_render import AGENT, FULL, Run
 
 from aims.events import LocalEventStore
-from aims.models import ModelClient, ToolSpec
+from aims.models import ModelClient, ToolRequest, ToolSpec
 from aims.monitor import glossary_texts
 from aims.monitor.channels import evaluate_schema
 from aims.monitor.config import JudgeConfig, MonitorConfig
-from aims.monitor.judge import Judge, clip
+from aims.monitor.judge import Judge, Rollout, clip
 from aims.monitor.render import glossary
 from aims.monitor.setup import identity
 from aims.monitor.sweep import schemas, system
@@ -162,6 +163,20 @@ async def test_the_judge_s_cut_markers_come_from_its_texts(store: LocalEventStor
     missing = {"sha256": "1" * 64, "size": 3}
     assert await reader.text(run.id, missing, 100) == f"<no {'1' * 64}>"
     assert reader.too_long == "<long>"
+
+
+async def test_the_judge_s_blob_cut_note_comes_from_its_texts(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    # control bytes print as escapes, so a page of them passes the output cap and is cut
+    ref = await store.put_blob(run.id, bytes(range(32)) * 600)
+    judge = judge_with(store, run.id, texts(judge_blob_cut="<cut>"))
+    await judge.reader.load()
+    await judge._prepare()
+    args = json.dumps({"sha256": ref.sha256})
+    out = await judge._tool(
+        Rollout(1, False, 1.0), ToolRequest(id="t", name="blob", arguments=args)
+    )
+    assert json.loads(out)["cut"] == "<cut>"
 
 
 # The sweeps
