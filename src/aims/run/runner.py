@@ -21,7 +21,15 @@ from pydantic import JsonValue
 from aims import __version__
 from aims.agent import CONTINUE, DENY, Agent, Gate, OpenGate, ReplayPlan, RunBudget, Verdict
 from aims.aio import settle, shielded, stopped
-from aims.channels import Board, Channel, ChannelError, ChannelSetup, tool_names, tool_texts
+from aims.channels import (
+    Board,
+    Channel,
+    ChannelError,
+    ChannelSetup,
+    default_tools,
+    tool_names,
+    tool_texts,
+)
 from aims.channels import build as build_channel
 from aims.events import (
     MAX_INT,
@@ -237,14 +245,18 @@ class Texts:
 def resolve_texts(prompts: Prompts, agent: AgentConfig, scenario: Scenario | None = None) -> Texts:
     """The texts of `agent`: the defaults, then `prompts` (the config files), then the agent's
     own. With `scenario`, the texts of its channels' tools too, which sit under the tools'
-    names like any tool's."""
+    names like any tool's. The config files' texts of a channel tool under the name its kind
+    gives it wait for an agent that gets that tool; the agent's own must name a tool it gets."""
     layered = prompts.under(agent.prompts)
     channels: dict[str, dict[str, str]] = {}
-    own = layered.tools
+    others: set[str] = set()
     if scenario is not None:
         channels = tool_texts(scenario, agent.id, layered.tools)
-        skip = {*channels, *(tool_names(scenario) - set(agent.tool_names))}
-        own = {name: t for name, t in layered.tools.items() if name not in skip}
+        others = tool_names(scenario)
+    mine = set(agent.prompts.tools) if agent.prompts is not None else set()
+    unused = set(default_tools()) - mine
+    skip = {*channels, *((others | unused) - set(agent.tool_names))}
+    own = {name: t for name, t in layered.tools.items() if name not in skip}
     tools = load_tools(agent.tool_names, own)
     return Texts(layered.agent_texts(), {t.name: dict(t.text) for t in tools}, channels)
 

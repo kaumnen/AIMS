@@ -758,6 +758,63 @@ async def test_prompts_list_monitor_texts_with_their_layer(cp: CP) -> None:
     assert info["agent"]["arguments_not_object"]["placeholders"] is None
 
 
+TALK = """\
+version: 1
+name: talk
+oversight: observe
+task:
+  instruction: Talk.
+  environment: {image: python:3.13-slim}
+agents:
+  - id: a
+  - id: b
+channels:
+  - name: chat
+    kind: board
+    members: [a, b]
+    read_only: [b]
+    post_tool: note
+"""
+
+
+async def test_board_tool_texts_are_listed_with_the_other_prompts(cp: CP) -> None:
+    cp.project.write_text(
+        cp.project.read_text()
+        + '\n[prompts.tools.post_message]\nposted = "Sent {id}."\n'
+        + '\n[prompts.tools.note]\ndescription = "Notes on {channel}."\n'
+    )
+    folder = cp.project.parent / "scenarios" / "talk"
+    folder.mkdir(parents=True)
+    (folder / "scenario.yaml").write_text(TALK)
+    async with cp.client(cp.operator) as c:
+        info = (await c.get("/api/prompts")).json()
+        detail = (await c.get("/api/scenarios/project/talk")).json()
+    posted = info["tools"]["post_message"]["posted"]
+    assert (posted["text"], posted["source"], posted["default"]) == (
+        "Sent {id}.",
+        "project",
+        "Posted message {id} to {channel}.",
+    )
+    assert posted["placeholders"] == ["channel", "id"]
+    assert info["tools"]["read_messages"]["none"]["source"] == "default"
+    assert "note" not in info["tools"]
+    tools = {a["id"]: a["channel_tools"] for a in detail["agents"]}
+    assert {k: sorted(v) for k, v in tools.items()} == {
+        "a": ["note", "read_messages"],
+        "b": ["read_messages"],
+    }
+    note = tools["a"]["note"]
+    assert (note["description"]["text"], note["description"]["source"]) == (
+        "Notes on {channel}.",
+        "project",
+    )
+    assert note["posted"]["text"] == "Posted message {id} to {channel}."
+    assert note["param_text"]["placeholders"] == ["channel"]
+    async with cp.client(cp.viewer) as c:
+        seen = (await c.get("/api/scenarios/project/talk")).json()
+    assert [a["channel_tools"] for a in seen["agents"]] == [None, None]
+
+
 async def test_config_edits_take_the_monitor_tables(cp: CP) -> None:
     name = sorted(defaults())[0]
 

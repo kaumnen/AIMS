@@ -3,7 +3,9 @@ from aims.channels.base import (
     ChannelError,
     ChannelSetup,
     build,
+    default_tools,
     registry,
+    tool_classes,
     tool_names,
     tool_texts,
 )
@@ -18,7 +20,9 @@ __all__ = [
     "Folder",
     "archives",
     "build",
+    "default_tools",
     "registry",
+    "tool_classes",
     "tool_names",
     "tool_texts",
 ]

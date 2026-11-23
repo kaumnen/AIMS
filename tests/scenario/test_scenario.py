@@ -674,7 +674,9 @@ def test_prompts_show_prints_an_editable_table(tmp_path: Path) -> None:
     assert table["tools"]["bash"]["timeout"] == "slow"
     assert table["tools"]["bash"]["exit_code"] == "exit code: {code}"
     assert table["tools"]["edit"]["param_path"] == "Where."
-    assert set(table["tools"]) == {"bash", "edit", "submit", "report_to_operator"}
+    tools = {"bash", "edit", "submit", "report_to_operator", "post_message", "read_messages"}
+    assert set(table["tools"]) == tools
+    assert table["tools"]["post_message"]["param_text"] == "The message."
     config.write_text("[prompts]\nbogus = 1\n")
     bad = CliRunner().invoke(app, ["prompts", "show", "--config", str(config)])
     assert bad.exit_code == 1

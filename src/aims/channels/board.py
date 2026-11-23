@@ -14,13 +14,12 @@ from pydantic import Field
 from aims.channels.base import ChannelError, ChannelSetup
 from aims.events import ChannelInfo, ChannelMessage, ChannelRead, Draft
 from aims.models import ToolSpec
-from aims.prompts import TextError, check_format
 from aims.sandbox import AuditedSandbox
 from aims.sandbox.base import Mount
 from aims.scenario import Scenario
 from aims.scenario.model import BoardChannel
 from aims.scenario.model import Channel as ChannelConfig
-from aims.tools import Args, Tool, ToolContext, ToolOutcome
+from aims.tools import Args, Tool, ToolContext, ToolOutcome, resolve
 
 READ_BYTES = 12 * 1024
 
@@ -143,19 +142,6 @@ class ReadTool(_BoardTool):
         return ToolOutcome("\n\n".join(parts))
 
 
-def resolve(cls: type[_BoardTool], name: str, texts: Mapping[str, str] | None) -> dict[str, str]:
-    """The texts of board tool `name`: the defaults of `cls` with `texts` laid over them."""
-    texts = dict(texts or {})
-    unknown = sorted(set(texts) - set(cls.texts))
-    if unknown:
-        known = ", ".join(sorted(cls.texts))
-        raise TextError(f"tool {name} has no text {', '.join(unknown)}; known: {known}")
-    text = {**cls.texts, **texts}
-    for key, allowed in cls.placeholders.items():
-        check_format(text[key], allowed, f"tools.{name}.{key}")
-    return text
-
-
 class Board:
     kind: ClassVar[str] = "board"
 
@@ -173,6 +159,24 @@ class Board:
         self._lock = asyncio.Lock()
 
     @staticmethod
+    def tool_classes(
+        config: ChannelConfig, scenario: Scenario, agent_id: str
+    ) -> dict[str, type[_BoardTool]]:
+        """The class of each board tool `agent_id` gets, by tool name."""
+        if not isinstance(config, BoardChannel) or agent_id not in scenario.members(config):
+            return {}
+        out: dict[str, type[_BoardTool]] = {config.read_tool: ReadTool}
+        if agent_id not in config.read_only:
+            out[config.post_tool] = PostTool
+        return out
+
+    @staticmethod
+    def default_tools() -> dict[str, type[_BoardTool]]:
+        """The class of each board tool, by the name a board gives it unless told otherwise."""
+        fields = BoardChannel.model_fields
+        return {fields["read_tool"].default: ReadTool, fields["post_tool"].default: PostTool}
+
+    @staticmethod
     def tool_texts(
         config: ChannelConfig,
         scenario: Scenario,
@@ -180,13 +184,8 @@ class Board:
         layered: Mapping[str, Mapping[str, str]],
     ) -> dict[str, dict[str, str]]:
         """The resolved texts of the board tools `agent_id` gets, by tool name."""
-        if not isinstance(config, BoardChannel) or agent_id not in scenario.members(config):
-            return {}
-        out = {config.read_tool: resolve(ReadTool, config.read_tool, layered.get(config.read_tool))}
-        if agent_id not in config.read_only:
-            post = config.post_tool
-            out[post] = resolve(PostTool, post, layered.get(post))
-        return out
+        classes = Board.tool_classes(config, scenario, agent_id)
+        return {name: resolve(cls, name, layered.get(name)) for name, cls in classes.items()}
 
     def info(self) -> ChannelInfo:
         return ChannelInfo(

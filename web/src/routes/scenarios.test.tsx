@@ -101,6 +101,7 @@ function detail(name = "cache-keys"): ScenarioDetail {
         role: truth ? "subject" : null,
         scripted: truth ? false : null,
         prompts: truth ? { nudge: "Keep going." } : null,
+        channel_tools: truth ? {} : null,
       },
     ],
     channels: [],

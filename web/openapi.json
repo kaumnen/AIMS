@@ -465,7 +465,7 @@
         "type": "object"
       },
       "AgentOverview": {
-        "description": "`profile` is the one it runs unless a run picks another, null when it names none and no\nprofile has the agent role. `role`, `scripted` and `prompts` (its own text overrides) are\nsent to operators only.",
+        "description": "`profile` is the one it runs unless a run picks another, null when it names none and no\nprofile has the agent role. `role`, `scripted`, `prompts` (its own text overrides) and\n`channel_tools` are sent to operators only: the texts of the channel tools it gets, by the\nnames the scenario gives them, as the config files set them.",
         "properties": {
           "budget": {
             "additionalProperties": {
@@ -473,6 +473,23 @@
             },
             "title": "Budget",
             "type": "object"
+          },
+          "channel_tools": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/Text"
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Tools"
           },
           "id": {
             "title": "Id",
@@ -544,7 +561,8 @@
           "budget",
           "role",
           "scripted",
-          "prompts"
+          "prompts",
+          "channel_tools"
         ],
         "title": "AgentOverview",
         "type": "object"
@@ -11534,7 +11552,7 @@
         "type": "object"
       },
       "PromptsInfo": {
-        "description": "`agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's\nown texts (`[prompts.monitor]`) and `categories` its category definitions\n(`[prompts.monitor.categories]`).",
+        "description": "`agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's\nown texts (`[prompts.monitor]`) and `categories` its category definitions\n(`[prompts.monitor.categories]`). `tools` holds the channel tools too, by the names their\nkinds give them unless a scenario names them otherwise.",
         "properties": {
           "agent": {
             "additionalProperties": {

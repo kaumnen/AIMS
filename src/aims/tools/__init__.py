@@ -1,6 +1,7 @@
 from aims.tools.base import (
     OUTPUT_LIMIT,
     Args,
+    Texts,
     TextTool,
     Tool,
     ToolContext,
@@ -10,12 +11,14 @@ from aims.tools.base import (
     cap_stream,
     load_tools,
     registry,
+    resolve,
 )
 
 __all__ = [
     "OUTPUT_LIMIT",
     "Args",
     "TextTool",
+    "Texts",
     "Tool",
     "ToolContext",
     "ToolOutcome",
@@ -24,4 +27,5 @@ __all__ = [
     "cap_stream",
     "load_tools",
     "registry",
+    "resolve",
 ]

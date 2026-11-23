@@ -23,6 +23,8 @@ const agent = (id: string, prompts: Record<string, unknown>): ScenarioDetail["ag
     prompts,
   }) as ScenarioDetail["agents"][number];
 
+const text = (t: string, source: string) => ({ text: t, source });
+
 beforeEach(() => {
   patches = [];
   version = 1;
@@ -96,6 +98,28 @@ test("each text says where it comes from, the agent's own tools only", async () 
   expect(rowOf("bash.description").getByText("this scenario")).toBeTruthy();
   expect(rowOf("bash.description").getByText("Run one command.")).toBeTruthy();
   expect(screen.queryByText("edit.description")).toBeNull();
+});
+
+test("the agent's channel tools list their texts by the names the scenario gives them", async () => {
+  const own = agent("agent", { tools: { note: { posted: "Sent." } } });
+  own.channel_tools = {
+    note: {
+      description: text("Post to the board.", "user"),
+      posted: text("Posted.", "default"),
+    },
+  } as unknown as ScenarioDetail["agents"][number]["channel_tools"];
+  agents = [own];
+  renderTab();
+  await screen.findByText("note.description");
+  expect(rowOf("note.description").getByText("this machine")).toBeTruthy();
+  expect(rowOf("note.posted").getByText("this scenario")).toBeTruthy();
+  expect(rowOf("note.posted").getByText("Sent.")).toBeTruthy();
+  fireEvent.click(rowOf("note.posted").getByRole("button", { name: "Edit note.posted" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Use the config's text" }));
+  await vi.waitFor(() => expect(patches).toHaveLength(1));
+  expect(patches[0]?.body).toEqual({
+    unset: [{ agent: "agent", key: ["tools", "note", "posted"] }],
+  });
 });
 
 test("an override is written into the scenario against the version on the page", async () => {

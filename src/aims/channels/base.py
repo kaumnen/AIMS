@@ -7,7 +7,10 @@ before its sandbox starts; `start` once every sandbox runs (seed files, restore 
 state); `close` at the end, which returns the state the next run of a series starts from.
 
 A channel class whose tools have agent-visible texts also offers `tool_texts`, so the run can
-resolve and record those texts with the agent's other texts before the channel is built."""
+resolve and record those texts with the agent's other texts before the channel is built. It
+offers `tool_classes` and `default_tools` too, so the texts can be listed and edited with the
+other tool texts: the class of each tool an agent gets, and of each tool by the name the kind
+gives it unless a scenario names it otherwise."""
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -22,7 +25,7 @@ if TYPE_CHECKING:
     from aims.sandbox.base import Mount
     from aims.scenario import Scenario
     from aims.scenario.model import Channel as ChannelConfig
-    from aims.tools import Tool
+    from aims.tools import Texts, Tool
 
 GROUP = "aims.channels"
 
@@ -88,6 +91,28 @@ def tool_texts(
         texts = getattr(known.get(config.kind), "tool_texts", None)
         if texts is not None:
             out.update(texts(config, scenario, agent_id, layered))
+    return out
+
+
+def tool_classes(scenario: Scenario, agent_id: str) -> dict[str, type[Texts]]:
+    """The class of every channel tool `agent_id` gets that has texts, by tool name."""
+    known = registry()
+    out: dict[str, type[Texts]] = {}
+    for config in scenario.channels_of(agent_id):
+        classes = getattr(known.get(config.kind), "tool_classes", None)
+        if classes is not None:
+            out.update(classes(config, scenario, agent_id))
+    return out
+
+
+def default_tools() -> dict[str, type[Texts]]:
+    """The class of every channel tool that has texts, by the name its kind gives it unless a
+    scenario names it otherwise."""
+    out: dict[str, type[Texts]] = {}
+    for cls in registry().values():
+        defaults = getattr(cls, "default_tools", None)
+        if defaults is not None:
+            out.update(defaults())
     return out
 
 

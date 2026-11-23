@@ -914,16 +914,19 @@ app.add_typer(prompts_app, name="prompts")
 def prompts_show(config: ConfigOption = None) -> None:
     """Print the texts agents and the monitor get with this aims.toml, as \\[prompts] tables to
     edit: the agent's, among them the `denied` reply and `notify_on_resume`, each tool's, the
-    monitor's and its category definitions.
+    monitor's and its category definitions. Channel tools are listed by the names their kinds
+    give them; a scenario that names them otherwise takes their texts under its own names.
 
     A scenario agent's `prompts` mapping overrides the agent's texts for that agent.
     """
     import json
 
+    from aims.channels import default_tools
     from aims.monitor.texts import resolve
     from aims.prompts import TextError
     from aims.report.escape import visible
     from aims.tools import UnknownTool, registry
+    from aims.tools import resolve as resolve_tool
 
     layered = _settings(config).prompts
     try:
@@ -931,6 +934,8 @@ def prompts_show(config: ConfigOption = None) -> None:
         tools = {
             name: cls(layered.tools.get(name)).text for name, cls in sorted(registry().items())
         }
+        for name, cls in sorted(default_tools().items()):
+            tools[name] = resolve_tool(cls, name, layered.tools.get(name))
         unknown = sorted(set(layered.tools) - set(tools))
         if unknown:
             raise UnknownTool(f"[prompts.tools] names unknown tool(s) {', '.join(unknown)}")

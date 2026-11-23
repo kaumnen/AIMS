@@ -81,20 +81,34 @@ class TextTool:
     placeholders: ClassVar[dict[str, frozenset[str]]] = {}
 
     def __init__(self, texts: Mapping[str, str] | None = None) -> None:
-        texts = dict(texts or {})
-        unknown = sorted(set(texts) - set(self.texts))
-        if unknown:
-            known = ", ".join(sorted(self.texts))
-            raise TextError(f"tool {self.name} has no text {', '.join(unknown)}; known: {known}")
-        self.text = {**self.texts, **texts}
-        for key, allowed in self.placeholders.items():
-            check_format(self.text[key], allowed, f"tools.{self.name}.{key}")
+        self.text = resolve(type(self), self.name, texts)
 
     def say(self, key: str, /, **values: object) -> str:
         allowed = self.placeholders.get(key)
         if set(values) != set(allowed or ()):
             raise TypeError(f"tool {self.name}: text {key} takes {sorted(allowed or ())}")
         return self.text[key] if allowed is None else self.text[key].format(**values)
+
+
+class Texts(Protocol):
+    """A class of tool with texts: their defaults by key and the names each formatted one takes."""
+
+    texts: ClassVar[dict[str, str]]
+    placeholders: ClassVar[dict[str, frozenset[str]]]
+
+
+def resolve(cls: type[Texts], name: str, texts: Mapping[str, str] | None) -> dict[str, str]:
+    """The texts of tool `name` of class `cls`: its defaults with `texts` laid over them.
+    Raises TextError for a key it has no text for or a placeholder it is not given."""
+    texts = dict(texts or {})
+    unknown = sorted(set(texts) - set(cls.texts))
+    if unknown:
+        known = ", ".join(sorted(cls.texts))
+        raise TextError(f"tool {name} has no text {', '.join(unknown)}; known: {known}")
+    text = {**cls.texts, **texts}
+    for key, allowed in cls.placeholders.items():
+        check_format(text[key], allowed, f"tools.{name}.{key}")
+    return text
 
 
 class UnknownTool(Exception):

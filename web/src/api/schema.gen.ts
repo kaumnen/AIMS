@@ -1873,14 +1873,21 @@ export interface components {
         /**
          * AgentOverview
          * @description `profile` is the one it runs unless a run picks another, null when it names none and no
-         *     profile has the agent role. `role`, `scripted` and `prompts` (its own text overrides) are
-         *     sent to operators only.
+         *     profile has the agent role. `role`, `scripted`, `prompts` (its own text overrides) and
+         *     `channel_tools` are sent to operators only: the texts of the channel tools it gets, by the
+         *     names the scenario gives them, as the config files set them.
          */
         AgentOverview: {
             /** Budget */
             budget: {
                 [key: string]: components["schemas"]["JsonValue"];
             };
+            /** Channel Tools */
+            channel_tools: {
+                [key: string]: {
+                    [key: string]: components["schemas"]["Text"];
+                };
+            } | null;
             /** Id */
             id: string;
             /** Profile */
@@ -6224,7 +6231,8 @@ export interface components {
          * PromptsInfo
          * @description `agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's
          *     own texts (`[prompts.monitor]`) and `categories` its category definitions
-         *     (`[prompts.monitor.categories]`).
+         *     (`[prompts.monitor.categories]`). `tools` holds the channel tools too, by the names their
+         *     kinds give them unless a scenario names them otherwise.
          */
         PromptsInfo: {
             /** Agent */

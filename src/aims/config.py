@@ -33,6 +33,7 @@ import tomlkit.exceptions
 import tomlkit.items
 from pydantic import ValidationError
 
+from aims.channels import default_tools
 from aims.models import ModelsConfig, ProfileError, load_models
 from aims.models.profiles import ROLES, Role
 from aims.monitor.config import MonitorConfigError, layer, merge
@@ -40,6 +41,7 @@ from aims.monitor.texts import resolve
 from aims.prompts import Prompts, TextError, load_prompts
 from aims.sandbox.images import KEEP_DAYS
 from aims.tools import registry
+from aims.tools import resolve as resolve_tool
 
 PROJECT = "aims.toml"
 USER = "config.toml"
@@ -135,13 +137,17 @@ def load(config: Path | None = None, env: Mapping[str, str] = os.environ) -> Set
 
 def _check_texts(prompts: Prompts) -> None:
     """Refuse texts a run would refuse at its start: the agent's, the monitor's and those of the
-    tools AIMS knows. Texts of other tools, such as a scenario's channels, wait for the run.
-    Raises TextError."""
+    tools AIMS knows, channel tools under the names their kinds give them among them. Texts of
+    other tools, such as channel tools a scenario names otherwise, wait for the run. Raises
+    TextError."""
     prompts.agent_texts()
     known = registry()
+    channel_tools = default_tools()
     for name, texts in prompts.tools.items():
         if name in known:
             known[name](texts)
+        elif name in channel_tools:
+            resolve_tool(channel_tools[name], name, texts)
     resolve(prompts)
 
 

@@ -20,9 +20,10 @@ from aims.channels import Board, ChannelSetup
 from aims.channels.board import PostTool, ReadTool
 from aims.events import BlobRef, ExecEnd, ExecFinished, LocalEventStore, ToolResult
 from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError
+from aims.run.runner import resolve_texts, text_problems
 from aims.sandbox import AuditedSandbox, SandboxStoppedError
 from aims.sandbox.audit import ExecResult
-from aims.scenario import SandboxConfig, parse
+from aims.scenario import Bundle, SandboxConfig, parse
 from aims.tools import TextTool, Tool, ToolContext, cap, load_tools, registry
 from aims.tools.builtin import EditArgs
 
@@ -492,6 +493,38 @@ async def test_the_board_post_parameter_comes_from_its_text(store: LocalEventSto
     assert parameters(post) == {"text": "What chat gets."}
     default = next(t for t in board.tools("b") if t.name == "post_message")
     assert parameters(default) == {"text": "The message."}
+
+
+ALONE = BOARD.split("channels:")[0]
+
+
+@pytest.mark.parametrize("given", [True, False], ids=["with scenario", "without"])
+def test_board_texts_in_the_config_wait_for_an_agent_with_a_board(given: bool) -> None:
+    """The settings page and `aims prompts show` offer the board tools' texts under their
+    default names, so the config files may set them for scenarios without a board."""
+    prompts = Prompts(
+        tools={"post_message": {"posted": "Sent {id}."}, "read_messages": {"none": "None."}}
+    )
+    alone = parse(ALONE)
+    agent = alone.agent("a")
+    texts = resolve_texts(prompts, agent, alone if given else None)
+    assert (set(texts.tools), texts.channels) == (set(agent.tool_names), {})
+    assert text_problems(Bundle(alone, ALONE.encode()), prompts) == []
+    board = parse(BOARD)
+    channels = resolve_texts(prompts, board.agent("a"), board).channels
+    assert channels["post_message"]["posted"] == "Sent {id}."
+    assert channels["read_messages"]["none"] == "None."
+
+
+def test_an_agent_s_own_texts_for_a_board_it_lacks_are_refused() -> None:
+    text = ALONE.replace(
+        "  - id: a\n",
+        "  - id: a\n    prompts:\n      tools:\n        post_message: {posted: Sent.}\n",
+    )
+    own = parse(text)
+    assert text_problems(Bundle(own, text.encode())) == [
+        "agent a: unknown tool(s) post_message; known: bash, edit, report_to_operator, submit"
+    ]
 
 
 # The agent loop

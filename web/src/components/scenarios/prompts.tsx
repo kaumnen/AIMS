@@ -51,10 +51,12 @@ export function PromptsTab({ detail }: { detail: ScenarioDetail }) {
       : { key, label, text: own, source: "this scenario", inherited };
   };
   const agentRows = Object.entries(prompts.data.agent).map(([k, t]) => row([k], k, t));
-  const toolRows = agent.tools.flatMap((tool) =>
-    Object.entries(prompts.data.tools[tool] ?? {}).map(([k, t]) =>
-      row(["tools", tool, k], `${tool}.${k}`, t),
-    ),
+  // the agent's own tools, then its channel tools by the names the scenario gives them
+  const toolRows = [
+    ...agent.tools.map((tool) => [tool, prompts.data.tools[tool]] as const),
+    ...Object.entries(agent.channel_tools ?? {}),
+  ].flatMap(([tool, texts]) =>
+    Object.entries(texts ?? {}).map(([k, t]) => row(["tools", tool, k], `${tool}.${k}`, t)),
   );
   return (
     <div className="flex max-w-5xl flex-col gap-5">

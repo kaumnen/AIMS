@@ -19,6 +19,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, JsonValue
 
+from aims.channels import tool_classes
 from aims.config import (
     PROJECT,
     STARTER,
@@ -49,8 +50,10 @@ from aims.server.api import (
     CheckResult,
     Operator,
     Out,
+    PromptLayers,
     SourcesDep,
     State,
+    Text,
     Uploader,
     Viewer,
     _check_runner,
@@ -821,8 +824,9 @@ async def scenario_sources(principal: Viewer, sources: SourcesDep) -> list[Sourc
 
 class AgentOverview(Out):
     """`profile` is the one it runs unless a run picks another, null when it names none and no
-    profile has the agent role. `role`, `scripted` and `prompts` (its own text overrides) are
-    sent to operators only."""
+    profile has the agent role. `role`, `scripted`, `prompts` (its own text overrides) and
+    `channel_tools` are sent to operators only: the texts of the channel tools it gets, by the
+    names the scenario gives them, as the config files set them."""
 
     id: str
     profile: str | None
@@ -831,6 +835,7 @@ class AgentOverview(Out):
     role: Role | None = None
     scripted: bool | None = None
     prompts: dict[str, JsonValue] | None = None
+    channel_tools: dict[str, dict[str, Text]] | None = None
 
 
 class ChannelOverview(Out):
@@ -916,10 +921,13 @@ async def scenario_detail(
     except ScenarioError as e:
         out.errors = scenario_problems(e)
         return out
-    return _overview(out, scenario, state.config.settings().models.roles.agent)
+    default = state.config.settings().models.roles.agent
+    return _overview(out, scenario, default, PromptLayers.of(state))
 
 
-def _overview(out: ScenarioDetail, sc: Scenario, default: str | None) -> ScenarioDetail:
+def _overview(
+    out: ScenarioDetail, sc: Scenario, default: str | None, layers: PromptLayers
+) -> ScenarioDetail:
     truth = out.truth
     env = sc.task.environment
     out.title = sc.name
@@ -939,6 +947,8 @@ def _overview(out: ScenarioDetail, sc: Scenario, default: str | None) -> Scenari
             agent.role = a.role
             agent.scripted = a.scripted
             agent.prompts = _prompts(a.prompts)
+            classes = tool_classes(sc, a.id)
+            agent.channel_tools = {name: layers.tool(c, name) for name, c in classes.items()}
         out.agents.append(agent)
     for c in sc.channels:
         kind = getattr(c, "kind", "plugin")

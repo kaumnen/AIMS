@@ -78,6 +78,8 @@ def test_unknown_tables_and_missing_files_are_errors(tmp_path: Path) -> None:
         ('[prompts.tools.submit]\ncolor = "red"\n', "tool submit has no text color"),
         ('[prompts]\nunknown_tool = "{tool}"\n', "unknown_tool: unknown placeholder tool"),
         ('[prompts.tools.edit]\nedited = "{lines}"\n', r"tools\.edit\.edited: unknown placeholder"),
+        ('[prompts.tools.post_message]\nposted = "{n}"\n', r"tools\.post_message\.posted: unknown"),
+        ('[prompts.tools.read_messages]\ncolor = "red"\n', "tool read_messages has no text color"),
     ],
 )
 def test_agent_and_tool_texts_a_run_would_refuse_do_not_load(

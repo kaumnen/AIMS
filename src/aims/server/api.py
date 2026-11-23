@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from aims import __version__
+from aims.channels import default_tools
 from aims.config import Settings
 from aims.events import (
     AuditLevel,
@@ -114,7 +115,7 @@ from aims.server.problems import TITLES, ProblemError, ProblemException, respons
 from aims.server.runner_api import JOBS, send
 from aims.server.state import Connected, FileCache, ServerState
 from aims.text import NoLoneSurrogate, Utf8, scrub
-from aims.tools import UnknownTool, registry
+from aims.tools import Texts, UnknownTool, registry, resolve
 from aims.wire import (
     BASE_KINDS,
     CommandAction,
@@ -2427,7 +2428,8 @@ class Text(Out):
 class PromptsInfo(Out):
     """`agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's
     own texts (`[prompts.monitor]`) and `categories` its category definitions
-    (`[prompts.monitor.categories]`)."""
+    (`[prompts.monitor.categories]`). `tools` holds the channel tools too, by the names their
+    kinds give them unless a scenario names them otherwise."""
 
     agent: dict[str, Text]
     tools: dict[str, dict[str, Text]]
@@ -2454,6 +2456,35 @@ def _text(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class PromptLayers:
+    """The texts in use and what the user and the project config files each set."""
+
+    used: Prompts
+    user: Prompts
+    project: Prompts
+
+    @classmethod
+    def of(cls, state: ServerState) -> PromptLayers:
+        settings = state.config.settings()
+        found = settings.layers
+        project = load_prompts(found.project) if found.project is not None else Prompts()
+        return cls(settings.prompts, load_prompts(found.user), project)
+
+    def tool(self, cls: type[Texts], name: str) -> dict[str, Text]:
+        """The texts of tool `name` of class `cls`, with what each layer sets. A layer's texts
+        the tool would refuse leave the defaults in use."""
+        try:
+            texts = resolve(cls, name, self.used.tools.get(name))
+        except TextError:
+            texts = dict(cls.texts)
+        mine, theirs = self.project.tools.get(name, {}), self.user.tools.get(name, {})
+        return {
+            k: _text(v, cls.texts[k], theirs.get(k), mine.get(k), cls.placeholders.get(k))
+            for k, v in texts.items()
+        }
+
+
 def _categories(prompts: Prompts) -> dict[str, str]:
     value = prompts.monitor.get("categories")
     return value if isinstance(value, dict) else {}
@@ -2463,23 +2494,16 @@ def _categories(prompts: Prompts) -> dict[str, str]:
 async def list_prompts(principal: Viewer, state: State) -> PromptsInfo:
     """Every text AIMS writes for the agent or its monitor, what each layer sets and which one
     is in use."""
-    settings = state.config.settings()
-    found = settings.layers
-    user = load_prompts(found.user)
-    project = load_prompts(found.project) if found.project is not None else Prompts()
-    agent = settings.prompts.agent_texts().model_dump()
+    layers = PromptLayers.of(state)
+    user, project = layers.user, layers.project
+    agent = layers.used.agent_texts().model_dump()
     builtin = AgentTexts().model_dump()
-    resolved = monitor_texts.resolve(settings.prompts)
+    resolved = monitor_texts.resolve(layers.used)
     known = monitor_texts.defaults()
 
     tools: dict[str, dict[str, Text]] = {}
-    for name, cls in sorted(registry().items()):
-        texts = cls(settings.prompts.tools.get(name)).text
-        mine, theirs = project.tools.get(name, {}), user.tools.get(name, {})
-        tools[name] = {
-            k: _text(v, cls.texts[k], theirs.get(k), mine.get(k), cls.placeholders.get(k))
-            for k, v in texts.items()
-        }
+    for name, cls in [*sorted(registry().items()), *sorted(default_tools().items())]:
+        tools[name] = layers.tool(cls, name)
     return PromptsInfo(
         agent={
             k: _text(v, builtin[k], getattr(user, k), getattr(project, k), PLACEHOLDERS.get(k))
