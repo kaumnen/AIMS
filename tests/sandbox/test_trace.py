@@ -1928,13 +1928,13 @@ def test_parse_probes_drops_the_probe_index() -> None:
             {"id": 3136, "type": "tracing", "name": "fentry_vmlinux_security_file_open_9"},
             {"id": 3104, "type": "cgroup_device"},
             {"id": 3173, "type": "perf_event", "name": "interval_s_5_45"},
-            {"id": 3180, "name": "tracepoint_raw_syscalls_sys_exit_50"},
+            {"id": 3180, "name": "tracepoint_sched_sched_process_exit_50"},
         ]
     )
     assert parse_probes(text) == {
         3136: Probe("fentry_vmlinux_security_file_open", "tracing"),
         3173: Probe("interval_s_5", "perf_event"),
-        3180: Probe("tracepoint_raw_syscalls_sys_exit", ""),
+        3180: Probe("tracepoint_sched_sched_process_exit", ""),
     }
     assert parse_probes("") == {}
     assert parse_probes("{}") == {}
@@ -1945,8 +1945,8 @@ def test_a_skip_reason_names_the_cause_by_program_type() -> None:
     tracepoint, kprobe or perf event program; a fentry, fexit or raw tracepoint program has a
     guard of its own."""
     for kind in ("tracepoint", "kprobe"):
-        probe = Probe("tracepoint_raw_syscalls_sys_exit", kind)
-        assert skip_reason(1, probe) == SHARED_REASON.format("tracepoint_raw_syscalls_sys_exit")
+        probe = Probe("tracepoint_sched_sched_process_exit", kind)
+        assert skip_reason(1, probe) == SHARED_REASON.format("tracepoint_sched_sched_process_exit")
     for kind in ("tracing", "raw_tracepoint", "perf_event", ""):
         probe = Probe("fentry_vmlinux_security_file_open", kind)
         assert skip_reason(1, probe) == SKIP_REASON.format("fentry_vmlinux_security_file_open")
@@ -1989,7 +1989,7 @@ async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
     tracer.clock = (1_000_000, 0)
     tracer._probes = {
         3183: Probe("fentry_vmlinux_strncpy_from_kernel_nofault", "tracing"),
-        3185: Probe("tracepoint_raw_syscalls_sys_exit", "tracepoint"),
+        3185: Probe("tracepoint_sched_sched_process_exit", "tracepoint"),
     }
     tracer._skipped(*parse_skips(SKIP_READING.splitlines()))
     reason = SKIP_REASON.format("fentry_vmlinux_strncpy_from_kernel_nofault")
@@ -2003,7 +2003,7 @@ async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
     window = (1_687_990_000, 1_688_990_000)
     assert drain(one) == [
         Lost(8, reason, (), *window, "tracer"),
-        Lost(2, SHARED_REASON.format("tracepoint_raw_syscalls_sys_exit"), (), *window, "tracer"),
+        Lost(2, SHARED_REASON.format("tracepoint_sched_sched_process_exit"), (), *window, "tracer"),
     ]
     assert tracer.skipped == 1012
     assert tracer._skips == {3183: 1010, 3185: 2}

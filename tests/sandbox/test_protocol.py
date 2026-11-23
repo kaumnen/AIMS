@@ -193,9 +193,10 @@ def test_string_cap_matches_the_script() -> None:
 def test_sandbox_probes_filter_by_pid_namespace() -> None:
     # A sandbox process can rename itself but cannot leave its pid namespace. bpftrace tags the
     # level as kernel memory and syscall exit maps as user memory, and warns when && joins them;
-    # `!` drops the tag. On 7.0 a tracepoint probe that reads curtask->thread_pid after args makes
-    # bpftrace 0.23 lose struct filename's anonymous head, so raw_syscalls:sys_exit goes without
-    # the level test; the runtime records it lets through are already foreign.
+    # `!` drops the tag. The raw syscall exit probe goes without the level test: it keeps the
+    # filter it had as a tracepoint, where on 7.0 reading curtask->thread_pid after args made
+    # bpftrace 0.23 lose struct filename's anonymous head. The runtime records it lets through
+    # are already foreign.
     script = (ASSETS / "tracer" / "trace.bt").read_text()
     probes = [
         line for line in script.splitlines() if re.match(r"(fentry|fexit|(raw)?tracepoint):", line)
@@ -213,7 +214,7 @@ def test_sandbox_probes_filter_by_pid_namespace() -> None:
         "rawtracepoint:task_newtask",
         "tracepoint:sched:sched_process_exec",
         "tracepoint:sched:sched_process_exit",
-        "tracepoint:raw_syscalls:sys_exit",
+        "rawtracepoint:sys_exit",
     ]
 
 
@@ -310,11 +311,12 @@ def test_the_syscall_numbers_match_the_names() -> None:
             keys = [k for k, o in table.items() if o == op]
             assert len(keys) == abis, (arch, name)
             assert all(SYSCALLS[arch][k] == name for k in keys), (arch, name)
-        # fchown, of the native ABI only, also names its exit probe by number.
+        # fchown, of the native ABI only.
         fchown = {"x86_64": 93, "aarch64": 55}[arch]
         assert [k for k, o in table.items() if o == 28] == [fchown], arch
-        exit_ = f"//@{arch} tracepoint:raw_syscalls:sys_exit /args.id == {fchown} && @fch[tid]"
-        assert script.count(exit_) == 1, arch
+    # fchown marks the thread for the exit probe, as the calls it logs at exit do.
+    mark = "if (($op >= 3 && $op <= 9) || ($op >= 22 && $op <= 28)) { @scx[tid] = ($op, "
+    assert script.count(mark) == 1
     assert SYSCALL_ARCH in TRACE
 
 

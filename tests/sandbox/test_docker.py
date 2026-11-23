@@ -183,7 +183,8 @@ async def test_io_uring_is_refused_when_the_daemon_allows_it(
     x86 = backend.arch == "x86_64"
     # io_uring_setup, io_uring_enter and io_uring_register, then their neighbours 424 and 428.
     # Without the filter, enter and register on fd -1 fail with EBADF or EINVAL, never EPERM.
-    # The neighbours fail with EBADF.
+    # The neighbours fail with EBADF. The kernel runs the call the low 32 bits of the number name,
+    # so setup with a high bit set is refused, and recorded, as setup.
     # On x86_64 the three calls also go through x32 and through int 0x80.
     command = (
         "grep Seccomp_filters /proc/self/status | tr -s '\\t' ' '; python3 - <<'EOF'\n"
@@ -196,6 +197,7 @@ async def test_io_uring_is_refused_when_the_daemon_allows_it(
         "    return (*call(bit | 425, 1, params), *call(bit | 426, -1, 1, 0, 0, None, 0),"
         " *call(bit | 427, -1, 0, None, 0))\n"
         "print(*uring(0), *call(424, -1, 0, None, 0), *call(428, -1, b'x', 0))\n"
+        "print(*call(ctypes.c_long(1 << 32 | 425), 1, params))\n"
         + ("print(*uring(0x40000000), *(int80(nr, -1) for nr in (425, 426, 427)))\n" if x86 else "")
         + "EOF"
     )
@@ -206,7 +208,7 @@ async def test_io_uring_is_refused_when_the_daemon_allows_it(
         await sb.close()
 
     # One filter: the daemon applied none, so each refusal is aims-exec's own.
-    lines = [b"Seccomp_filters: 1", b"-1 1 -1 1 -1 1 -1 9 -1 9"]
+    lines = [b"Seccomp_filters: 1", b"-1 1 -1 1 -1 1 -1 9 -1 9", b"-1 1"]
     if x86:
         lines.append(b"-1 1 -1 1 -1 1 -1 -1 -1")
     assert result.stdout.splitlines() == lines, result.stderr
@@ -217,7 +219,7 @@ async def test_io_uring_is_refused_when_the_daemon_allows_it(
     )
     each = 3 if x86 else 1
     assert denied == {
-        ("io_uring_setup", 1): each,
+        ("io_uring_setup", 1): each + 1,
         ("io_uring_enter", 1): each,
         ("io_uring_register", 1): each,
     }

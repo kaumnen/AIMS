@@ -227,8 +227,8 @@ TRACEFS = (
     + "needs tracefs mounted at /sys/kernel/tracing; the Docker host has none there and the"
     " tracer cannot mount it'; exit 1; }; "
 )
-# The syscall probes follow calls by number, so the script keeps the numbers and ABI checks of the
-# host's architecture: its lines marked `//@<arch> `.
+# The syscall probes follow calls by number and read the saved registers, so the script keeps the
+# numbers, ABI checks and register reads of the host's architecture: its lines marked `//@<arch> `.
 SYSCALL_ARCH = 'u=$(uname -m); sed -i "s|^//@$u ||" $f; '
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
