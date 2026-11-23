@@ -346,11 +346,12 @@ async def _content(
         part = await store.get_part(run_id, value.sha256, 0, take, value.size)
     except BlobError as e:
         return f"({e})", 0
-    # a cut inside a character holds back its first bytes, which then count as left out
+    # every byte read takes room, so each read of a blob shrinks it; a cut inside a
+    # character holds back its first bytes, which then count as left out
+    room.left -= len(part.data)
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     text = decoder.decode(part.data, final=len(part.data) == part.size)
     held = len(part.data) - len(decoder.getstate()[0])
-    room.left -= held
     return text, part.size - held
 
 

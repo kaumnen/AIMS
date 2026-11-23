@@ -340,3 +340,14 @@ async def test_a_report_holds_a_head_of_each_long_text_and_counts_the_rest(
     assert held == TEXTS_BYTES + len("short and whole")
     assert [t.cut for t in appendix.reports[-2:]] == [big.size, 0]
     assert f"{answer.cut:,} more bytes left out of the report." in md
+
+
+async def test_each_blob_a_report_reads_takes_room(local: LocalEventStore) -> None:
+    run_id = await local.create_run(RunStarted(scenario="control", oversight="observe"))
+    ref = await local.put_blob(run_id, "é".encode() * 1000)
+    room = build_module._Room()
+    room.left = 1
+    # one byte of a two-byte character holds no text, and still uses the room
+    assert await build_module._content(local, run_id, ref, room) == ("", ref.size)
+    assert room.left == 0
+    assert await build_module._content(local, run_id, ref, room) == ("", ref.size)
