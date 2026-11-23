@@ -35,6 +35,7 @@ from aims.events import (
     TaskScored,
     ToolResult,
 )
+from aims.events.index import Index
 from aims.models import ModelClient, Profile
 from aims.monitor import offline
 from aims.monitor.config import MonitorConfigError
@@ -184,6 +185,45 @@ async def test_a_signals_only_rerun_of_a_recorded_run(
     assert files(store.root / origin_id) == blobs
     listed = await store.runs(kind="monitor", origin=origin_id)
     assert [r.run_id for r in listed] == [result.run_id]
+
+
+async def test_a_rerun_of_an_origin_deleted_while_it_is_fed_fails(
+    recorded: tuple[LocalEventStore, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another process takes the origin's row after the first page of its events: the monitor
+    run fails, rather than judge the part it read."""
+    store, origin_id = recorded
+    origin, _ = await monitored(store, origin_id)
+    m = models(WATCHER)
+    resolved = offline_monitor(
+        m, Prompts(), origin.bundle.scenario, origin_agents(origin), signals_only=True
+    )
+    feed = offline._feed
+    fed: list[bool] = []
+
+    async def feeding(*args: Any) -> None:
+        fed.append(False)
+        await feed(*args)
+
+    real = Index.events
+
+    async def events(index: Index, rid: str, **kw: Any) -> list[Event]:
+        page = await real(index, rid, **kw)
+        if rid == origin_id and fed == [False]:
+            fed[0] = True
+            other = await Index.open(store.root / "index.sqlite")
+            try:
+                await other._remove_row(rid)
+            finally:
+                await other.close()
+        return page
+
+    monkeypatch.setattr(offline, "_feed", feeding)
+    monkeypatch.setattr(Index, "events", events)
+    result = await monitor_offline(store, origin, resolved, models=m, mode="signals_only")
+    assert fed == [True]
+    assert result.status == "failed"
+    assert result.reason == f"IndexChanged: run {origin_id}: the index changed while it was read"
 
 
 async def test_sweeps_and_the_judge_rerun_a_recorded_run(

@@ -310,14 +310,13 @@ async def _feed(
 ) -> None:
     """Every event of the origin up to its seal, in order. The final sweeps come where the live
     run had them, once every agent finished, and the judge last; a cancelled run gets
-    neither, as live."""
+    neither, as live. An index that changes under the read, as when the origin is deleted,
+    raises IndexChanged: the monitor run fails rather than judge part of the origin."""
     agents = {a.id for a in scenario.agents}
     finished: set[str] = set()
     ran = False
     swept = status == "cancelled"
-    cursor: int | None = None
-    while page := await reads.events(origin, after=cursor, limit=PAGE):
-        cursor = page[-1].seq
+    async for page in reads.pages(origin, limit=PAGE):
         batch: list[Event] = []
         for event in page:
             if event.type == "run.finished":
@@ -578,6 +577,11 @@ class OriginStore:
         return await self._of(run_id).unindexed(
             run_id, after=after, before=before, types=types, agent_id=agent_id, limit=limit
         )
+
+    def pages(
+        self, run_id: str, *, limit: int = 1000, types: Sequence[str] = ()
+    ) -> AsyncIterator[list[Event]]:
+        return self._of(run_id).pages(run_id, limit=limit, types=types)
 
     async def logged_events(
         self,

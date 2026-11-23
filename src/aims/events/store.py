@@ -214,6 +214,13 @@ class EventStore(Protocol):
 
     def stream(self, run_id: str, *, after: int = -1) -> AsyncIterator[Event]: ...
 
+    def pages(
+        self, run_id: str, *, limit: int = MAX_PAGE, types: Sequence[str] = ()
+    ) -> AsyncIterator[list[Event]]:
+        """Every event of a run, a page at a time; IndexChanged when the index changes under
+        the read."""
+        ...
+
     async def run(self, run_id: str) -> RunInfo | None: ...
 
     async def runs(
@@ -1555,12 +1562,7 @@ class LocalEventStore:
             cursor: int | None = None
             generation: int | None = None
             while True:
-                async with self._index.snapshot() as now:
-                    indexed = await self._index.head(run_id)
-                    page = await self._index.events(
-                        run_id, after=cursor, limit=MAX_PAGE, types=types
-                    )
-                head = -1 if indexed is None else indexed[0].seq
+                page, head, now = await self._page(run_id, cursor, MAX_PAGE, types)
                 generation = now if generation is None else generation
                 if now != generation or head < floor:
                     break
@@ -1572,6 +1574,36 @@ class LocalEventStore:
             if not read:
                 log.warning("run %s: the index changed while it was read; it is read again", run_id)
         raise IndexChanged(f"run {run_id}: the index changed while it was read")
+
+    async def pages(
+        self, run_id: str, *, limit: int = MAX_PAGE, types: Sequence[str] = ()
+    ) -> AsyncIterator[list[Event]]:
+        """Every event of a run in seq order, a page at a time, for a reader that acts on each
+        page as it comes and so cannot start again. Each page is read as `every` reads one: a
+        reset of the index, or a head behind one an earlier page found, raises IndexChanged."""
+        cursor: int | None = None
+        generation: int | None = None
+        floor = -1
+        while True:
+            page, head, now = await self._page(run_id, cursor, limit, types)
+            generation = now if generation is None else generation
+            if now != generation or head < floor:
+                raise IndexChanged(f"run {run_id}: the index changed while it was read")
+            floor = head
+            if not page:
+                return
+            yield page
+            cursor = page[-1].seq
+
+    async def _page(
+        self, run_id: str, after: int | None, limit: int, types: Sequence[str]
+    ) -> tuple[list[Event], int, int]:
+        """A page of the run's events after seq `after`, the run's head, -1 for none, and the
+        generation of the index, all read in one snapshot."""
+        async with self._index.snapshot() as generation:
+            indexed = await self._index.head(run_id)
+            page = await self._index.events(run_id, after=after, limit=limit, types=types)
+        return page, -1 if indexed is None else indexed[0].seq, generation
 
     async def samples(
         self,
