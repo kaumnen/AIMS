@@ -188,6 +188,10 @@ class EventStore(Protocol):
         self, run_id: str, sha256: str, head: int, tail: int, size: int | None = None
     ) -> Ends: ...
 
+    async def get_json_lines(
+        self, run_id: str, sha256: str, size: int | None = None
+    ) -> list[dict[str, Any]]: ...
+
     async def content(self, run_id: str, text: str) -> Content: ...
 
     def stream(self, run_id: str, *, after: int = -1) -> AsyncIterator[Event]: ...
@@ -1058,6 +1062,13 @@ class LocalEventStore:
         """A blob's text kept at its first `head` and last `tail` bytes, as `Ends` tells. The
         read checks the whole blob and holds only those."""
         return await asyncio.to_thread(self._blobs(run_id).ends, sha256, head, tail, size)
+
+    async def get_json_lines(
+        self, run_id: str, sha256: str, size: int | None = None
+    ) -> list[dict[str, Any]]:
+        """The JSON object on each line of a blob. The read takes a line at a time, skips other
+        lines and any line longer than a log line may be, and checks the whole blob."""
+        return await asyncio.to_thread(self._blobs(run_id).json_lines, sha256, MAX_LINE, size)
 
     async def content(self, run_id: str, text: str) -> Content:
         """Inline short text, store long text as a blob. A lone surrogate is written `\\ud800`."""

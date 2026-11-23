@@ -55,8 +55,6 @@ ATTR_MODE = 1
 ATTR_SIZE = 8
 ATTR_MTIME_SET = 256
 TEXT_CAP = 1024 * 1024
-# The most bytes of a snapshot's `more` blob the monitor reads.
-MORE_BYTES = 4 * 1024 * 1024
 HISTORY = 8
 BLOB_CACHE = 32
 AGENT_PHASES: frozenset[ExecPhase | None] = frozenset({"agent", "replay"})
@@ -726,7 +724,8 @@ class State:
         if snapshot.base is None:
             return []
         changes: list[dict[str, JsonValue]] = [c.model_dump(mode="json") for c in snapshot.changes]
-        changes += await self._more(snapshot.more)
+        if snapshot.more is not None:
+            changes += await self._lines(snapshot.more)
         out: list[Event] = []
         for change in changes:
             virtual = _virtual(event, FS_CHANGE, {**change, "exec_id": snapshot.exec_id})
@@ -740,7 +739,8 @@ class State:
         """A shared folder's changes become `fs.change` events too, each on the member the
         kernel records show wrote it."""
         changes: list[dict[str, JsonValue]] = [c.model_dump(mode="json") for c in snapshot.changes]
-        changes += await self._more(snapshot.more)
+        if snapshot.more is not None:
+            changes += await self._lines(snapshot.more)
         out: list[Event] = []
         for change in changes:
             data = {**change, "exec_id": snapshot.exec_id, "channel": snapshot.channel}
@@ -754,29 +754,14 @@ class State:
                 out.append(virtual)
         return out
 
-    async def _more(self, ref: BlobRef | None) -> list[dict[str, JsonValue]]:
-        """The changes a snapshot keeps past its inline ones, from the first MORE_BYTES of
-        their blob. A change past them is left out."""
-        if ref is None:
-            return []
-        try:
-            part = await self.store.get_part(self.run_id, ref.sha256, 0, MORE_BYTES, ref.size)
-        except Exception as e:
-            log.warning("monitor could not read blob %s: %s", ref.sha256, e)
-            return []
-        data = part.data
-        if part.size > len(data):
-            log.warning("monitor read the first %d bytes of blob %s", MORE_BYTES, ref.sha256)
-            data = data[: data.rfind(b"\n") + 1]
-        return _json_lines(data)
-
     async def _lines(self, ref: BlobRef) -> list[dict[str, JsonValue]]:
+        """The JSON objects of a blob of JSON lines, read a line at a time, so every change or
+        record it holds is seen without the whole blob in memory."""
         try:
-            data = await self.store.get_blob(self.run_id, ref.sha256, ref.size)
+            return await self.store.get_json_lines(self.run_id, ref.sha256, ref.size)
         except Exception as e:
             log.warning("monitor could not read blob %s: %s", ref.sha256, e)
             return []
-        return _json_lines(data)
 
     @staticmethod
     def _add[K](index: dict[K, list[ProcNode]], key: K, node: ProcNode) -> None:
@@ -784,19 +769,6 @@ class State:
         nodes.append(node)
         if len(nodes) > HISTORY:
             del nodes[0]
-
-
-def _json_lines(data: bytes) -> list[dict[str, JsonValue]]:
-    """The JSON objects of `data`, one a line. Other lines are skipped."""
-    out: list[dict[str, JsonValue]] = []
-    for line in data.splitlines():
-        try:
-            item = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(item, dict):
-            out.append(item)
-    return out
 
 
 def _virtual(holder: Event, kind: str, data: dict[str, JsonValue]) -> Event:

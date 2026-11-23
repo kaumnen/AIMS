@@ -1,6 +1,7 @@
 import codecs
 import contextlib
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -9,7 +10,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from compression import zstd
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Protocol
+from typing import IO, Any, Protocol
 
 from aims.events.disk import make_dir, sync_dir
 from aims.events.schema import BlobRef
@@ -324,6 +325,48 @@ class _Text:
         self.take(b"", final=True)
 
 
+class _JsonLines:
+    """Keeps the JSON object on each line of a blob, read a line at a time. Other lines are
+    skipped, as is a line over `cap` bytes, which is never held whole."""
+
+    def __init__(self, cap: int) -> None:
+        self.cap = cap
+        self.items: list[dict[str, Any]] = []
+        self.line = bytearray()
+        # whether the line being read passed the cap
+        self.long = False
+
+    def take(self, data: bytes) -> None:
+        start = 0
+        while (end := data.find(b"\n", start)) != -1:
+            self._add(data[start:end])
+            self._close()
+            start = end + 1
+        self._add(data[start:])
+
+    def end(self) -> None:
+        self._close()
+
+    def _add(self, data: bytes) -> None:
+        if self.long:
+            return
+        self.line += data
+        if len(self.line) > self.cap:
+            self.long = True
+            self.line.clear()
+
+    def _close(self) -> None:
+        if not self.long and self.line:
+            try:
+                item = json.loads(self.line)
+            except ValueError, RecursionError:
+                item = None
+            if isinstance(item, dict):
+                self.items.append(item)
+        self.line.clear()
+        self.long = False
+
+
 def _scan[K: _Keeper](path: Path, size: int | None, keeper: Callable[[], K]) -> K | None:
     """Feed the blob at `path` to a new keeper a chunk at a time, read as zstd frames and else
     as is. The keeper once the whole blob went by; None when the file does not hold the blob it
@@ -386,6 +429,13 @@ def read_ends(path: Path, head: int, tail: int, size: int | None = None) -> Ends
         text.size,
         text.chars,
     )
+
+
+def read_json_lines(path: Path, cap: int, size: int | None = None) -> list[dict[str, Any]] | None:
+    """The JSON object on each line of the blob at `path`, read a line at a time; see
+    `_JsonLines`. None as `read_part` gives it."""
+    kept = _scan(path, size, lambda: _JsonLines(cap))
+    return None if kept is None else kept.items
 
 
 class BlobStore:
@@ -479,6 +529,18 @@ class BlobStore:
         if ends is None:
             raise self._unread(path, size)
         return ends
+
+    def json_lines(self, sha256: str, cap: int, size: int | None = None) -> list[dict[str, Any]]:
+        """The JSON object on each line of the blob, read a line at a time. A line over `cap`
+        bytes is skipped. The whole blob is checked against its hash."""
+        path = self.path(sha256)
+        try:
+            items = read_json_lines(path, cap, size)
+        except FileNotFoundError:
+            raise BlobError(f"missing blob {sha256}") from None
+        if items is None:
+            raise self._unread(path, size)
+        return items
 
     @staticmethod
     def _unread(path: Path, size: int | None) -> BlobError:

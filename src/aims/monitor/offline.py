@@ -458,6 +458,16 @@ class OriginStore:
         except BlobError, KeyError:
             return await self.store.get_ends(self.run_id, sha256, head, tail, size)
 
+    async def get_json_lines(
+        self, run_id: str, sha256: str, size: int | None = None
+    ) -> list[dict[str, Any]]:
+        if run_id != self.origin:
+            return await self.store.get_json_lines(run_id, sha256, size)
+        try:
+            return await self.source.get_json_lines(run_id, sha256, size)
+        except BlobError, KeyError:
+            return await self.store.get_json_lines(self.run_id, sha256, size)
+
     async def content(self, run_id: str, text: str) -> Content:
         return await self.store.content(self._at(run_id), text)
 

@@ -1426,6 +1426,38 @@ def test_a_part_of_a_blob_is_read_whole_and_kept_alone(tmp_path: Path) -> None:
         blobs.part("f" * 64, 0, 10)
 
 
+def test_json_lines_of_a_blob_are_read_a_line_at_a_time(tmp_path: Path) -> None:
+    blobs = BlobStore(tmp_path)
+    items = [{"n": n, "path": f"/work/{n:06}"} for n in range(60_000)]
+    lines = [json.dumps(i).encode() for i in items]
+    # other JSON, broken JSON, an empty line and a line past the cap are skipped
+    junk = [b"[1, 2]", b"{broken", b"", b" " * (4 * MIB), b'"text"']
+    data = b"\n".join([*lines[:30_000], *junk, *lines[30_000:]])
+    assert len(data) > 2 * MIB
+    ref = blobs.put(data)
+    assert blobs.json_lines(ref.sha256, MAX_LINE) == items
+    assert blobs.json_lines(ref.sha256, MAX_LINE, size=len(data)) == items
+    # a line past the cap is never held whole, nor is the blob
+    long = blobs.put(b'{"a": 1}\n' + b"x" * (16 * MIB) + b'\n{"b": 2}\n')
+    assert blobs.json_lines(long.sha256, MAX_LINE) == [{"a": 1}, {"b": 2}]
+    assert peak_of(lambda: blobs.json_lines(long.sha256, MAX_LINE)) < 4 * MIB
+    with pytest.raises(BlobError, match=f"holds more than the {len(data) - 1} bytes"):
+        blobs.json_lines(ref.sha256, MAX_LINE, size=len(data) - 1)
+
+    # a last line with no line end, a file stored as is, many frames
+    tail = b'{"a": 1}\n{"b": 2}'
+    sha = hashlib.sha256(tail).hexdigest()
+    blobs.path(sha).write_bytes(tail)
+    assert blobs.json_lines(sha, MAX_LINE) == [{"a": 1}, {"b": 2}]
+    blobs.path(sha).write_bytes(zstd.compress(tail[:5]) + zstd.compress(tail[5:]))
+    assert blobs.json_lines(sha, MAX_LINE) == [{"a": 1}, {"b": 2}]
+    blobs.path(sha).write_bytes(zstd.compress(tail[:-1]))
+    with pytest.raises(BlobError, match="does not match its hash"):
+        blobs.json_lines(sha, MAX_LINE)
+    with pytest.raises(BlobError, match="missing blob"):
+        blobs.json_lines("f" * 64, MAX_LINE)
+
+
 async def test_verify_checks_the_size_each_reference_states(store: LocalEventStore) -> None:
     run_id = await store.create_run(STARTED)
     blobs = store.blobs(run_id)

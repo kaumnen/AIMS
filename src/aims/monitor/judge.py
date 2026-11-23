@@ -70,7 +70,6 @@ from aims.models import (
 from aims.models.types import CHARS_PER_TOKEN
 from aims.monitor import judge_texts
 from aims.monitor.config import CATEGORIES, JUDGE_MIN_OUTPUT, JudgeConfig
-from aims.monitor.state import MORE_BYTES
 from aims.monitor.texts import MonitorTexts
 
 log = logging.getLogger("aims.monitor")
@@ -93,6 +92,7 @@ SNIPPET = 160
 FETCH = 500
 SCAN_PAGES = 40
 HEAD_BLOB = 256 * 1024
+MORE_BYTES = 4 * 1024 * 1024
 CACHE_BYTES = 32 * 1024 * 1024
 FORCE_TRIES = 2
 # The most characters of problems a refused verdict is told, so a retry's input has a bound.

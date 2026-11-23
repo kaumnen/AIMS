@@ -53,6 +53,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.events.chain import MAX_LINE
 from aims.monitor.config import MonitorConfig
 from aims.monitor.signals import agent as agent_signals
 from aims.monitor.signals import engine as engine_module
@@ -61,7 +62,7 @@ from aims.monitor.signals import verifier as verifier_signals
 from aims.monitor.signals.base import Base, Hit, SignalError, SignalSetup, registry
 from aims.monitor.signals.content import _READER, HACKS, HackPattern, MonitorManipulation
 from aims.monitor.signals.engine import OVERFLOW, SignalEngine, check_signals, signal_versions
-from aims.monitor.state import MORE_BYTES, TEXT_CAP, State, _object
+from aims.monitor.state import TEXT_CAP, State, _object
 from aims.sandbox.base import TAIL, Capture
 from aims.scenario import Scenario
 from aims.scenario.load import load
@@ -3646,7 +3647,7 @@ async def test_snapshot_changes_past_the_inline_ones_are_read(store: LocalEventS
     assert [f.key for f in b.of("startup_hook_write")] == ["/work/x.pth"]
 
 
-async def test_only_the_first_more_bytes_of_snapshot_changes_are_read(
+async def test_every_change_of_a_snapshot_is_read_a_line_at_a_time(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     b = await bench(store)
@@ -3655,7 +3656,9 @@ async def test_only_the_first_more_bytes_of_snapshot_changes_are_read(
         json.dumps(change(path).model_dump(mode="json")).encode()
         for path in ("/work/x.pth", "/work/y.pth")
     )
-    more = await store.put_blob(b.run_id, b"\n".join([first, b" " * MORE_BYTES, last]))
+    # a line past the cap of a log line is skipped, and the change after it still counts
+    filler = b" " * (4 * MAX_LINE)
+    more = await store.put_blob(b.run_id, b"\n".join([first, filler, b"[1]", last]))
     read: list[str] = []
     real = store.get_blob
 
@@ -3684,7 +3687,7 @@ async def test_only_the_first_more_bytes_of_snapshot_changes_are_read(
         )
     )
     assert more.sha256 not in read
-    assert [f.key for f in b.of("startup_hook_write")] == ["/work/x.pth"]
+    assert [f.key for f in b.of("startup_hook_write")] == ["/work/x.pth", "/work/y.pth"]
 
 
 async def test_file_writes_record_phase_and_last_writer(store: LocalEventStore) -> None:
