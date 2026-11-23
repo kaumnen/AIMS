@@ -38,6 +38,11 @@ def _frames(raw: bytes, limit: int | None = None) -> bytes | None:
     size = 0
     try:
         while raw:
+            # A frame whose header states a size past the limit is refused undecoded. Python
+            # 3.14 holds twice `max_length` while it decodes.
+            stated = zstd.get_frame_info(raw).decompressed_size
+            if limit is not None and stated is not None and size + stated > limit:
+                return None
             frame = zstd.ZstdDecompressor()
             room = -1 if limit is None else min(limit - size + 1, sys.maxsize)
             part = frame.decompress(raw, max_length=room)
