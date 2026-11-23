@@ -1,9 +1,11 @@
 import hashlib
 import tracemalloc
+from collections.abc import AsyncIterator
 from compression import zstd
 from pathlib import Path
 from typing import cast
 
+import httpx2
 import pytest
 from pydantic import JsonValue
 from scripted import profile
@@ -68,7 +70,7 @@ class Blobs:
     def __init__(self, files: dict[str, bytes]) -> None:
         self.files = files
 
-    async def job_blob(self, run_id: str, sha256: str) -> bytes:
+    async def job_blob(self, run_id: str, sha256: str, limit: int | None = None) -> bytes:
         return self.files[sha256]
 
 
@@ -103,7 +105,7 @@ async def test_a_runner_decodes_a_scenario_folder_no_further_than_its_cap(
 ) -> None:
     """No reference states the size of the folder the control plane tars, and a reply of a few
     KiB may decode to many GiB."""
-    monkeypatch.setattr(service, "FOLDER_LIMIT", 1024 * 1024, raising=False)
+    monkeypatch.setattr(service, "INPUT_LIMIT", 1024 * 1024, raising=False)
     folder = bytes(64 * 1024 * 1024)
     sha = hashlib.sha256(folder).hexdigest()
     streamed = zstd.ZstdCompressor()
@@ -124,3 +126,52 @@ async def test_a_runner_decodes_a_scenario_folder_no_further_than_its_cap(
     sha = hashlib.sha256(small).hexdigest()
     client = cast("ControlClient", Blobs({sha: zstd.compress(small)}))
     assert await job_inputs(client, Job(run_id="r", folder=sha)) == {sha: small}
+
+
+@pytest.mark.anyio
+async def test_a_runner_decodes_no_job_input_past_its_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The size a scenario's reference states comes from the control plane too."""
+    monkeypatch.setattr(service, "INPUT_LIMIT", 1024 * 1024, raising=False)
+    big = bytes(64 * 1024 * 1024)
+    sha = hashlib.sha256(big).hexdigest()
+    streamed = zstd.ZstdCompressor()
+    client = cast("ControlClient", Blobs({sha: streamed.compress(big) + streamed.flush()}))
+    scenario: dict[str, JsonValue] = {"context": {"sha256": sha, "size": len(big)}}
+    tracemalloc.start()
+    try:
+        with pytest.raises(RuntimeError, match=f"input {sha} holds more than 1048576 bytes"):
+            await job_inputs(client, Job(run_id="r", scenario=scenario))
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 1024 * 1024
+
+
+@pytest.mark.anyio
+async def test_a_runner_reads_no_more_of_a_job_input_reply_than_a_file_under_its_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A control plane may send a blob as is, any number of bytes, or a reply that never ends."""
+    monkeypatch.setattr(service, "INPUT_LIMIT", 1024 * 1024, raising=False)
+    chunk = bytes(1024 * 1024)
+    sha = hashlib.sha256(chunk * 64).hexdigest()
+    sent: list[int] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        for n in range(64):
+            sent.append(n)
+            yield chunk
+
+    async def reply(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == f"/runner/v1/jobs/r/blobs/{sha}"
+        return httpx2.Response(200, content=body())
+
+    client = ControlClient("http://cp", "token", runner="r1", transport=httpx2.MockTransport(reply))
+    try:
+        with pytest.raises(RuntimeError, match=f"folder {sha} holds more than 1048576 bytes"):
+            await job_inputs(client, Job(run_id="r", folder=sha))
+    finally:
+        await client.aclose()
+    assert len(sent) <= 3

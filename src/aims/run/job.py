@@ -34,6 +34,10 @@ from aims.scenario.budget import BudgetOverride
 
 JobKind = Literal["scenario", "models.check", "selftest"]
 INPUTS = ("file", "files", "verifier", "context")
+# The most a runner takes of each scenario input of a job, its folder among them, which it reads
+# into memory. A runner does not fully trust its control plane, whose reply of a few KiB can
+# decode to many GiB.
+INPUT_LIMIT = 1024**3
 
 
 class _Strict(BaseModel):

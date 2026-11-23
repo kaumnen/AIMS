@@ -27,7 +27,7 @@ from aims.events import (
     RunStatus,
     SelfTestCase,
 )
-from aims.events.blobs import blob_bytes, holds_more
+from aims.events.blobs import blob_bytes, compress_bound, holds_more
 from aims.events.log import next_lines
 from aims.events.schema import blob_refs
 from aims.events.store import TruthRefused, is_run_id
@@ -36,14 +36,14 @@ from aims.models.check import record_check
 from aims.monitor.config import MonitorConfigError
 from aims.monitor.offline import monitor_offline, stamped
 from aims.monitor.texts import MonitorTexts, resolve
-from aims.node.client import ApiError, ControlClient
+from aims.node.client import ApiError, ControlClient, TooLarge
 from aims.node.link import REFUSED_MAX, Link
 from aims.node.shipper import Backoff, Streak
 from aims.prompts import TextError
 from aims.run import selftest as st
 from aims.run import truth
 from aims.run.fork import load_origin
-from aims.run.job import Job, job_bundle, runner_for, selftest_runner
+from aims.run.job import INPUT_LIMIT, Job, job_bundle, runner_for, selftest_runner
 from aims.run.runner import Bench, Options, RunError, Runner, seal_unsealed
 from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
@@ -63,9 +63,6 @@ DROP_WAIT_S = 180.0
 # is only fetched again.
 COPY_DAYS = 7.0
 BLOB_LIMIT = 2 * 1024**3
-# The most a runner decodes of a job's scenario folder, whose size the control plane does not
-# state. A reply of a few KiB can decode to many GiB, and the folder is read into memory.
-FOLDER_LIMIT = 1024**3
 INGEST_CHUNK = 1000
 INGEST_BYTES = 4 * 1024 * 1024
 
@@ -82,15 +79,21 @@ def data_dir(env: dict[str, str] | None = None) -> Path:
 
 async def job_inputs(client: ControlClient, job: Job) -> dict[str, bytes]:
     """The scenario inputs of `job`, each checked against its sha256 and decoded no further than
-    its reference states. The folder is decoded no further than FOLDER_LIMIT."""
+    its reference states, nor past INPUT_LIMIT. No reference states the size of the folder. A
+    reply larger than a blob file of that size can be is not read past that."""
     out: dict[str, bytes] = {}
     for sha, size in job.sizes().items():
-        raw = await client.job_blob(job.run_id, sha)
-        data = blob_bytes(raw, sha, FOLDER_LIMIT if size is None else size)
-        if data is None and size is None and holds_more(raw, FOLDER_LIMIT):
+        cap = INPUT_LIMIT if size is None else min(size, INPUT_LIMIT)
+        capped = size is None or size > INPUT_LIMIT
+        try:
+            raw = await client.job_blob(job.run_id, sha, compress_bound(cap))
+        except TooLarge:
+            raw = None
+        data = None if raw is None else blob_bytes(raw, sha, cap)
+        if data is None and capped and (raw is None or holds_more(raw, cap)):
+            what = "scenario folder" if size is None else "scenario input"
             raise RuntimeError(
-                f"the scenario folder {sha} holds more than {FOLDER_LIMIT} bytes,"
-                " the most a runner takes"
+                f"the {what} {sha} holds more than {cap} bytes, the most a runner takes"
             )
         if data is None:
             raise RuntimeError(f"blob {sha} came back with other bytes")

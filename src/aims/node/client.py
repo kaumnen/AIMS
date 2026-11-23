@@ -11,8 +11,9 @@ from pydantic import TypeAdapter
 
 from aims import __version__
 from aims.events import Label
+from aims.events.blobs import compress_bound
 from aims.net import Outbound
-from aims.run.job import Job
+from aims.run.job import INPUT_LIMIT, Job
 from aims.wire import (
     Ack,
     Claimed,
@@ -34,6 +35,12 @@ from aims.wire import (
 PREFIX = "/runner/v1"
 FEED: TypeAdapter[Any] = TypeAdapter(RunnerFeed)
 FILE_CHUNK = 256 * 1024
+# the largest file of a blob of INPUT_LIMIT bytes
+INPUT_BYTES = compress_bound(INPUT_LIMIT)
+
+
+class TooLarge(Exception):
+    """A reply past the bytes the runner reads of it."""
 
 
 class ApiError(Exception):
@@ -148,10 +155,17 @@ class ControlClient:
     async def release(self, run_id: str, reason: str) -> None:
         await self._post(f"/jobs/{run_id}/release", Release(reason=reason))
 
-    async def job_blob(self, run_id: str, sha256: str) -> bytes:
-        """A blob of a job's scenario, as the control plane stores it."""
-        response = await _check(await self._http.get(f"/jobs/{run_id}/blobs/{sha256}"))
-        return response.content
+    async def job_blob(self, run_id: str, sha256: str, limit: int = INPUT_BYTES) -> bytes:
+        """A blob of a job's scenario, as the control plane stores it. Raises TooLarge once the
+        reply passes `limit` bytes, of which no more than a chunk past it is read."""
+        async with self._http.stream("GET", f"/jobs/{run_id}/blobs/{sha256}") as response:
+            await _check(response)
+            out = bytearray()
+            async for chunk in response.aiter_bytes(FILE_CHUNK):
+                out += chunk
+                if len(out) > limit:
+                    raise TooLarge(f"the reply for blob {sha256} passes {limit} bytes")
+            return bytes(out)
 
     async def heads(self, run_ids: Sequence[str]) -> dict[str, Head]:
         response = await self._post("/heads", Heads(run_ids=list(run_ids)))
