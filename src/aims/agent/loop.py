@@ -1088,7 +1088,9 @@ class Agent:
 
     async def _compact(self) -> None:
         c = self.config.compaction
-        context = self.profile.context_tokens
+        # While its steps replay or keep the origin's answers, a fork's agent compacts where the
+        # origin did: at the context of the profile the origin ran that step on.
+        context = self._model()[1].context_tokens
         if c is None or context is None or self.last_tokens is None:
             return
         if self.last_tokens < c.at * context:
@@ -1144,17 +1146,29 @@ class Agent:
         request = Message(role="user", content=self.texts.summary_request)
         prompt = Prompt(items=[*self.items[:cut], request], tools=self.specs)
         try:
-            reply = await client.call(
-                profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
-            )
+            try:
+                reply = await client.call(
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                )
+            except ReplayError:
+                # A summary the recording lacks sends a kept agent live, as a step's request does.
+                if self._replaying() or not self._kept():
+                    raise
+                self._left_recording = True
+                client, profile = self._model()
+                reply = await client.call(
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                )
+            finally:
+                self.run_budget.owed.pop(self.id, None)
         except ModelCallError as e:
             self._charge(e.reply, step=False)
             if e.no_room:
                 raise _End("budget_cost", self._no_room(e.reply.error)) from None
             log.warning("agent %s: summary call failed: %s", self.id, e)
             return None
-        finally:
-            self.run_budget.owed.pop(self.id, None)
+        except ReplayError as e:
+            raise _End("error", f"replay of step {self.steps + 1} failed: {e}") from None
         self._charge(reply, step=False)
         text = reply.text.strip()
         if not text:

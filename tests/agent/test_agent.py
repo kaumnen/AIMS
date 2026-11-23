@@ -667,6 +667,92 @@ async def test_summary_compaction_rewrites_the_history(store: LocalEventStore) -
     assert [s.n for s in steps] == [1, 2, 3]
 
 
+async def summary_fork(
+    store: LocalEventStore,
+    origin: str,
+    live: Script,
+    *,
+    fork_at: int,
+    keep: bool = False,
+    ran_on: Profile,
+    outputs: dict[tuple[int, str], RecordedOutput] | None = None,
+) -> tuple[AgentFinished, list[AgentCompacted]]:
+    """A fork of `origin` after `fork_at` on a profile with 150 tokens of context, which
+    compacts by summary; its schedule says the origin ran on `ran_on`."""
+    from aims.models import Recording
+
+    summary = Compaction(at=0.5, strategy="summary", keep_recent=1)
+    agent, run_id = await make_agent(store, live, p=profile(context_tokens=150), compaction=summary)
+    agent.replay = ReplayPlan(
+        client=ModelClient(
+            store, run_id, models(agent.profile), replay=await Recording.load(store, origin), env={}
+        ),
+        fork_at=fork_at,
+        schedule=[(None, ran_on)],
+        outputs=outputs or {},
+        keep=keep,
+    )
+    finished = await agent.run()
+    return finished, await payloads(store, run_id, AgentCompacted)
+
+
+async def test_a_fork_compacts_where_its_origin_did_until_it_goes_live(
+    store: LocalEventStore,
+) -> None:
+    """The origin ran on a context its calls never filled half of; the fork's profile has a
+    smaller one. While its steps replay or keep the recorded answers, no summary falls due that
+    the origin did not make. Once live, its own context counts."""
+    summary = Compaction(at=0.5, strategy="summary", keep_recent=1)
+    big = profile(context_tokens=1_000_000)
+    play = Script(say("a"), say("b"), call("bash", command="true"), call("submit", answer="done"))
+    origin_agent, origin = await make_agent(store, play, p=big, compaction=summary)
+    assert (await origin_agent.run()).reason == "submitted"
+
+    live = Script()
+    finished, compacted = await summary_fork(store, origin, live, fork_at=1, keep=True, ran_on=big)
+    assert (finished.reason, finished.answer, finished.steps) == ("submitted", "done", 4)
+    assert (live.requests, compacted) == ([], [])
+
+    live = Script(say("Said a and b, ran true."), call("submit", answer="live"))
+    recorded = {(3, "call_1"): RecordedOutput("stdout:\nran true\nexit code: 0", False)}
+    finished, compacted = await summary_fork(
+        store, origin, live, fork_at=3, ran_on=big, outputs=recorded
+    )
+    assert (finished.reason, finished.answer, finished.steps) == ("submitted", "live", 4)
+    assert [(c.step, c.to_step) for c in compacted] == [(3, 2)]
+    asked = live.requests[0]["messages"][-1]
+    assert asked == {"role": "user", "content": prompts.SUMMARY_REQUEST}
+
+
+async def test_a_summary_the_recording_lacks_sends_a_kept_agent_live(
+    store: LocalEventStore,
+) -> None:
+    """The schedule says the origin ran on a small context, so a summary falls due that the
+    recording does not hold. A kept agent then makes it live and goes on live, as it does when
+    a step's request is not recorded; while the steps replay, the replay fails as a step's
+    does."""
+    summary = Compaction(at=0.5, strategy="summary", keep_recent=1)
+    big = profile(context_tokens=1_000_000)
+    play = Script(say("a"), say("b"), call("bash", command="true"), call("submit", answer="done"))
+    origin_agent, origin = await make_agent(store, play, p=big, compaction=summary)
+    assert (await origin_agent.run()).reason == "submitted"
+    small = big.model_copy(update={"context_tokens": 150})
+
+    live = Script(say("Said a and b."), call("submit", answer="live"))
+    finished, compacted = await summary_fork(
+        store, origin, live, fork_at=1, keep=True, ran_on=small
+    )
+    assert (finished.reason, finished.answer, finished.steps) == ("submitted", "live", 3)
+    assert [c.summary for c in compacted] == ["Said a and b."]
+    assert len(live.requests) == 2
+
+    live = Script()
+    finished, _ = await summary_fork(store, origin, live, fork_at=3, ran_on=small)
+    assert finished.reason == "error"
+    assert (finished.detail or "").startswith("replay of step 3 failed: "), finished.detail
+    assert live.requests == []
+
+
 def summarizing(body: dict[str, Any]) -> dict[str, Any]:
     """The most calls summary compaction makes: each call fills the context, each step runs a
     tool and each summary request gets a summary."""
