@@ -278,6 +278,40 @@ def test_a_byte_in_argv_that_is_not_utf8_is_refused() -> None:
     assert b"Invalid value for '--text': holds a byte that is not UTF-8." in p.stderr
 
 
+def test_an_answer_that_is_not_utf8_is_asked_again() -> None:
+    args = ["scenario", "delete", "project", "foo", "--server", "http://127.0.0.1:9"]
+    # stdin read strictly, as Python reads it outside UTF-8 mode
+    env = {**os.environ, "AIMS_TOKEN": "aims_x", "PYTHONIOENCODING": "utf-8:strict"}
+    p = subprocess.run(
+        [sys.executable, "-m", "aims", *args],
+        input=b"\xff\n",
+        env=env,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert p.returncode == 1, p.stderr[-500:]
+    assert b"Traceback" not in p.stderr
+    # the question comes again; the input ends before an answer to it
+    assert p.stderr.count(b"Delete scenario foo from project?") == 2
+    assert b"Error: invalid input" in p.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["scenario", "delete", "project", "foo", "--yes", "--server", "http://127.0.0.1:9"],
+        ["push", "runs", "--server", "http://127.0.0.1:9"],
+    ],
+)
+def test_a_token_in_aims_token_that_is_not_text_is_refused(args: list[str]) -> None:
+    # a byte that is not UTF-8 reaches os.environ as a lone surrogate
+    for token in ("aims_\udcffx", "aims_\x01x"):
+        r = CliRunner().invoke(app, args, env={"AIMS_TOKEN": token})
+        assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+        assert r.stderr == "error: AIMS_TOKEN holds characters a token cannot have\n"
+
+
 def test_every_command_checks_its_text_arguments() -> None:
     from aims.cli import _Utf8Command
 

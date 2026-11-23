@@ -54,9 +54,16 @@ class _App(typer.Typer):
     """An error no command handles ends with exit code 1 and its traceback on stderr, written
     through visible(). Typer's Rich traceback prints the error's text as it is, escape bytes
     too. Exit, usage errors, Ctrl-C and a closed pipe end in typer as before. A folder of runs
-    that cannot be written ends with one line: a person can do that, it is no fault of aims."""
+    that cannot be written ends with one line: a person can do that, it is no fault of aims.
+    An answer to a question that is not UTF-8 is invalid input. The question is asked again."""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        import io
+        import sys
+
+        # Python reads stdin strictly outside UTF-8 mode, so such an answer would raise.
+        if isinstance(sys.stdin, io.TextIOWrapper):
+            sys.stdin.reconfigure(errors="surrogateescape")
         try:
             return super().__call__(*args, **kwargs)
         except Exception as e:
@@ -1998,6 +2005,20 @@ def _token_file(path: Path) -> str:
     raise typer.Exit(EXIT_FAILED)
 
 
+def _given_token(token_file: Path | None) -> str | None:
+    """The token in `token_file`, else in AIMS_TOKEN; None when neither gives one. Exit 1 when
+    AIMS_TOKEN holds characters a token cannot have."""
+    import os
+
+    if token_file is not None:
+        return _token_file(token_file)
+    token = os.environ.get("AIMS_TOKEN")
+    if token and not (token.isascii() and token.isprintable()):
+        _echo("error: AIMS_TOKEN holds characters a token cannot have", err=True)
+        raise typer.Exit(EXIT_FAILED)
+    return token or None
+
+
 def _local_ui(info: Path) -> dict[str, Any]:
     """What a local `aims ui` wrote to its server.json `info`, or exit 1 when it cannot be read."""
     import json
@@ -2021,15 +2042,11 @@ def _connection(
 ) -> tuple[str, str] | None:
     """Where to ship and the runner token: --server with AIMS_TOKEN or --token-file, else the
     server.json a local `aims ui` wrote."""
-    import os
-
     from aims.server.serve import SERVER_JSON, server_dir
 
     if token_file is not None and server is None:
         raise typer.BadParameter("needs --server", param_hint="--token-file")
-    token = os.environ.get("AIMS_TOKEN")
-    if token_file is not None:
-        token = _token_file(token_file)
+    token = _given_token(token_file)
     if server is not None:
         if not token:
             typer.echo("error: give the runner token in AIMS_TOKEN or --token-file", err=True)
@@ -3255,13 +3272,9 @@ def _operator(
     """The control plane and an operator token: --server, else the local `aims ui`; the token
     from --token-file or AIMS_TOKEN, else the local ui's own operator token if it wrote one.
     With `reads`, any token does."""
-    import os
-
     from aims.server.serve import SERVER_JSON, server_dir
 
-    token = os.environ.get("AIMS_TOKEN")
-    if token_file is not None:
-        token = _token_file(token_file)
+    token = _given_token(token_file)
     url = server
     if url is None:
         info = server_dir() / SERVER_JSON
