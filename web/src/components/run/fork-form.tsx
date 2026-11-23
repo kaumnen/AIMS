@@ -144,7 +144,7 @@ export default function ForkForm({
           />
           {!whole && (
             <span className="text-muted-foreground">
-              The run ended before the tool calls of {who} returned, so a fork cannot keep it.
+              The tool calls of {who} never returned, so a fork cannot keep it.
             </span>
           )}
         </Field>

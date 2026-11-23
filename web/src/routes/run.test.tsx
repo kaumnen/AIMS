@@ -2660,9 +2660,7 @@ test("a step the run ended in before its tool calls returned forks only before i
     "Before step 1: make it again live",
   );
   expect(
-    form.getByText(
-      "The run ended before the tool calls of step 1 returned, so a fork cannot keep it.",
-    ),
+    form.getByText("The tool calls of step 1 never returned, so a fork cannot keep it."),
   ).toBeTruthy();
   fireEvent.click(form.getByRole("combobox", { name: "Cut" }));
   const options = await screen.findAllByRole("option");
