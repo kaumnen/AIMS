@@ -28,21 +28,23 @@ export function forgetSession(qc: QueryClient): void {
 
 const same = (a: Whoami, b: Whoami) => a.name === b.name && a.role === b.role && a.auth === b.auth;
 
-// Another tab can sign in as someone else, or sign out, with the same cookie. A tab that shows
-// a session asks again who it is each time it comes back into view. Someone else, or nobody,
-// drops all the last session loaded, as a sign-in does; the same one changes nothing.
+// Another tab can sign in as someone else, or sign out, with the same cookie. A tab asks again
+// who it is each time it comes back into view, also while it shows the sign-in form. Someone
+// else, or nobody, drops all the last session loaded, as a sign-in does; the same one changes
+// nothing.
 export function watchSession(qc: QueryClient): () => void {
   let asking = false;
   const ask = async () => {
-    const before = qc.getQueryData<Whoami>(whoami.queryKey);
-    const shown = qc.getQueryState(whoami.queryKey)?.status === "success";
-    if (asking || !shown || before === undefined || document.visibilityState !== "visible") {
+    const state = qc.getQueryState<Whoami>(whoami.queryKey);
+    const before = state?.data;
+    const out = state?.status === "error" && signedOut(state.error);
+    if (asking || (!out && state?.status !== "success") || document.visibilityState !== "visible") {
       return;
     }
     asking = true;
     try {
       const { data, response } = await client.GET("/api/session");
-      if (data ? same(data, before) : response.status !== 401) return;
+      if (data ? !out && before && same(data, before) : out || response.status !== 401) return;
       // the tab moved on meanwhile, a sign-out say
       if (qc.getQueryData(whoami.queryKey) !== before) return;
       // the tabs' shared stream may still hold the old session

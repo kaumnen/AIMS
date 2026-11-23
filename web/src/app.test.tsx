@@ -220,6 +220,28 @@ test("a tab that comes back after its session ended elsewhere asks to sign in", 
   expect(await screen.findByLabelText("Token")).toBeTruthy();
 });
 
+test.each([
+  ["its stream closed", () => act(() => FakeEventSource.all[0]?.fail(true))],
+  ["a read elsewhere", () => act(() => client.GET("/api/health"))],
+])("a tab on the sign-in form after %s lets in a sign-in from another tab", async (_, end) => {
+  await renderAt("/runs");
+  await screen.findByRole("heading", { name: "Runs" });
+  signedIn = false;
+  await end();
+  await screen.findByLabelText("Token");
+  // still signed out: one read a time, and the form stays
+  const reads = sessionReads();
+  act(() => void window.dispatchEvent(new Event("focus")));
+  await waitFor(() => expect(sessionReads()).toBe(reads + 1));
+  await new Promise((r) => setTimeout(r, 50));
+  expect(sessionReads()).toBe(reads + 1);
+  expect(screen.getByLabelText("Token")).toBeTruthy();
+  // another tab signs in
+  signedIn = true;
+  act(() => void document.dispatchEvent(new Event("visibilitychange")));
+  expect(await screen.findByRole("heading", { name: "Runs" })).toBeTruthy();
+});
+
 test("the header shows runner and tracer health from the stream", async () => {
   await renderAt("/runs");
   await screen.findByRole("heading", { name: "Runs" });
