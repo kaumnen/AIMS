@@ -13,6 +13,7 @@ import {
   type StepInfo,
   stepTypes,
 } from "./run";
+import { tails } from "./runs";
 
 type StepPage = Schemas["StepPage"];
 type WireDelta = Schemas["WireDelta"];
@@ -104,6 +105,8 @@ export class RunTail {
 
   start(after: number): void {
     this.#stopped = false;
+    // a change of the run's status reads its steps through this, not all of them again
+    tails.set(this.runId, this);
     this.#readOnAll(after);
     // a steps list kept from an earlier visit lacks what the run logged since, and no step
     // event may come for a while, as when the run is held
@@ -146,6 +149,7 @@ export class RunTail {
 
   stop(): void {
     this.#stopped = true;
+    if (tails.get(this.runId) === this) tails.delete(this.runId);
     this.#reopen?.stop();
     this.#live?.stop();
     this.#live = null;
@@ -389,20 +393,18 @@ export class RunTail {
 
   // Reads the step rows that can still change, each agent's latest while a tool call of it runs
   // and any after it, and merges them in; a burst during the read reads once more after it.
-  refreshSteps(): void {
-    if (this.#refreshing) {
-      this.#again = true;
-      return;
-    }
+  // False when it reads none: no list, or one with pages yet to load.
+  refreshSteps(): boolean {
+    if (this.#refreshing) return (this.#again = true);
     const key = ["runs", "steps", this.runId] as const;
     if (this.qc.getQueryState(key)?.fetchStatus === "fetching") {
       // that read, of the first page, the next or all, may have started before these events:
       // read on from it once it is in
       this.#afterRead(hashKey(key));
-      return;
+      return true;
     }
     const data = this.qc.getQueryData<InfiniteData<StepPage, number | null>>(key);
-    if (!data || (data.pages.at(-1)?.next ?? null) !== null) return;
+    if (!data || (data.pages.at(-1)?.next ?? null) !== null) return false;
     const rows = data.pages.flatMap((p) => p.items);
     const first = firstOpen(rows, this.#settled);
     // a row with steps after it may be the last of an agent that ended before the stream opened
@@ -432,6 +434,7 @@ export class RunTail {
           this.refreshSteps();
         }
       });
+    return true;
   }
 
   // Agents that ended before the stream opened, which only their logged ends tell. Read once.

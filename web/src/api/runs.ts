@@ -14,6 +14,7 @@ import {
   runSummaryKindValues,
 } from "./schema.gen";
 import type { SeriesInfo } from "./series";
+import type { RunTail } from "./tail";
 
 export type RunSummary = Schemas["RunSummary"];
 export type RunPage = Schemas["RunPage"];
@@ -200,6 +201,8 @@ const runListFetching = (qc: QueryClient) =>
   qc.isFetching({ queryKey: ["runs"], predicate: (q) => isRunList(q.queryKey) }) > 0;
 // how many deleted runs a load in flight holds at most, the oldest dropped first
 const MAX_GONE = 10_000;
+// the tail of each run whose page is open
+export const tails = new Map<string, RunTail>();
 
 export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
   if (runs.length === 0) return;
@@ -220,10 +223,14 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
       ) {
         void qc.invalidateQueries({ queryKey: ["runs", "commands", run.run_id], exact: true });
       }
-      // its start, end and verdict events only come with a fetch
+      // its start, end and verdict events only come with a fetch; the page's tail reads only the
+      // step rows that can still change, of a list it holds to the end
       if (data.run.status !== run.status || data.run.verdict_severity !== run.verdict_severity) {
         void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
-        void qc.invalidateQueries({ queryKey: ["runs", "steps", run.run_id], exact: true });
+        const tail = tails.get(run.run_id);
+        if (tail?.qc !== qc || !tail.refreshSteps()) {
+          void qc.invalidateQueries({ queryKey: ["runs", "steps", run.run_id], exact: true });
+        }
         refreshLastSteps(qc, run.run_id);
       } else if (data.run.listed_usd === null && run.listed_usd !== null) {
         // the profiles its first call at a list price names come with a fetch

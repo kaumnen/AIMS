@@ -18,6 +18,7 @@ import {
   flagsQuery,
   rawEventsQuery,
   type RawPage,
+  runQuery,
   stepEventsQuery,
   type StepInfo,
   stepsQuery,
@@ -963,4 +964,81 @@ test("a step event while the first or the next steps page is read reads on once 
     expect(asked.steps.map((u) => u.searchParams.get("after"))).toEqual(["10"]);
     tail.stop();
   }
+});
+
+// A run of 450 steps, three pages of 200, with its page open and `pages` of its steps list held;
+// the last step's tool call runs until `ended()`. The step reads made since are in `asked`.
+async function openRun(ended: () => boolean, pages: number) {
+  const rows = () =>
+    Array.from({ length: 450 }, (_, i) => step(10 + i * 3, i + 1, "a", ended() || i < 449));
+  const asked: URL[] = [];
+  fetch.mockImplementation(async (request) => {
+    const url = new URL(request.url);
+    if (!url.pathname.endsWith("/steps")) return Response.json({ items: [], next: null });
+    asked.push(url);
+    const left = rows().filter((s) => s.seq > Number(url.searchParams.get("after") ?? -1));
+    const items = left.slice(0, Number(url.searchParams.get("limit")));
+    return Response.json({ items, next: left.length > items.length ? items.at(-1)?.seq : null });
+  });
+  const qc = new QueryClient();
+  qc.setQueryData(runQuery(RUN).queryKey, {
+    run: run(RUN),
+    started: null,
+    finished: null,
+    verdict: null,
+    monitor_runs: [],
+    score_runs: [],
+    budget: [],
+    series_previous: null,
+    replayable: {},
+    listed: [],
+  });
+  const list = new InfiniteQueryObserver(qc, stepsQuery(RUN));
+  const off = list.subscribe(() => undefined);
+  await waitFor(() => expect(list.getCurrentResult().isSuccess).toBe(true));
+  // oxlint-disable-next-line no-await-in-loop
+  while ((list.getCurrentResult().data?.pages.length ?? 0) < pages) await list.fetchNextPage();
+  const { source, tail } = open(qc, 10 + 449 * 3);
+  // the start reads what the run logged since a list held to the end was read
+  await new Promise((r) => setTimeout(r, 50));
+  asked.length = 0;
+  const done = () => {
+    off();
+    tail.stop();
+  };
+  return { qc, rows, asked, list, source, done };
+}
+
+test.each(["its end", "its status"])(
+  "a run whose page is open reads only its last steps at the end, %s first",
+  async (first) => {
+    let over = false;
+    const { qc, rows, asked, list, source, done } = await openRun(() => over, 3);
+    over = true;
+    const end = () => source.send({ kind: "end", run_id: RUN });
+    const status = () => applyRuns(qc, [run(RUN, { status: "completed", state: "done" })]);
+    if (first === "its end") {
+      end();
+      status();
+    } else {
+      status();
+      end();
+    }
+    const last = () => list.getCurrentResult().data?.pages.at(-1)?.items.at(-1);
+    await waitFor(() => expect(last()?.tools?.[0]?.done).toBe(true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(stepSeqs(qc)).toEqual(rows().map((s) => s.seq));
+    expect(asked.length).toBeLessThanOrEqual(2);
+    expect(asked.map((u) => u.searchParams.get("after"))).toContain(String(10 + 448 * 3));
+    done();
+  },
+);
+
+test("a run whose page holds only its first steps reads those again at the end", async () => {
+  const { qc, asked, done } = await openRun(() => true, 1);
+  applyRuns(qc, [run(RUN, { status: "completed", state: "done" })]);
+  await waitFor(() => expect(asked).toHaveLength(1));
+  expect(asked[0]?.searchParams.get("limit")).toBe("200");
+  expect(asked[0]?.searchParams.has("after")).toBe(false);
+  done();
 });
