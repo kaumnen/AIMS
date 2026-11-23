@@ -1857,6 +1857,11 @@ async def logged_events(
     return [*page, *(e for e in tail if e.seq > last)][:limit]
 
 
+class _Unnamed(str):
+    """The JSON text of a sha256 a hand-made log gives as no string, such as a list. BlobStore
+    refuses a str subclass for a name, so it is a bad blob and no file is opened for it."""
+
+
 def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
     """Check the whole chain of one run and every blob it references. `where` names the folder
     in an error, for a reader who must not learn the path."""
@@ -1913,8 +1918,9 @@ def scan(path: Path, run_id: str) -> tuple[Head, dict[str, set[int | None]], Cha
     try:
         for event, after in read_events(path, run_id, Head()):
             for sha256, size in blob_sizes(event["data"]):
+                name = sha256 if type(sha256) is str else _Unnamed(json.dumps(sha256))
                 # a size that is no count is never a blob's
-                refs.setdefault(sha256, set()).add(size if type(size) is int else None)
+                refs.setdefault(name, set()).add(size if type(size) is int else None)
             head = after
     except ChainError as e:
         return head, refs, e

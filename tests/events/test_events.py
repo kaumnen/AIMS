@@ -1502,7 +1502,19 @@ async def test_verify_checks_the_size_each_reference_states(store: LocalEventSto
         assert (await store.verify(run_id)).wrong_sizes == (short.sha256,)
 
 
-@pytest.mark.parametrize("sha256", ["/etc/hosts", "../../../../../etc/hosts", 5, "A" * 64])
+@pytest.mark.parametrize(
+    "sha256",
+    [
+        "/etc/hosts",
+        "../../../../../etc/hosts",
+        5,
+        "A" * 64,
+        # no string, and a list or an object is no dict key
+        ["a"],
+        {"k": 1},
+        None,
+    ],
+)
 def test_verify_lists_a_reference_that_names_no_sha256_as_bad_unread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sha256: object
 ) -> None:
@@ -1528,7 +1540,8 @@ def test_verify_lists_a_reference_that_names_no_sha256_as_bad_unread(
 
     monkeypatch.setattr(store_module, "holds_blob", held)
     v = verify_run(run_dir)
-    assert (v.missing_blobs, v.bad_blobs, read) == ((), (str(sha256),), [])
+    named = sha256 if isinstance(sha256, str) else json.dumps(sha256)
+    assert (v.missing_blobs, v.bad_blobs, read) == ((), (named,), [])
 
 
 async def test_temp_files_a_killed_write_left_go_once_no_write_can_own_them(
