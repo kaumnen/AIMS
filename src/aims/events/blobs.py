@@ -395,7 +395,13 @@ class BlobStore:
         self.root = root
 
     def path(self, sha256: str) -> Path:
-        if len(sha256) != 64 or not all(c in "0123456789abcdef" for c in sha256):
+        """The file of blob `sha256`. Raises BlobError when it is no sha256, as a reference
+        read from a log may hold."""
+        if (
+            type(sha256) is not str
+            or len(sha256) != 64
+            or not all(c in "0123456789abcdef" for c in sha256)
+        ):
             raise BlobError(f"not a sha256: {sha256!r}")
         return self.root / sha256
 

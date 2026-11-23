@@ -1470,6 +1470,35 @@ async def test_verify_checks_the_size_each_reference_states(store: LocalEventSto
         assert (await store.verify(run_id)).wrong_sizes == (short.sha256,)
 
 
+@pytest.mark.parametrize("sha256", ["/etc/hosts", "../../../../../etc/hosts", 5, "A" * 64])
+def test_verify_lists_a_reference_that_names_no_sha256_as_bad_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sha256: object
+) -> None:
+    run_dir = tmp_path / "01a00000-0000-7000-8000-000000000001"
+    (run_dir / "blobs").mkdir(parents=True)
+    head = Head()
+    lines = []
+    for kind, data in (
+        (STARTED.type, STARTED.model_dump(mode="json")),
+        ("x.custom", {"ref": {"sha256": sha256, "size": 1}}),
+    ):
+        _, line, head = seal(
+            head, run_id=run_dir.name, ts=now(), agent_id=None, type=kind, data=data
+        )
+        lines.append(line)
+    (run_dir / "events.jsonl").write_bytes(b"".join(lines))
+    read: list[Path] = []
+    real = store_module.holds_blob
+
+    def held(path: Path) -> int | None:
+        read.append(path)
+        return real(path)
+
+    monkeypatch.setattr(store_module, "holds_blob", held)
+    v = verify_run(run_dir)
+    assert (v.missing_blobs, v.bad_blobs, read) == ((), (str(sha256),), [])
+
+
 async def test_temp_files_a_killed_write_left_go_once_no_write_can_own_them(
     tmp_path: Path,
 ) -> None:

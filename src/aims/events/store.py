@@ -18,7 +18,16 @@ from pathlib import Path
 from typing import Any, Protocol, Self
 
 from aims.aio import settle
-from aims.events.blobs import TEMP, BlobStore, BlobWriter, Ends, Part, holds_blob, stored_size
+from aims.events.blobs import (
+    TEMP,
+    BlobError,
+    BlobStore,
+    BlobWriter,
+    Ends,
+    Part,
+    holds_blob,
+    stored_size,
+)
 from aims.events.chain import MAX_LINE, ChainError, Head, follow, seal
 from aims.events.disk import make_dir, sweep, sync_dir, write_all
 from aims.events.index import (
@@ -1858,8 +1867,14 @@ def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
     missing: list[str] = []
     bad: list[str] = []
     wrong: list[str] = []
-    for sha256, stated in sorted(refs.items()):
-        path = run_dir / BLOBS / sha256
+    blobs = BlobStore(run_dir / BLOBS)
+    # a hand-made log may name a blob by something other than a sha256, even by no string
+    for sha256, stated in sorted(refs.items(), key=lambda ref: str(ref[0])):
+        try:
+            path = blobs.path(sha256)
+        except BlobError:
+            bad.append(str(sha256))
+            continue
         if not path.is_file():
             missing.append(sha256)
         elif (size := holds_blob(path)) is None:
