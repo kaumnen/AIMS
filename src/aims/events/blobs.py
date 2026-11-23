@@ -50,22 +50,49 @@ def _frames(raw: bytes, limit: int | None = None) -> bytes | None:
     return b"".join(parts)
 
 
-def _decoded(chunks: Iterable[bytes]) -> Iterator[bytes]:
-    """What the zstd frames in `chunks` decode to, CHUNK bytes at a time. Raises ZstdError
-    when they are not whole frames."""
-    frame: zstd.ZstdDecompressor | None = None
-    for data in chunks:
+class _Frames:
+    """Decodes zstd frames from data fed a piece at a time, CHUNK bytes of output at a time.
+    The one decoder every streaming read and write uses."""
+
+    def __init__(self) -> None:
+        self._frame: zstd.ZstdDecompressor | None = None
+
+    def feed(self, data: bytes) -> Iterator[bytes]:
+        """What `data` decodes to, after what was fed before. Raises ZstdError when it is not
+        zstd."""
+        frame = self._frame
         while data or (frame is not None and not frame.needs_input):
             if frame is None:
-                frame = zstd.ZstdDecompressor()
+                frame = self._frame = zstd.ZstdDecompressor()
             out = frame.decompress(data, max_length=CHUNK)
             data = b""
             if out:
                 yield out
             if frame.eof:
                 data, frame = frame.unused_data, None
-    if frame is not None:
+                self._frame = None
+
+    @property
+    def whole(self) -> bool:
+        """Whether the data fed so far ends where a frame does."""
+        return self._frame is None
+
+
+def _decoded(chunks: Iterable[bytes]) -> Iterator[bytes]:
+    """What the zstd frames in `chunks` decode to, CHUNK bytes at a time. Raises ZstdError
+    when they are not whole frames."""
+    frames = _Frames()
+    for data in chunks:
+        yield from frames.feed(data)
+    if not frames.whole:
         raise zstd.ZstdError("the data ends inside a frame")
+
+
+def decoded(path: Path) -> Iterator[bytes]:
+    """What the zstd frames in the file at `path` decode to, CHUNK bytes at a time. Raises
+    ZstdError when they are not whole frames."""
+    with path.open("rb") as f:
+        yield from _decoded(_chunks(f))
 
 
 def _chunks(f: IO[bytes], seen: hashlib._Hash | None = None) -> Iterator[bytes]:
@@ -92,23 +119,36 @@ def stored_size(path: Path) -> int:
 def holds_blob(path: Path) -> int | None:
     """The size of the blob the file at `path` is named by, None when the file does not hold
     it. Reads it a chunk at a time."""
+    held = _held(path)
+    return None if held is None else held[1]
+
+
+def framed(path: Path) -> bool | None:
+    """Whether the file at `path` holds the blob it is named by as zstd frames, True, or as
+    is, False; None when it does not hold it. A blob may be a zstd frame itself, so only a
+    read of the whole file tells."""
+    held = _held(path)
+    return None if held is None else held[0]
+
+
+def _held(path: Path) -> tuple[bool, int] | None:
     raw = hashlib.sha256()
     size = 0
     with path.open("rb") as f:
-        framed = f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC
+        zstd_magic = f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC
         f.seek(0)
         chunks = _chunks(f, raw)
-        if framed:
-            decoded = hashlib.sha256()
+        if zstd_magic:
+            seen = hashlib.sha256()
             with contextlib.suppress(zstd.ZstdError):
                 for out in _decoded(chunks):
-                    decoded.update(out)
+                    seen.update(out)
                     size += len(out)
-                if decoded.hexdigest() == path.name:
-                    return size
+                if seen.hexdigest() == path.name:
+                    return True, size
         for _ in chunks:
             pass
-    return path.stat().st_size if raw.hexdigest() == path.name else None
+    return (False, path.stat().st_size) if raw.hexdigest() == path.name else None
 
 
 def _passes(path: Path, size: int) -> bool:
@@ -284,8 +324,8 @@ class BlobStore:
 
 class BlobWriter:
     """Receives a blob file as another store holds it, a zstd frame or plain bytes, and checks
-    it against its name while writing. `commit` puts it in place; nothing is kept otherwise.
-    `limit` caps the uncompressed size."""
+    it against its name while writing. `commit` puts it in place, as a zstd frame when it came
+    plain; nothing is kept otherwise. `limit` caps the uncompressed size."""
 
     def __init__(self, store: BlobStore, sha256: str, *, limit: int) -> None:
         self.path = store.path(sha256)
@@ -298,7 +338,7 @@ class BlobWriter:
         self._raw = hashlib.sha256()
         self._decoded: hashlib._Hash | None = None
         self._decoded_size = 0
-        self._frame: zstd.ZstdDecompressor | None = None
+        self._frames: _Frames | None = None
         self._start = b""
         self._done = False
 
@@ -312,7 +352,7 @@ class BlobWriter:
         self._raw.update(chunk)
         if self._done:
             return
-        if self._decoded is None and self._frame is None:
+        if self._frames is None:
             self._start += chunk
             if len(self._start) < len(ZSTD_MAGIC):
                 return
@@ -320,28 +360,19 @@ class BlobWriter:
                 self._done = True
                 return
             self._decoded = hashlib.sha256()
-            self._frame = zstd.ZstdDecompressor()
+            self._frames = _Frames()
             chunk, self._start = self._start, b""
         self._feed(chunk)
 
     def _feed(self, data: bytes) -> None:
         assert self._decoded is not None
+        assert self._frames is not None
         try:
-            while True:
-                if self._frame is None or self._frame.eof:
-                    rest = b"" if self._frame is None else self._frame.unused_data
-                    if not rest and not data:
-                        return
-                    self._frame = zstd.ZstdDecompressor()
-                    data = rest + data
-                out = self._frame.decompress(data, max_length=CHUNK)
-                data = b""
+            for out in self._frames.feed(data):
                 self._decoded_size += len(out)
                 if self._decoded_size > self.limit:
                     raise BlobError(f"blob {self.sha256} is over {self.limit} bytes")
                 self._decoded.update(out)
-                if self._frame.needs_input and not self._frame.eof:
-                    return
         except zstd.ZstdError:
             self._decoded = None
             self._done = True
@@ -353,12 +384,15 @@ class BlobWriter:
             os.fsync(self._file.fileno())
             self._file.close()
             decoded = self._decoded
-            frame = self._frame
-            whole = not self._done and frame is not None and frame.eof and not frame.unused_data
+            frames = self._frames
+            whole = not self._done and frames is not None and frames.whole
             if whole and decoded is not None and decoded.hexdigest() == self.sha256:
                 size = self._decoded_size
             elif self._raw.hexdigest() == self.sha256:
                 size = self.size
+                if size > self.limit:
+                    raise BlobError(f"blob {self.sha256} is over {self.limit} bytes")
+                self._pack()
             else:
                 raise BlobError(f"the bytes sent do not match blob {self.sha256}")
             if size > self.limit:
@@ -368,6 +402,23 @@ class BlobWriter:
             return BlobRef(sha256=self.sha256, size=size)
         finally:
             self.abort()
+
+    def _pack(self) -> None:
+        """Make the temp file, which holds the blob as it came, one zstd frame of it. Readers
+        then never meet a blob that is itself a zstd frame stored as is."""
+        packed = self.path.parent / f".{self.sha256}.{secrets.token_hex(4)}"
+        try:
+            squeeze = zstd.ZstdCompressor()
+            squeeze.set_pledged_input_size(self.size)
+            with self._tmp.open("rb") as src, packed.open("xb") as dst:
+                for data in _chunks(src):
+                    dst.write(squeeze.compress(data))
+                dst.write(squeeze.flush())
+                dst.flush()
+                os.fsync(dst.fileno())
+            packed.replace(self._tmp)
+        finally:
+            packed.unlink(missing_ok=True)
 
     def abort(self) -> None:
         if not self._file.closed:

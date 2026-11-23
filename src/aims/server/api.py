@@ -7,8 +7,7 @@ import tarfile
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator, Sequence
-from compression import zstd
+from collections.abc import AsyncIterator, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
@@ -49,7 +48,7 @@ from aims.events import (
     Series,
     StepInfo,
 )
-from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore
+from aims.events.blobs import BlobError, BlobStore, decoded, framed
 from aims.events.chain import MAX_LINE
 from aims.events.index import BIND_MAX, monitor_of
 from aims.events.log import next_lines
@@ -1748,8 +1747,10 @@ async def get_blob(
     }
     if if_none_match is not None and sha256 in if_none_match:
         return Response(status_code=304, headers=headers)
-    with path.open("rb") as f:
-        compressed = f.read(4) == ZSTD_MAGIC
+    # a blob may be a zstd frame itself, stored as is: only a read of the whole file tells
+    compressed = await asyncio.to_thread(framed, path)
+    if compressed is None:
+        raise ProblemException(404, "Not found", f"blob {sha256} does not match its hash")
     if not compressed:
         return FileResponse(path, media_type="application/octet-stream", headers=headers)
     if allowed(accept_encoding, ("zstd",)):
@@ -1763,25 +1764,7 @@ async def get_blob(
 
 
 async def _decompressed(path: Path) -> AsyncIterator[bytes]:
-    def chunks() -> Iterator[bytes]:
-        frame = zstd.ZstdDecompressor()
-        with path.open("rb") as f:
-            while data := f.read(256 * 1024):
-                while True:
-                    if frame.eof:
-                        rest = frame.unused_data
-                        frame = zstd.ZstdDecompressor()
-                        data = rest + data
-                        if not data:
-                            break
-                    out = frame.decompress(data, max_length=1024 * 1024)
-                    data = b""
-                    if out:
-                        yield out
-                    if frame.needs_input and not frame.eof:
-                        break
-
-    iterator = chunks()
+    iterator = decoded(path)
 
     def step() -> bytes | None:
         return next(iterator, None)

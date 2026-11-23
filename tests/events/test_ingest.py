@@ -25,7 +25,16 @@ from aims.events import (
     split_lines,
     verify_run,
 )
-from aims.events.blobs import BlobError, BlobStore
+from aims.events.blobs import (
+    ZSTD_MAGIC,
+    BlobError,
+    BlobStore,
+    _frames,
+    decoded,
+    framed,
+    holds_blob,
+    read_blob,
+)
 from aims.events.chain import Head, follow, seal
 from aims.events.schema import now
 from aims.events.store import LOG
@@ -510,8 +519,50 @@ def test_blob_writer_checks_the_name(tmp_path: Path, compressed: bool) -> None:
     ref = writer.commit()
     assert ref == BlobRef(sha256=sha, size=len(data))
     assert store.get(sha) == data
-    assert store.path(sha).read_bytes() == sent
+    # plain bytes are stored as a zstd frame of them
+    assert zstd.decompress(store.path(sha).read_bytes()) == data
+    assert (store.path(sha).read_bytes() == sent) is compressed
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+
+
+FILES = {
+    "one frame": zstd.compress(b"a" * 5000),
+    "two frames": zstd.compress(b"a" * 5000) + zstd.compress(bytes(range(256)) * 4000),
+    "an empty frame": zstd.compress(b""),
+    "a cut frame": zstd.compress(bytes(range(256)) * 4000)[:-100],
+    "a frame and junk": zstd.compress(b"a" * 5000) + b"junk",
+    "a frame and a magic": zstd.compress(b"a" * 5000) + ZSTD_MAGIC,
+    "plain bytes": b"plain bytes",
+}
+
+
+@pytest.mark.parametrize("name", FILES)
+def test_every_read_and_write_takes_a_blob_file_the_same_way(tmp_path: Path, name: str) -> None:
+    stored = FILES[name]
+    whole = _frames(stored)
+    # a file that decodes may hold the decoded blob, or be a blob that is a zstd frame itself
+    for blob in [b for b in (whole, stored) if b is not None]:
+        sha = hashlib.sha256(blob).hexdigest()
+        store = BlobStore(tmp_path / f"{name}-{len(blob)}")
+        store.root.mkdir()
+        path = store.path(sha)
+        path.write_bytes(stored)
+        held = blob is whole
+        assert (read_blob(path), holds_blob(path), framed(path)) == (blob, len(blob), held)
+        if held:
+            assert b"".join(decoded(path)) == blob
+        copy = BlobStore(store.root / "copy")
+        copy.root.mkdir()
+        writer = copy.writer(sha, limit=1 << 30)
+        for i in range(0, len(stored), 7):
+            writer.write(stored[i : i + 7])
+        assert writer.commit().size == len(blob)
+        assert (copy.get(sha), framed(copy.path(sha))) == (blob, True)
+    other = BlobStore(tmp_path / f"{name}-none")
+    other.root.mkdir()
+    path = other.path("0" * 64)
+    path.write_bytes(stored)
+    assert (read_blob(path), holds_blob(path), framed(path)) == (None, None, None)
 
 
 def test_blob_writer_refuses_wrong_bytes_and_big_blobs(tmp_path: Path) -> None:

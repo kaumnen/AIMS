@@ -3018,6 +3018,37 @@ async def test_a_refused_import_leaves_no_run_behind(cp: CP, local: LocalEventSt
     assert (await cp.state.store.verify(late)).events == 1101
 
 
+@pytest.mark.parametrize("cut", [False, True])
+async def test_a_blob_that_is_a_zstd_frame_downloads_as_its_own_bytes(
+    cp: CP, local: LocalEventStore, cut: bool
+) -> None:
+    frame = zstd.compress(b"hello world " * 1000)
+    data = frame[:-3] if cut else frame
+    sha = hashlib.sha256(data).hexdigest()
+    run_id = await local.create_run(STARTED)
+    ref = BlobRef(sha256=sha, size=len(data))
+    shell = Draft(ToolCall(call_id="c1", name="shell", arguments=ref), "a1")
+    await local.append(run_id, [shell, Draft(RunFinished(status="completed"))])
+    # sent as it is; the import stores it as a zstd frame of it
+    r = await post_tar(cp, run_tar(local.root / run_id, blobs={sha: data}))
+    assert r.status_code == 201, r.text
+    path = cp.state.store.blob_path(run_id, sha)
+    assert path.read_bytes() != data
+    for placed in (False, True):
+        if placed:
+            # a store from before kept such a blob as it came
+            path.write_bytes(data)
+        for accept in ("identity", "zstd"):
+            async with cp.client(cp.viewer) as c:
+                got = await c.get(
+                    f"/api/runs/{run_id}/blobs/{sha}", headers={"Accept-Encoding": accept}
+                )
+            assert (got.status_code, got.content) == (200, data)
+    path.write_bytes(data[:-1])
+    async with cp.client(cp.viewer) as c:
+        assert (await c.get(f"/api/runs/{run_id}/blobs/{sha}")).status_code == 404
+
+
 async def test_a_refused_import_leaves_a_run_that_was_here_as_it_was(
     cp: CP, local: LocalEventStore, tmp_path: Path
 ) -> None:

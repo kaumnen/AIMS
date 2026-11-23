@@ -73,6 +73,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- A blob download gives the blob's own bytes. A blob kept as the zstd frame it arrived as came back decoded, or empty when the frame was cut. A damaged blob file gives 404. A blob that arrives as plain bytes is stored as a zstd frame.
 - Verifying a run checks the size each blob reference states. `wrong_sizes` lists the references whose blob holds a different size. A read past a stated size says the blob holds more than its reference states.
 - A run report holds at most 64 KiB of each text and 1 MiB in all. A cut text says how many bytes it left out, in the JSON, the Markdown and the UI. A large answer made the report as large as the answer. One blob behind many references was read once for each.
 - The control plane loads a fork's origin without the tool outputs only a replay uses. It read each of them whole, once per reference.
