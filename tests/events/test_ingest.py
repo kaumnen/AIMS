@@ -30,13 +30,16 @@ from aims.events.blobs import (
     BlobError,
     BlobStore,
     _frames,
+    blob_bytes,
+    compress_bound,
     decoded,
     framed,
     holds_blob,
     read_blob,
+    read_part,
 )
 from aims.events.chain import Head, follow, seal
-from aims.events.schema import now
+from aims.events.schema import LOOSE_CAP, now
 from aims.events.store import LOG
 
 pytestmark = pytest.mark.anyio
@@ -588,3 +591,145 @@ def test_blob_writer_reads_several_frames(tmp_path: Path) -> None:
     writer = store.writer(sha, limit=1 << 20)
     writer.write(zstd.compress(b"one" * 100) + zstd.compress(b"two" * 100))
     assert writer.commit().size == len(data)
+
+
+def skippable(n: int) -> bytes:
+    return (0x184D2A50).to_bytes(4, "little") + n.to_bytes(4, "little") + bytes(n)
+
+
+def empty_blocks(n: int) -> bytes:
+    """One zstd frame of `n` empty raw blocks that decodes to nothing."""
+    return ZSTD_MAGIC + bytes([0x20, 0]) + bytes(3) * n + (1).to_bytes(3, "little")
+
+
+HELLO = zstd.compress(b"hello")
+PADDED = {
+    "two frames": zstd.compress(b"hel") + zstd.compress(b"lo"),
+    "empty frames": HELLO + zstd.compress(b"") * 100,
+    "a skippable frame": HELLO + skippable(1000),
+    "empty blocks": HELLO + empty_blocks(1000),
+}
+
+
+def test_blob_writer_caps_the_file_sent_at_the_compress_bound_of_its_limit(
+    tmp_path: Path,
+) -> None:
+    store = BlobStore(tmp_path)
+    writer = store.writer(hashlib.sha256(b"hello").hexdigest(), limit=1 << 20)
+    writer.write(HELLO)
+    with pytest.raises(BlobError, match=f"over {compress_bound(1 << 20)} bytes"):
+        writer.write(skippable(2 << 20))
+    writer.abort()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("name", PADDED)
+def test_blob_writer_packs_any_other_file_into_one_frame(tmp_path: Path, name: str) -> None:
+    store = BlobStore(tmp_path)
+    sha = hashlib.sha256(b"hello").hexdigest()
+    writer = store.writer(sha, limit=1 << 20)
+    sent = PADDED[name]
+    for i in range(0, len(sent), 7):
+        writer.write(sent[i : i + 7])
+    assert writer.commit().size == 5
+    raw = store.path(sha).read_bytes()
+    assert zstd.get_frame_size(raw) == len(raw) <= compress_bound(5)
+    assert store.get(sha, 5) == b"hello"
+
+
+@pytest.mark.parametrize("size", [5, LOOSE_CAP])
+def test_a_read_refuses_unread_a_file_past_the_compress_bound_of_its_stated_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: int
+) -> None:
+    store = BlobStore(tmp_path)
+    path = store.path(hashlib.sha256(b"hello").hexdigest())
+    path.write_bytes(HELLO + skippable(compress_bound(size)))
+    raw = path.read_bytes()
+
+    def unread(self: Path, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(f"{self} was read")
+
+    monkeypatch.setattr(Path, "open", unread)
+    monkeypatch.setattr(Path, "read_bytes", unread)
+    for read in (
+        lambda: store.get(path.name, size),
+        lambda: store.part(path.name, 0, 5, size),
+        lambda: store.ends(path.name, 5, 5, size),
+    ):
+        with pytest.raises(BlobError, match=f"holds more than the {size} bytes"):
+            read()
+    assert blob_bytes(raw, path.name, size) is None
+
+
+@pytest.mark.parametrize("name", PADDED)
+def test_a_read_with_no_size_refuses_a_file_past_the_bound_of_its_blob(
+    tmp_path: Path, name: str
+) -> None:
+    store = BlobStore(tmp_path)
+    path = store.path(hashlib.sha256(b"hello").hexdigest())
+    raw = PADDED[name]
+    path.write_bytes(raw)
+    held = len(raw) <= compress_bound(5)
+    expect = (b"hello", 5, True) if held else (None, None, None)
+    assert (read_blob(path), holds_blob(path), framed(path)) == expect
+    assert blob_bytes(raw, path.name) == expect[0]
+    assert (read_part(path, 0, 5) is None) is not held
+
+
+REAL_DECODER = zstd.ZstdDecompressor
+
+
+class Counted:
+    """A zstd decoder that counts the bytes it is fed."""
+
+    fed = 0
+
+    def __init__(self) -> None:
+        self.frame = REAL_DECODER()
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        Counted.fed += len(data)
+        return self.frame.decompress(data, max_length)
+
+    @property
+    def eof(self) -> bool:
+        return self.frame.eof
+
+    @property
+    def needs_input(self) -> bool:
+        return self.frame.needs_input
+
+    @property
+    def unused_data(self) -> bytes:
+        return self.frame.unused_data
+
+
+def test_decoding_feeds_each_byte_of_a_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(zstd, "ZstdDecompressor", Counted)
+    raw = HELLO + zstd.compress(b"") * 4000 + empty_blocks(10)
+    sha = hashlib.sha256(b"hello").hexdigest()
+    path = BlobStore(tmp_path).path(sha)
+    path.write_bytes(raw)
+
+    def write(piece: int) -> None:
+        copy = BlobStore(tmp_path / f"copy{piece}")
+        writer = copy.writer(sha, limit=1 << 20)
+        for i in range(0, len(raw), piece):
+            writer.write(raw[i : i + piece])
+        writer.commit()
+
+    for read in (
+        lambda: _frames(raw),
+        lambda: holds_blob(path),
+        lambda: b"".join(decoded(path)),
+        lambda: read_part(path, 0, 5),
+        lambda: write(7),
+        lambda: write(len(raw)),
+    ):
+        Counted.fed = 0
+        read()
+        # A writer fed small pieces feeds the rest of a piece again where a frame ends in it.
+        # It reads the file once more to pack it.
+        assert len(raw) <= Counted.fed <= 3 * len(raw)

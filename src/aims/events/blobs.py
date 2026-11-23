@@ -25,6 +25,12 @@ CHUNK = 1024 * 1024
 TEMP = re.compile(r"\.[0-9a-f]{64}\.[0-9a-f]{8}")
 
 
+def compress_bound(size: int) -> int:
+    """The most bytes zstd writes for `size` bytes of input, as ZSTD_COMPRESSBOUND gives it. A
+    blob file is never larger than this bound of the blob it holds."""
+    return size + (size >> 8) + (((128 << 10) - size) >> 11 if size < 128 << 10 else 0)
+
+
 def decode(raw: bytes) -> bytes:
     """The bytes a blob file holds. Files are zstd frames; older ones are stored as is."""
     data = _frames(raw) if raw.startswith(ZSTD_MAGIC) else None
@@ -34,23 +40,28 @@ def decode(raw: bytes) -> bytes:
 def _frames(raw: bytes, limit: int | None = None) -> bytes | None:
     """What the zstd frames in `raw` decode to. None when they do not decode or would pass
     `limit` bytes, of which no more than one past it are decoded."""
+    view = memoryview(raw)
     parts: list[bytes] = []
     size = 0
+    at = 0
     try:
-        while raw:
+        while at < len(view):
+            # Each frame is decoded on its own: a decoder copies the input after its frame.
+            rest = view[at:]
+            end = zstd.get_frame_size(rest)
             # A frame whose header states a size past the limit is refused undecoded. Python
             # 3.14 holds twice `max_length` while it decodes.
-            stated = zstd.get_frame_info(raw).decompressed_size
+            stated = zstd.get_frame_info(rest).decompressed_size
             if limit is not None and stated is not None and size + stated > limit:
                 return None
             frame = zstd.ZstdDecompressor()
             room = -1 if limit is None else min(limit - size + 1, sys.maxsize)
-            part = frame.decompress(raw, max_length=room)
+            part = frame.decompress(rest[:end], max_length=room)
             size += len(part)
-            if (limit is not None and size > limit) or not frame.eof:
+            if (limit is not None and size > limit) or not frame.eof or frame.unused_data:
                 return None
             parts.append(part)
-            raw = frame.unused_data
+            at += end
     except zstd.ZstdError:
         return None
     return b"".join(parts)
@@ -58,25 +69,50 @@ def _frames(raw: bytes, limit: int | None = None) -> bytes | None:
 
 class _Frames:
     """Decodes zstd frames from data fed a piece at a time, CHUNK bytes of output at a time.
-    The one decoder every streaming read and write uses."""
+    The one decoder every streaming read and write uses. A frame that is whole in the data fed
+    is decoded on its own: a decoder copies the input after its frame, so many frames in one
+    piece would cost time in the square of its size."""
 
     def __init__(self) -> None:
         self._frame: zstd.ZstdDecompressor | None = None
+        # the frames decoded to their end
+        self.count = 0
 
     def feed(self, data: bytes) -> Iterator[bytes]:
         """What `data` decodes to, after what was fed before. Raises ZstdError when it is not
         zstd."""
-        frame = self._frame
-        while data or (frame is not None and not frame.needs_input):
-            if frame is None:
+        rest = memoryview(data)
+        # whether the frame being decoded began in an earlier piece
+        carried = self._frame is not None
+        while True:
+            frame = self._frame
+            piece: bytes | memoryview
+            if frame is not None and not frame.needs_input:
+                piece = b""
+            elif not rest:
+                return
+            elif frame is None:
                 frame = self._frame = zstd.ZstdDecompressor()
-            out = frame.decompress(data, max_length=CHUNK)
-            data = b""
+                carried = False
+                piece = rest
+                # A frame that goes on past `rest` has no size yet; it is fed all of `rest`.
+                with contextlib.suppress(zstd.ZstdError):
+                    piece = rest[: zstd.get_frame_size(rest)]
+            else:
+                piece = rest
+            rest = rest[len(piece) :]
+            out = frame.decompress(piece, max_length=CHUNK)
             if out:
                 yield out
             if frame.eof:
-                data, frame = frame.unused_data, None
                 self._frame = None
+                self.count += 1
+                if frame.unused_data:
+                    # Only a frame begun in an earlier piece ends inside the piece it was fed.
+                    if not carried or rest:
+                        raise zstd.ZstdError("a frame ends before the size found for it")
+                    rest = memoryview(frame.unused_data)
+                carried = False
 
     @property
     def whole(self) -> bool:
@@ -141,6 +177,7 @@ def _held(path: Path) -> tuple[bool, int] | None:
     raw = hashlib.sha256()
     size = 0
     with path.open("rb") as f:
+        stored = os.fstat(f.fileno()).st_size
         zstd_magic = f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC
         f.seek(0)
         chunks = _chunks(f, raw)
@@ -150,16 +187,19 @@ def _held(path: Path) -> tuple[bool, int] | None:
                 for out in _decoded(chunks):
                     seen.update(out)
                     size += len(out)
-                if seen.hexdigest() == path.name:
+                if seen.hexdigest() == path.name and stored <= compress_bound(size):
                     return True, size
         for _ in chunks:
             pass
-    return (False, path.stat().st_size) if raw.hexdigest() == path.name else None
+    return (False, stored) if raw.hexdigest() == path.name else None
 
 
 def _passes(path: Path, size: int) -> bool:
     """Whether the file at `path` decodes to more than `size` bytes, or holds more as is when it
-    does not decode. Decodes no more than one byte past `size`."""
+    does not decode. Decodes no more than one byte past `size`. A file larger than any file of
+    `size` bytes passes it unread."""
+    if path.stat().st_size > compress_bound(size):
+        return True
     with path.open("rb") as f:
         if f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC:
             f.seek(0)
@@ -175,19 +215,29 @@ def _passes(path: Path, size: int) -> bool:
 
 def read_blob(path: Path, size: int | None = None) -> bytes | None:
     """The bytes of the blob at `path` if they match the sha256 it is named by, else None.
-    With `size`, also None when they are longer; no more than that is decoded."""
+    With `size`, also None when they are longer; no more than that is decoded. A file larger
+    than the compress bound of `size` is not read."""
     if size is not None and not (type(size) is int and size >= 0):
+        return None
+    if size is not None and path.stat().st_size > compress_bound(size):
         return None
     return blob_bytes(path.read_bytes(), path.name, size)
 
 
 def blob_bytes(raw: bytes, sha256: str, size: int | None = None) -> bytes | None:
     """The blob that `raw`, a blob file as a store holds it, carries if it matches `sha256`,
-    else None. With `size`, also None when the blob is longer; no more than that is decoded."""
+    else None. With `size`, also None when the blob is longer; no more than that is decoded.
+    Frames larger than the compress bound of what they decode to are not the blob."""
     if size is not None and not (type(size) is int and size >= 0):
         return None
+    if size is not None and len(raw) > compress_bound(size):
+        return None
     data = _frames(raw, size) if raw.startswith(ZSTD_MAGIC) else None
-    if data is not None and hashlib.sha256(data).hexdigest() == sha256:
+    if (
+        data is not None
+        and len(raw) <= compress_bound(len(data))
+        and hashlib.sha256(data).hexdigest() == sha256
+    ):
         return data
     if (size is None or len(raw) <= size) and hashlib.sha256(raw).hexdigest() == sha256:
         return raw
@@ -280,18 +330,23 @@ def _scan[K: _Keeper](path: Path, size: int | None, keeper: Callable[[], K]) -> 
     is named by, or holds more than `size` bytes."""
     if size is not None and not (type(size) is int and size >= 0):
         return None
+    stored = path.stat().st_size
+    if size is not None and stored > compress_bound(size):
+        return None
     with path.open("rb") as f:
         if f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC:
             f.seek(0)
             with contextlib.suppress(zstd.ZstdError):
-                kept = _feed(_decoded(_chunks(f)), keeper(), size, path.name)
+                kept = _feed(_decoded(_chunks(f)), keeper(), size, path.name, stored)
                 if kept is not None:
                     return kept
         f.seek(0)
-        return _feed(_chunks(f), keeper(), size, path.name)
+        return _feed(_chunks(f), keeper(), size, path.name, stored)
 
 
-def _feed[K: _Keeper](chunks: Iterable[bytes], kept: K, limit: int | None, name: str) -> K | None:
+def _feed[K: _Keeper](
+    chunks: Iterable[bytes], kept: K, limit: int | None, name: str, stored: int
+) -> K | None:
     seen = hashlib.sha256()
     total = 0
     for data in chunks:
@@ -300,7 +355,7 @@ def _feed[K: _Keeper](chunks: Iterable[bytes], kept: K, limit: int | None, name:
         if limit is not None and total > limit:
             return None
         kept.take(data)
-    if seen.hexdigest() != name:
+    if seen.hexdigest() != name or stored > compress_bound(total):
         return None
     kept.end()
     return kept
@@ -430,9 +485,11 @@ class BlobStore:
 
 
 class BlobWriter:
-    """Receives a blob file as another store holds it, a zstd frame or plain bytes, and checks
-    it against its name while writing. `commit` puts it in place, as a zstd frame when it came
-    plain; nothing is kept otherwise. `limit` caps the uncompressed size."""
+    """Receives a blob file as another store holds it, zstd frames or plain bytes. It checks the
+    file against its name while writing. `commit` puts it in place as one zstd frame: as sent
+    when it came as one frame within the compress bound of the blob, else packed again; nothing
+    is kept otherwise. `limit` caps the uncompressed size. Its compress bound caps the bytes
+    sent."""
 
     def __init__(self, store: BlobStore, sha256: str, *, limit: int) -> None:
         self.path = store.path(sha256)
@@ -453,8 +510,10 @@ class BlobWriter:
         if not chunk:
             return
         self.size += len(chunk)
-        if self.size > self.limit + 1024 * 1024 and self._decoded is None:
-            raise BlobError(f"blob {self.sha256} is over {self.limit} bytes")
+        if self.size > compress_bound(self.limit):
+            raise BlobError(
+                f"the file sent for blob {self.sha256} is over {compress_bound(self.limit)} bytes"
+            )
         self._file.write(chunk)
         self._raw.update(chunk)
         if self._done:
@@ -495,11 +554,14 @@ class BlobWriter:
             whole = not self._done and frames is not None and frames.whole
             if whole and decoded is not None and decoded.hexdigest() == self.sha256:
                 size = self._decoded_size
+                one = frames is not None and frames.count == 1
+                if not one or self.size > compress_bound(size):
+                    self._pack(size, framed=True)
             elif self._raw.hexdigest() == self.sha256:
                 size = self.size
                 if size > self.limit:
                     raise BlobError(f"blob {self.sha256} is over {self.limit} bytes")
-                self._pack()
+                self._pack(size, framed=False)
             else:
                 raise BlobError(f"the bytes sent do not match blob {self.sha256}")
             if size > self.limit:
@@ -510,15 +572,17 @@ class BlobWriter:
         finally:
             self.abort()
 
-    def _pack(self) -> None:
-        """Make the temp file, which holds the blob as it came, one zstd frame of it. Readers
-        then never meet a blob that is itself a zstd frame stored as is."""
+    def _pack(self, size: int, *, framed: bool) -> None:
+        """Make the temp file one zstd frame of the `size` bytes blob it holds: as it came, or
+        as the frames it holds decode to. Readers then never meet a blob that is itself a zstd
+        frame stored as is, or a file larger than the compress bound of its blob."""
         packed = self.path.parent / f".{self.sha256}.{secrets.token_hex(4)}"
         try:
             squeeze = zstd.ZstdCompressor()
-            squeeze.set_pledged_input_size(self.size)
+            squeeze.set_pledged_input_size(size)
             with self._tmp.open("rb") as src, packed.open("xb") as dst:
-                for data in _chunks(src):
+                chunks = _chunks(src)
+                for data in _decoded(chunks) if framed else chunks:
                     dst.write(squeeze.compress(data))
                 dst.write(squeeze.flush())
                 dst.flush()
