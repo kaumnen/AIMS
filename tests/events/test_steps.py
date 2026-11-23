@@ -394,6 +394,47 @@ async def test_activity_counts_an_execs_records(store: LocalEventStore) -> None:
     ]
 
 
+READS_OF_A_FEW_ROWS = {
+    "one exec": (lambda s, r: s.activity(r, ["e1"]), "events_by_exec (run_id=? AND exec_id=?)"),
+    "three execs": (
+        lambda s, r: s.activity(r, ["e1", "e2", "e3"]),
+        "events_by_exec (run_id=? AND exec_id=?)",
+    ),
+    "call costs": (lambda s, r: s.call_costs(r), "events_by_type (run_id=? AND type=?)"),
+    "listed calls": (lambda s, r: s.listed_calls(r), "events_by_type (run_id=? AND type=?)"),
+    "served": (lambda s, r: s.served(r), "events_by_type (run_id=? AND type=?)"),
+}
+
+
+@pytest.mark.parametrize("read", list(READS_OF_A_FEW_ROWS))
+async def test_a_read_of_a_few_rows_of_a_run_searches_the_index_of_those_rows(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, read: str
+) -> None:
+    """The plan SQLite makes for the statement the read runs. A plan that searches the run by
+    its id alone reads every row of the run, about 40 ms in a run of 200,000 events."""
+    run_id = await told(store)
+    db = store._index._db
+    real = db.execute
+    ran: list[tuple[str, Any]] = []
+
+    def execute(sql: str, parameters: Any = None) -> Any:
+        ran.append((sql, parameters))
+        return real(sql, parameters)
+
+    monkeypatch.setattr(db, "execute", execute)
+    call, wanted = READS_OF_A_FEW_ROWS[read]
+    await call(store, run_id)
+    ((sql, parameters),) = [(s, p) for s, p in ran if " from events " in s]
+    plain = sqlite3.connect(store.root / "index.sqlite")
+    try:
+        plan = [row[3] for row in plain.execute(f"explain query plan {sql}", parameters)]
+    finally:
+        plain.close()
+    assert [p for p in plan if p.startswith(("SEARCH events", "SCAN events"))] == [
+        f"SEARCH events USING INDEX {wanted}"
+    ]
+
+
 async def test_runs_filter_by_scenario_and_count_their_reviews(store: LocalEventStore) -> None:
     watched = await store.create_run(STARTED)
     other = await store.create_run(RunStarted(scenario="other", oversight="observe", agents=[]))

@@ -1927,7 +1927,8 @@ class Index:
             " case when type = 'file.access' then json_extract(data, '$.op') end as op,"
             " count(*),"
             f" sum(case when type = '{FsSnapshot.type}' then json_extract(data, '$.total') end)"
-            f" from events where run_id = ? and +seq <= {HEAD}"
+            # with one exec SQLite would take the index by type, which holds the whole run
+            f" from events indexed by events_by_exec where run_id = ? and +seq <= {HEAD}"
             f" and exec_id in ({', '.join('?' * len(execs))}) group by exec_id, type, op",
             (run_id, run_id, *execs),
         ) as cur:
@@ -1956,7 +1957,10 @@ class Index:
             " json_extract(data, '$.params.schema_name'), json_extract(data, '$.cost_usd'),"
             " json_extract(data, '$.usage.input_tokens'),"
             " json_extract(data, '$.usage.output_tokens'), json_extract(data, '$.source')"
-            f" from events where run_id = ? and +seq <= {HEAD} and type in (?, ?) order by seq",
+            # SQLite would read every row of the run in seq order to skip the sort; the calls
+            # are a small part of them. The same holds for `listed_calls` and `served`
+            f" from events indexed by events_by_type where run_id = ? and +seq <= {HEAD}"
+            " and type in (?, ?) order by seq",
             (run_id, run_id, ModelRequest.type, ModelResponse.type),
         ) as cur:
             rows = await cur.fetchall()
@@ -1997,7 +2001,8 @@ class Index:
             "select type, json_extract(data, '$.call_id'), json_extract(data, '$.profile'),"
             " json_extract(data, '$.cost_usd'), json_extract(data, '$.cost_source'),"
             " json_extract(data, '$.source')"
-            f" from events where run_id = ? and +seq <= {HEAD} and type in (?, ?) order by seq",
+            f" from events indexed by events_by_type where run_id = ? and +seq <= {HEAD}"
+            " and type in (?, ?) order by seq",
             (run_id, run_id, ModelRequest.type, ModelResponse.type),
         ) as cur:
             rows = await cur.fetchall()
@@ -2029,7 +2034,8 @@ class Index:
         async with self._db.execute(
             "select type, json_extract(data, '$.call_id'), json_extract(data, '$.model'),"
             " json_extract(data, '$.provider')"
-            f" from events where run_id = ? and +seq <= {HEAD} and type in (?, ?) order by seq",
+            f" from events indexed by events_by_type where run_id = ? and +seq <= {HEAD}"
+            " and type in (?, ?) order by seq",
             (run_id, run_id, ModelRequest.type, ModelResponse.type),
         ) as cur:
             rows = await cur.fetchall()
