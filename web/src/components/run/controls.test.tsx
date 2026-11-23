@@ -76,10 +76,10 @@ afterEach(() => {
   fetch.mockReset();
 });
 
-function mount() {
+function mount(over: Parameters<typeof run>[1] = {}) {
   const qc = new QueryClient();
   qc.setQueryData(whoami.queryKey, { name: "op", role: "operator", auth: true });
-  const live = detail({ status: "running", state: "running" });
+  const live = detail({ status: "running", state: "running", ...over });
   const view = render(
     <QueryClientProvider client={qc}>
       <RunControls detail={live} />
@@ -148,4 +148,10 @@ test("a typed message is still there when the inject dialog opens again", async 
   fireEvent.click(screen.getByRole("button", { name: "Inject" }));
   const again = within(await screen.findByRole("dialog")).getByRole("textbox");
   expect((again as HTMLTextAreaElement).value).toBe("stop reading the tests");
+});
+
+test("a run whose judge runs offers no pause or inject", async () => {
+  mount({ judging: true });
+  await screen.findByRole("button", { name: "Kill" });
+  expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel", "Kill"]);
 });

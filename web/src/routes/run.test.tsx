@@ -2731,6 +2731,20 @@ test("only an operator forks, and only a sealed run", async () => {
 
 const listStream = () => FakeEventSource.all.find((s) => s.url.includes("runs=true"));
 
+test("an open run reads Judging once its judge starts and offers no pause or inject", async () => {
+  detail = open();
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("button", { name: "Inject" })).toBeTruthy();
+  const source = listStream();
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "run", run: { ...detail.run, judging: true } }));
+  await waitFor(() => expect(document.title).toBe("Judging · cache-keys 01a18a50-bee5 · AIMS"));
+  expect(screen.getByText("Judging")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Inject" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Kill" })).toBeTruthy();
+});
+
 test("the commands drawer shows what was sent, newest first, and the runner's answers", async () => {
   role = "viewer";
   detail = open({ commands: 3, commands_waiting: 1 });

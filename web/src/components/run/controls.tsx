@@ -114,8 +114,9 @@ export function RunControls({ detail }: { detail: RunDetail }) {
   const agents = agentsOf(detail);
   const held = [...new Set(run.held.map((h) => h.agent))];
   const free = agents.filter((a) => !held.includes(a));
-  // a self-test's agents follow scripts: there is nothing to pause or tell them
-  const steered = live && run.kind !== "selftest" && run.kind !== "selftest.case";
+  // a self-test's agents follow scripts and a judging run's agents have stopped: there is
+  // nothing to pause or tell them
+  const steered = live && !run.judging && run.kind !== "selftest" && run.kind !== "selftest.case";
   const pausable = agents.length === 0 ? held.length === 0 : free.length > 0;
   const close = () => setDialog(null);
   const open = (d: "inject" | "kill" | "cancel") => {

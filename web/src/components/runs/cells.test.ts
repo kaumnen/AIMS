@@ -17,3 +17,8 @@ test("a running run with an open pause reads Held or Paused", () => {
   expect(statusLabel(run("r", { held: [held("operator"), held("monitor")] }))).toBe("Held");
   expect(statusLabel(run("r", { held: [held("monitor")], stale: true }))).toBe("Runner offline");
 });
+
+test("a running run whose judge runs reads Judging", () => {
+  expect(statusLabel(run("r", { judging: true }))).toBe("Judging");
+  expect(statusLabel(run("r", { judging: true, stale: true }))).toBe("Runner offline");
+});
