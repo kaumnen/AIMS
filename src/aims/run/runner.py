@@ -480,8 +480,10 @@ class Runner:
         with deny refuses the tool call each agent waits before, and needs one that does. An
         `operator_only` resume lets go of an operator's pause only: it is refused while the
         monitor holds an agent it targets, and an agent the monitor pauses meanwhile stays
-        paused. A sweep is left to the monitor, which reads the action from the log. Returns
-        what did not take effect, such as a sandbox that did not freeze or stop, else None."""
+        paused. A pause or an inject is refused once every agent it targets has finished, as
+        while the judge runs. A sweep is left to the monitor, which reads the action from the
+        log. Returns what did not take effect, such as a sandbox that did not freeze or stop,
+        else None."""
         if self.run_id is None or self.finished:
             raise RunError("the run is not running")
         if (action == "inject" or then == "inject") and not text:
@@ -489,6 +491,10 @@ class Runner:
         if action == "sweep" and (self.watch is None or not self.watch.sweeps):
             raise RunError("this run has no monitor that sweeps")
         targets = self._targets(agent)
+        if action in ("pause", "inject") and targets and all(map(self._done, targets)):
+            raise RunError(
+                "every agent has finished" if agent is None else f"agent {agent} has finished"
+            )
         c = self._control
         held = any(c.is_paused(a) and c.held_call(a) for a in targets)
         if action == "resume" and then == "deny" and not held:

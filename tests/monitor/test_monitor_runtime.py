@@ -527,6 +527,37 @@ async def test_an_unwatched_run_has_no_monitor(
         await runner.operate("sweep")
 
 
+async def test_pause_and_inject_are_refused_once_every_agent_finished(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
+) -> None:
+    script = Script(call("submit", answer="ok"))
+    runner = Runner(bench(store, script), scenario(tmp_path), Options(), monitor=watched())
+    refused: list[str] = []
+
+    async def judge(*, skip: bool = False) -> None:
+        asks = (
+            lambda: runner.operate("pause"),
+            lambda: runner.operate("pause", agent="a"),
+            lambda: runner.operate("inject", text="look again"),
+        )
+        for ask in asks:
+            try:
+                await ask()
+            except RunError as e:
+                refused.append(str(e))
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "judge", judge)
+    result = await runner.run()
+    assert result.status == "completed", result.reason
+    assert refused == [
+        "every agent has finished",
+        "agent a has finished",
+        "every agent has finished",
+    ]
+    assert result.run_id is not None
+    assert await of(store, result.run_id, OperatorAction, "operator.action") == []
+
+
 async def test_verifier_flags_taint_the_score(
     store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
 ) -> None:
