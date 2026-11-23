@@ -19,6 +19,9 @@ from aims.wire import RunnerHello, RunnerStatus, TracerHealth
 
 NAME = "stand-in"
 TRACER = TracerHealth(alive=False, detail="stand-in for the seeded live run")
+# The AIMS_KEYS entry of one profile in web/shots/aims.toml, so the models page shows a profile
+# this runner allows beside ones no runner allows.
+KEYS = ["EXAMPLE_LOCAL_KEY=http://localhost:8000/v1"]
 
 
 async def main(root: Path, run_id: str) -> None:
@@ -26,7 +29,9 @@ async def main(root: Path, run_id: str) -> None:
     client = ControlClient(str(info["url"]), str(info["token"]), runner=NAME)
     try:
         await client.hello(
-            RunnerHello(name=NAME, version=__version__, arch=arch(), tracer=TRACER, slots=0)
+            RunnerHello(
+                name=NAME, version=__version__, arch=arch(), tracer=TRACER, keys=KEYS, slots=0
+            )
         )
         async with await LocalEventStore.open(root) as store:
             head = await store.head(run_id)

@@ -89,6 +89,12 @@
 
     { "name": "run", "path": "/runs/{run}", "ready": "article h2" },
     { "name": "run-score", "path": "/runs/{run}?tab=score", "ready": "dl[aria-label=Score]" },
+    {
+      "name": "score-form",
+      "path": "/runs/{run}?tab=score",
+      "ready": "[aria-label='Cost estimate']",
+      "steps": [{ "wait": "dl[aria-label=Score]", "click": "Score again" }]
+    },
     { "name": "run-report", "path": "/runs/{run}?tab=report", "ready": "[data-section=facts] h2" },
     {
       "name": "run-report-viewer",
@@ -133,6 +139,23 @@
     },
 
     { "name": "review-run", "path": "/runs/{review}", "ready": "#main section, #main p" },
+    {
+      "name": "review-sweeps",
+      "path": "/runs/{sweeps}",
+      "ready": "section[aria-label=Sweeps] table"
+    },
+    {
+      "name": "long-report",
+      "path": "/runs/{long}?tab=report",
+      "ready": "[data-section=appendix] details[open]",
+      "steps": [
+        {
+          "wait": "[data-section=appendix] summary",
+          "css": "[data-section=appendix] summary"
+        },
+        { "press": "End" }
+      ]
+    },
     { "name": "score-run", "path": "/runs/{score}", "ready": "#main section, #main p" },
     { "name": "fork-run", "path": "/runs/{fork}", "ready": "article h2" },
     { "name": "selftest", "path": "/runs/{selftest}", "ready": "#main table" },
@@ -273,6 +296,24 @@
     },
     { "name": "config-viewer", "path": "/settings/config", "as": "viewer", "ready": ".cm-content" },
     { "name": "prompts", "path": "/settings/prompts", "ready": "#main section ul" },
+    {
+      "name": "prompts-board",
+      "path": "/settings/prompts",
+      "ready": "section[aria-label='Tool texts'] li",
+      "steps": [
+        { "wait": "#main section ul", "css": "[aria-label='Filter texts']" },
+        { "type": "_message" }
+      ]
+    },
+    {
+      "name": "prompts-glossary",
+      "path": "/settings/prompts",
+      "ready": "section[aria-label='Monitor glossary'] li",
+      "steps": [
+        { "wait": "#main section ul", "css": "[aria-label='Filter texts']" },
+        { "type": "proc." }
+      ]
+    },
     { "name": "models", "path": "/settings/models", "ready": "#main table" },
     {
       "name": "add-model",

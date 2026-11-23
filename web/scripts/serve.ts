@@ -20,6 +20,9 @@ export interface Seeded {
   cases: string[];
   check: string;
   live: string;
+  // a run with an answer longer than its report holds and a review of it with sweeps
+  long: string;
+  sweeps: string;
 }
 
 export interface Plane {

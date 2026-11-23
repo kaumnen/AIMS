@@ -138,6 +138,8 @@ try {
     case: seeded.cases[0] ?? "",
     check: seeded.check,
     live: seeded.live,
+    long: seeded.long,
+    sweeps: seeded.sweeps,
     project,
     config,
     stamp: Date.now().toString(36),
