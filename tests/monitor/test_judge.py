@@ -896,6 +896,54 @@ async def test_file_history_gets_past_an_event_with_more_rows_than_a_page(
     assert [r["seq"] for r in two["history"]] == [after.seq]
 
 
+def added(path: str) -> FsChange:
+    return FsChange(
+        path=path, change="added", kind="file", size=1, mode=0o644, mtime_us=1, sha256="a" * 64
+    )
+
+
+async def with_more(run: Run, name: str, more: list[FsChange]) -> tuple[Event, BlobRef]:
+    """A snapshot with one inline change and `more` past it in a blob."""
+    data = "".join(f"{c.model_dump_json()}\n" for c in more).encode()
+    ref = await run.store.put_blob(run.id, data)
+    inline = [added("/work/inline")]
+    snapshot = snapshot_of(inline).model_copy(update={"more": ref, "total": 1 + len(more)})
+    return await run.add(name, snapshot), ref
+
+
+async def test_file_history_reads_a_snapshot_more_blob_over_4_mib(store: LocalEventStore) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    more = [added(f"/work/node_modules/pkg{i}/lib/file.js") for i in range(17_800)]
+    event, ref = await with_more(run, "npm", [*more, added("/work/tests/conftest.py")])
+    assert ref.size > 4 * 1024 * 1024
+    judge = make_judge(store, run, Script())
+    out = await tool(judge, "file_history", path="/work/tests/conftest.py")
+    assert [(r["seq"], r["path"], r["change"]) for r in out["history"]] == [
+        (event.seq, "/work/tests/conftest.py", "added")
+    ]
+
+
+async def test_file_history_keeps_few_snapshot_changes_parsed(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(judge_module, "MORE_CHANGES", 3)
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    small, kept = await with_more(run, "small", [added("/work/a"), added("/work/x")])
+    paths = ["/work/b0", "/work/x", "/work/b1", "/work/b2"]
+    large, _ = await with_more(run, "large", [added(p) for p in paths])
+    judge = make_judge(store, run, Script())
+    out = await tool(judge, "file_history", path="/work/x")
+    assert [r["seq"] for r in out["history"]] == [small.seq, large.seq]
+    # The large blob is read again for each path; the small one stays parsed.
+    assert list(judge.reader._more) == [kept.sha256]
+    for path in ("/work/b2", "/work/a"):
+        out = await tool(judge, "file_history", path=path)
+        assert [r["path"] for r in out["history"]] == [path]
+    assert list(judge.reader._more) == [kept.sha256]
+
+
 async def test_events_shows_the_end_of_a_tail_blob(store: LocalEventStore) -> None:
     """The last lines of a long output say how the command ended: the row shows those."""
     run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))

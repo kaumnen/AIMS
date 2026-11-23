@@ -92,7 +92,8 @@ SNIPPET = 160
 FETCH = 500
 SCAN_PAGES = 40
 HEAD_BLOB = 256 * 1024
-MORE_BYTES = 4 * 1024 * 1024
+# The most changes of snapshot `more` blobs kept parsed, about 1.3 kB each.
+MORE_CHANGES = 16_384
 CACHE_BYTES = 32 * 1024 * 1024
 FORCE_TRIES = 2
 # The most characters of problems a refused verdict is told, so a retry's input has a bound.
@@ -456,6 +457,17 @@ def parse_verdict(text: str) -> tuple[VerdictArgs | None, str]:
         return None, problems(e)
 
 
+def _changes(items: Iterable[dict[str, Any]]) -> list[FsChange]:
+    """The snapshot changes among the JSON objects `items`; others are skipped."""
+    changes: list[FsChange] = []
+    for item in items:
+        try:
+            changes.append(FsChange.model_validate(item))
+        except ValidationError:
+            continue
+    return changes
+
+
 class Reader:
     """Read-only views of one run's chain, without the monitor's own events and model calls."""
 
@@ -472,6 +484,7 @@ class Reader:
         self.execs: dict[str, tuple[Event, ExecStarted]] = {}
         self.snapshots: list[tuple[Event, FsSnapshot]] | None = None
         self._more: dict[str, list[FsChange]] = {}
+        self._more_kept = 0
         self._blobs: dict[tuple[str, str], bytes] = {}
         self._cached = 0
 
@@ -688,23 +701,23 @@ class Reader:
             self.snapshots = [(e, FsSnapshot.model_validate(e.data)) for e in events]
         return self.snapshots
 
-    async def more(self, ref: BlobRef | None) -> list[FsChange]:
-        """The changes a snapshot keeps past its inline ones."""
-        if ref is None or ref.size > MORE_BYTES:
+    async def more(self, ref: BlobRef | None, path: str) -> list[FsChange]:
+        """The changes a snapshot keeps past its inline ones at `path` or with `path` as their
+        target, in order. The blob is read a line at a time, whatever its size. Its changes stay
+        parsed while all kept hold at most MORE_CHANGES; a larger blob is read again each time."""
+        if ref is None:
             return []
-        if ref.sha256 not in self._more:
+        kept = self._more.get(ref.sha256)
+        if kept is None:
             try:
-                data = await self.store.get_blob(self.source, ref.sha256, ref.size)
+                items = await self.store.get_json_lines(self.source, ref.sha256, ref.size)
             except BlobError, KeyError:
-                data = b""
-            changes: list[FsChange] = []
-            for line in data.splitlines():
-                try:
-                    changes.append(FsChange.model_validate_json(line))
-                except ValidationError:
-                    continue
-            self._more[ref.sha256] = changes
-        return self._more[ref.sha256]
+                items = []
+            if self._more_kept + len(items) > MORE_CHANGES:
+                return _changes(i for i in items if path in (i.get("path"), i.get("target")))
+            kept = self._more[ref.sha256] = _changes(items)
+            self._more_kept += len(items)
+        return [c for c in kept if path in (c.path, c.target)]
 
     def phase(self, exec_id: str | None) -> ExecPhase | None:
         found = self.execs.get(exec_id) if exec_id else None
@@ -1769,7 +1782,7 @@ class Judge:
         for e, snap in await self.reader.all_snapshots():
             if e.seq < start or (stop is not None and e.seq >= stop):
                 continue
-            for c in [*snap.changes, *await self.reader.more(snap.more)]:
+            for c in [*snap.changes, *await self.reader.more(snap.more, path)]:
                 if path not in (c.path, c.target):
                     continue
                 row = {"seq": e.seq, "type": "fs.snapshot"}
