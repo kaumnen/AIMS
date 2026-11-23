@@ -3,6 +3,7 @@ run seals, read by operators only, the variant and series they put in the run li
 rows that keep the history from reading every log again, and the live projection."""
 
 import asyncio
+import json
 import sqlite3
 import stat
 import time
@@ -401,8 +402,26 @@ plants:
 """
 
 
+async def dropped_key(cp: CP, run_id: str) -> None:
+    """Give each profile of the queued job of `run_id` a key that Profile takes no more, as a
+    job queued before a release that dropped a profile field holds."""
+    job = await cp.state.db.job(run_id)
+    assert job is not None
+    payload = job.payload
+    profiles = [p for key in ("profiles", "models") for p in payload[key].values()]
+    assert profiles
+    for p in profiles:
+        p["removed_since"] = 1
+    sql = "update jobs set payload = ? where run_id = ?"
+    await cp.state.db._write(sql, (json.dumps(payload), run_id))
+
+
+# A job keeps what it was queued with. The plane reads it as stored, so a key a release dropped
+# since is left out: the runner claims it, fetches its blobs and a viewer reads what its log
+# shows.
+@pytest.mark.parametrize("dropped", [False, True])
 async def test_a_viewer_reads_no_blob_the_job_carried_for_its_runner_alone(
-    cp: CP, local: LocalEventStore
+    cp: CP, local: LocalEventStore, dropped: bool
 ) -> None:
     folder = cp.project.parent / "scenarios" / "planted"
     (folder / "plants").mkdir(parents=True)
@@ -417,6 +436,8 @@ async def test_a_viewer_reads_no_blob_the_job_carried_for_its_runner_alone(
             assert r.status_code == 202, r.text
             (run_id,) = r.json()["run_ids"]
             etag = (await op.get("/api/scenarios/project/planted")).json()["etag"]
+        if dropped:
+            await dropped_key(cp, run_id)
         job = await runner.client.claim(run_id)
         assert isinstance(job, Job)
         inputs = job.blobs()

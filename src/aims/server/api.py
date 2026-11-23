@@ -117,6 +117,7 @@ from aims.server.problems import TITLES, ProblemError, ProblemException, respons
 from aims.server.responses import ClosingStreamingResponse
 from aims.server.runner_api import JOBS, send
 from aims.server.state import Connected, FileCache, ServerState
+from aims.stored import STORED
 from aims.text import NoLoneSurrogate, Utf8, scrub
 from aims.tools import Texts, UnknownTool, registry, resolve
 from aims.wire import (
@@ -1724,7 +1725,7 @@ async def _job_input(state: ServerState, run_id: str, sha256: str) -> bool:
     if job is None:
         return False
     try:
-        inputs = JOBS.validate_python(job.payload).blobs()
+        inputs = JOBS.validate_python(job.payload, context=STORED).blobs()
     except ValidationError:
         return True
     if sha256 not in inputs:

@@ -27,6 +27,7 @@ from aims.server.problems import ProblemException, responses
 from aims.server.responses import ClosingStreamingResponse
 from aims.server.series import place_of
 from aims.server.state import Connected, ServerState
+from aims.stored import STORED
 from aims.text import scrub
 from aims.wire import (
     RUNNER_API,
@@ -340,8 +341,9 @@ async def claim_job(
     assert job is not None
     state.changes.touch(run_id)
     try:
-        # a lone surrogate, stored before the API refused it, would fail the reply each time
-        return Claimed(job=JOBS.validate_python(scrub(job.payload)))
+        # a lone surrogate, stored before the API refused it, would fail the reply each time;
+        # a key a release dropped since the job was queued is left out
+        return Claimed(job=JOBS.validate_python(scrub(job.payload), context=STORED))
     except ValidationError as e:
         if await state.db.set_job(run_id, "done", f"the job does not load: {e}"):
             # The claim told the streams of the run before the job ended, so a stream may have
@@ -380,7 +382,7 @@ async def job_blob(
     job = await state.db.job(run_id)
     if job is None or not await _holds(state, job, conn):
         raise ProblemException(403, "Forbidden", "the job is not yours", code="owner")
-    if sha256 not in JOBS.validate_python(job.payload).blobs():
+    if sha256 not in JOBS.validate_python(job.payload, context=STORED).blobs():
         raise ProblemException(404, "Not found", f"the job has no blob {sha256}")
     return _stored(state, run_id, sha256)
 
