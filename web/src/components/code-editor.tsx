@@ -369,12 +369,22 @@ export function CodeEditor({
   );
 }
 
-// The problems in a text, those with a line as buttons that move the editor there.
+// The editor's line of line `n` of a YAML text, as its gutter numbers it: a lone CR the editor
+// keeps within its line ends a YAML line.
+const shownLine = (text: string, n: number) =>
+  lineEnding(text) === "\n"
+    ? n - (text.match(/\r\n|\r|\n/g) ?? []).slice(0, n - 1).filter((b) => b === "\r").length
+    : n;
+
+// The problems in a text, those with a line as buttons that move the editor there. Given the
+// YAML `text`, each names its line as the editor shows it.
 export function Problems({
   problems,
+  text,
   onGoto,
 }: {
   problems: readonly LineProblem[];
+  text?: string;
   onGoto: (line: number) => void;
 }) {
   if (problems.length === 0) return null;
@@ -391,7 +401,9 @@ export function Problems({
               className="text-left hover:underline"
               onClick={() => onGoto(p.line ?? 1)}
             >
-              <span className="text-muted-foreground">line {p.line}: </span>
+              <span className="text-muted-foreground">
+                line {text === undefined ? p.line : shownLine(text, p.line)}:{" "}
+              </span>
               {p.msg}
             </button>
           ) : (

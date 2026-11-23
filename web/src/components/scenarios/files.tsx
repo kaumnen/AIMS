@@ -243,7 +243,9 @@ export default function FilesTab({
             />
           )}
         </div>
-        {isScenario && <Problems problems={problems} onGoto={(line) => setGoto({ line })} />}
+        {isScenario && (
+          <Problems problems={problems} text={text} onGoto={(line) => setGoto({ line })} />
+        )}
       </section>
     </div>
   );

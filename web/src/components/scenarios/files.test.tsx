@@ -326,14 +326,14 @@ test("a file with mixed line endings saves back unchanged but for the edit", asy
   expect(await saveEdit(view, "demo", "demo2")).toBe(text.replace("demo", "demo2"));
 });
 
-test("a problem's line counts a lone CR as a line break, as YAML does", async () => {
+test("a problem after a lone CR names the editor's line and moves there", async () => {
   // YAML line 3 is "oversight: nope"; the editor keeps the lone CR within its line 2
   const text = "version: 1\r\nname: demo\roversight: nope\n";
   onDisk = { text, etag: '"e1"' };
   renderTab();
   const view = await editor();
   expect(view.state.doc.lines).toBe(3);
-  fireEvent.click(await screen.findByRole("button", { name: /line 3:/ }, { timeout: 3000 }));
+  fireEvent.click(await screen.findByRole("button", { name: /line 2:/ }, { timeout: 3000 }));
   const marked: string[] = [];
   forEachDiagnostic(view.state, (_, from, to) => marked.push(view.state.sliceDoc(from, to)));
   expect(marked).toEqual(["oversight: nope"]);
