@@ -1718,7 +1718,7 @@ async def _job_input(state: ServerState, run_id: str, sha256: str) -> bool:
     if sha256 not in inputs:
         return False
     first = await state.store.events(run_id, types=["run.started"], limit=1)
-    return not first or sha256 not in set(blob_refs(first[0].data))
+    return not first or sha256 not in set(blob_refs(first[0].type, first[0].data))
 
 
 @router.get(
@@ -1994,7 +1994,9 @@ def _log_scan(log: IO[bytes]) -> tuple[str, set[str]]:
             event = json.loads(line)
             if run_id is None:
                 run_id = str(event["run_id"])
-            wanted.update(blob_refs(event["data"]))
+            data = event["data"]
+            # a line with no type is refused at ingest, after the run id is checked
+            wanted.update(blob_refs(event.get("type"), data))
         except ValueError, KeyError, TypeError:
             raise ProblemException(422, "Invalid request", "a line is not an event") from None
     if run_id is None:

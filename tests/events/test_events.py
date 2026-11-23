@@ -13,6 +13,7 @@ import sqlite3
 import time
 import traceback
 import tracemalloc
+import typing
 from collections.abc import AsyncIterator, Callable
 from compression import zstd
 from pathlib import Path
@@ -23,6 +24,7 @@ import pytest
 import rfc8785
 from hypothesis import example, given
 from hypothesis import strategies as st
+from pydantic import BaseModel, JsonValue
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -56,7 +58,7 @@ from aims.events.chain import GENESIS, MAX_LINE, Head, digest, follow, seal
 from aims.events.disk import make_dir
 from aims.events.index import Index
 from aims.events.log import LogFile
-from aims.events.schema import now, text_of
+from aims.events.schema import now, opaque_fields, payload_types, text_of
 from aims.events.store import (
     INLINE_LIMIT,
     LOG,
@@ -1236,6 +1238,78 @@ def test_search_text_leaves_no_cycle_holding_the_text() -> None:
         assert gc.collect() == 0
     finally:
         gc.enable()
+
+
+def test_the_texts_of_a_mapping_written_outside_aims_are_searched() -> None:
+    """A verifier or an HTTP peer may shape a mapping as a blob reference: it is still text."""
+    scored = TaskScored(reward=1.0, metrics={"x": {"sha256": "hidden", "size": 1}})
+    assert scored.search_text().splitlines() == ["hidden", "none"]
+    data = {"service": "metadata", "time": "t", "status": 200}
+    data["headers"] = {"sha256": "also hidden", "size": "1"}
+    event = Event(
+        v=1,
+        run_id="r",
+        seq=1,
+        ts="2026-10-26T20:00:00.000000Z",
+        agent_id=None,
+        type="service.request",
+        data=data,
+        prev_hash=GENESIS,
+        hash=GENESIS,
+    )
+    assert event.search_text() == "metadata\nt\nalso hidden\n1"
+
+
+def _free_form(annotation: Any) -> bool:
+    if annotation in (JsonValue, Any) or typing.get_origin(annotation) is dict:
+        return True
+    return any(_free_form(a) for a in typing.get_args(annotation))
+
+
+def _models(annotation: Any) -> list[type[BaseModel]]:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return [annotation]
+    return [m for a in typing.get_args(annotation) for m in _models(a)]
+
+
+def _mentions(annotation: Any, cls: type) -> bool:
+    return annotation is cls or any(_mentions(a, cls) for a in typing.get_args(annotation))
+
+
+def test_every_free_form_field_of_a_payload_says_who_writes_it() -> None:
+    """A mapping with keys of any name may look like a blob reference. Each such field is
+    either written by AIMS, and may hold real references (a run's config names its scenario's
+    blobs), or written outside it and marked Opaque. A new one must be put in one list."""
+    outside = {"model.response": ["headers"], "service.request": ["headers"]}
+    outside["task.scored"] = ["metrics"]
+    aims = {
+        "agent.started": ["budget", "compaction"],
+        "audit.spill": ["kinds"],
+        "exec.started": ["env"],
+        "run.started": ["config"],
+        "sandbox.started": ["config"],
+        "Cut": ["steps"],
+    }
+    found: dict[str, list[str]] = {}
+    seen: set[type[BaseModel]] = set()
+
+    def walk(owner: str, cls: type[BaseModel]) -> None:
+        if cls in seen:
+            return
+        seen.add(cls)
+        for name, field in cls.model_fields.items():
+            if _free_form(field.annotation):
+                found.setdefault(owner, []).append(name)
+            for nested in _models(field.annotation):
+                walk(nested.__name__, nested)
+
+    for kind, cls in payload_types().items():
+        walk(kind, cls)
+        opaque = sorted(opaque_fields(kind))
+        assert opaque == outside.get(kind, []), kind
+        for name in opaque:
+            assert not _mentions(cls.model_fields[name].annotation, BlobRef), (kind, name)
+    assert found == outside | aims
 
 
 def test_duplicate_type_rejected() -> None:

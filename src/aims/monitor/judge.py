@@ -50,7 +50,7 @@ from aims.events import (
     payload_type,
 )
 from aims.events.blobs import Part
-from aims.events.schema import format_ts, is_blob_ref
+from aims.events.schema import format_ts, is_blob_ref, opaque_fields
 from aims.models import (
     Item,
     Message,
@@ -565,6 +565,9 @@ class Reader:
             return cut(value, limit, self.chars_cut)
         if is_blob_ref(value):
             sha256, size = value["sha256"], value["size"]
+            # a hand-made log may name a blob by no string, which no store holds
+            if type(sha256) is not str:
+                return self.blob_missing.format(sha256=sha256)
             # past HEAD_BLOB only the two ends are read, enough characters for each
             span = 4 * limit + 4
             try:
@@ -589,17 +592,22 @@ class Reader:
         *,
         keys: int | None = None,
         nested: bool = False,
+        kind: str | None = None,
+        refs: bool = True,
     ) -> Any:
         """`value` with each text cut to `chars` characters and each list to `items` items.
         With `keys`, an object inside it keeps that many keys and counts the rest under
         `more_keys`; `value` itself keeps every key, as an event's payload has a fixed set. A
         blob shows as its hash and size with the head of its text, or the end of it under a
-        key that names a tail, where the last lines say how a command ended."""
+        key that names a tail, where the last lines say how a command ended. `value` is the
+        data of an event of type `kind`: a mapping in one of its Opaque fields, or with `refs`
+        false, shows as it is, however much it looks like a blob reference."""
         if isinstance(value, str):
             return self.clip(value, chars)
-        if is_blob_ref(value):
-            ref: dict[str, Any] = {"blob": value["sha256"], "size": value["size"]}
-            if key not in NO_HEAD and value["size"] <= HEAD_BLOB:
+        if refs and is_blob_ref(value):
+            size = value["size"]
+            ref: dict[str, Any] = {"blob": value["sha256"], "size": size}
+            if key not in NO_HEAD and type(size) is int and size <= HEAD_BLOB:
                 if key.endswith("_tail"):
                     ref["tail"] = await self.text(run_id, value, chars, end=True)
                 else:
@@ -608,8 +616,18 @@ class Reader:
         if isinstance(value, Mapping):
             kept = [(k, v) for k, v in value.items() if v is not None]
             shown = kept[:keys] if nested and keys is not None else kept
+            opaque = opaque_fields(kind)
             out: dict[str, Any] = {
-                k: await self.compact(run_id, v, chars, items, k, keys=keys, nested=True)
+                k: await self.compact(
+                    run_id,
+                    v,
+                    chars,
+                    items,
+                    k,
+                    keys=keys,
+                    nested=True,
+                    refs=refs and k not in opaque,
+                )
                 for k, v in shown
             }
             if len(kept) > len(shown):
@@ -617,7 +635,7 @@ class Reader:
             return out
         if isinstance(value, list):
             short = [
-                await self.compact(run_id, v, chars, items, key, keys=keys, nested=True)
+                await self.compact(run_id, v, chars, items, key, keys=keys, nested=True, refs=refs)
                 for v in value[:items]
             ]
             if len(value) > items:
@@ -626,14 +644,20 @@ class Reader:
         return value
 
     async def fit(
-        self, run_id: str, value: Any, limits: Sequence[int], chars: int = TEXT_CHARS
+        self,
+        run_id: str,
+        value: Any,
+        limits: Sequence[int],
+        chars: int = TEXT_CHARS,
+        *,
+        kind: str | None = None,
     ) -> Any:
-        """`value` compacted, its texts cut to `chars` characters at most, then further by each
-        next form of FITS while the one before is longer as JSON than its entry of `limits`.
-        The shortest form when none fits."""
+        """`value`, the data of an event of type `kind`, compacted, its texts cut to `chars`
+        characters at most, then further by each next form of FITS while the one before is
+        longer as JSON than its entry of `limits`. The shortest form when none fits."""
         compact: Any = None
         for (by, items, keys), limit in zip(FITS, [*limits, 0], strict=False):
-            compact = await self.compact(run_id, value, chars // by, items, keys=keys)
+            compact = await self.compact(run_id, value, chars // by, items, keys=keys, kind=kind)
             if len(dumps(compact)) <= limit:
                 break
         return compact
@@ -647,9 +671,11 @@ class Reader:
         data = {k: v for k, v in e.data.items() if k not in drop}
         if short:
             by, items, keys = FITS[-1]
-            compact = await self.compact(e.run_id, data, TEXT_CHARS // by, items, keys=keys)
+            compact = await self.compact(
+                e.run_id, data, TEXT_CHARS // by, items, keys=keys, kind=e.type
+            )
         else:
-            compact = await self.fit(e.run_id, data, (EVENT_CHARS,))
+            compact = await self.fit(e.run_id, data, (EVENT_CHARS,), kind=e.type)
         out: dict[str, Any] = {"seq": e.seq, "type": e.type, "ts": format_ts(e.ts)}
         if e.agent_id is not None:
             out["agent"] = e.agent_id
@@ -976,7 +1002,9 @@ class Judge:
                     row["finished"] = other["finished"] = finished
                     self._agent_seqs.add(e.seq)
                 case "task.scored":
-                    score = await self.reader.fit(src, d, (SCORE_CHARS, SCORE_CHARS), NOTE_CHARS)
+                    score = await self.reader.fit(
+                        src, d, (SCORE_CHARS, SCORE_CHARS), NOTE_CHARS, kind=e.type
+                    )
                     row["score"] = {"seq": e.seq, **score}
                     other["score"] = {
                         "seq": e.seq,

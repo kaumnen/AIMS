@@ -277,7 +277,8 @@ class Shipper:
         def refs() -> list[str]:
             out: dict[str, None] = {}
             for line in lines:
-                for sha in blob_refs(json.loads(line)["data"]):
+                event = json.loads(line)
+                for sha in blob_refs(event["type"], event["data"]):
                     out[sha] = None
             return list(out)
 

@@ -47,6 +47,8 @@ from aims.events import (
     ResourceSample,
     RunFinished,
     RunStarted,
+    ServiceRequest,
+    TaskScored,
     ToolCall,
     chain,
     split_lines,
@@ -62,7 +64,7 @@ from aims.node.service import Node, NodeOptions
 from aims.node.shipper import WARN_AFTER, Shipper
 from aims.prompts import Prompts
 from aims.run.job import Job
-from aims.run.runner import resolve_texts
+from aims.run.runner import _reward, resolve_texts
 from aims.scenario import load
 from aims.server import api, dispatch, edit_api, runner_api
 from aims.server import app as app_module
@@ -439,6 +441,45 @@ async def test_a_pushed_run_lands_byte_for_byte(cp: CP, local: LocalEventStore) 
         assert found["items"][0]["run_id"] == run_id
         v = (await c.get(f"/api/runs/{run_id}/verification")).json()
         assert v["ok"]
+
+
+FORGED_REWARDS = {
+    "not hex": {"sha256": "not-a-sha", "size": 1},
+    "a list": {"sha256": ["a"], "size": 1},
+    "no such blob": {"sha256": "ab" * 32, "size": 1},
+}
+
+
+@pytest.mark.parametrize("forged", [*FORGED_REWARDS, "metadata headers"])
+async def test_a_mapping_the_sandbox_shaped_as_a_blob_reference_does_not_stop_shipping(
+    cp: CP, local: LocalEventStore, forged: str
+) -> None:
+    """The verifier's reward.json and the headers of a request to the metadata service are
+    written in the sandbox. Shaped as a blob reference, they once stopped the run's shipping
+    for good at that event."""
+    run_id = await local.create_run(STARTED)
+    if forged in FORGED_REWARDS:
+        body = json.dumps({"reward": 1, "x": FORGED_REWARDS[forged]}).encode()
+        reward, metrics, source, error = _reward(b"J", body)
+        payload: Any = TaskScored(reward=reward, metrics=metrics, source=source, error=error)
+    else:
+        headers = {"sha256": "cd" * 32, "size": "5"}
+        payload = ServiceRequest(
+            service="metadata", time="t", method="GET", path="/", headers=headers, status=200
+        )
+    await local.append(run_id, [Draft(payload)])
+    await local.append(run_id, [call(1), call(2)])
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    client = ControlClient(cp.url, cp.runner, runner="pusher")
+    try:
+        await client.hello(FakeRunner(cp, "pusher").hello_body())
+        shipper = await ship(local, client, run_id)
+    finally:
+        await client.aclose()
+    assert (shipper.done, shipper.refused) == (True, None)
+    copy = cp.state.store.root / run_id / "events.jsonl"
+    assert copy.read_bytes() == (local.root / run_id / "events.jsonl").read_bytes()
+    assert (await cp.state.store.verify(run_id)).ok
 
 
 async def raw_events(

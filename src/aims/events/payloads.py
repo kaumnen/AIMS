@@ -1,9 +1,9 @@
 import itertools
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from aims.events.schema import BlobRef, Content, Hash, Payload
+from aims.events.schema import OPAQUE, BlobRef, Content, Hash, Payload
 
 Oversight = Literal["observe", "autonomous", "human"]
 RunStatus = Literal["completed", "failed", "killed", "cancelled"]
@@ -310,7 +310,7 @@ class ModelResponse(Payload):
     tool_calls: int = 0
     body: BlobRef | None = None
     stream: BlobRef | None = None
-    headers: dict[str, str] = Field(default_factory=dict)
+    headers: Annotated[dict[str, str], OPAQUE] = Field(default_factory=dict)
     error: str | None = None
     error_kind: ModelError | None = None
     retry: bool = False
@@ -1141,7 +1141,7 @@ class ServiceRequest(Payload):
     time: str
     method: str | None = None
     path: str | None = None
-    headers: dict[str, str] = Field(default_factory=dict)
+    headers: Annotated[dict[str, str], OPAQUE] = Field(default_factory=dict)
     status: int
     cut: int = Field(default=0, ge=0)
     refused: bool = False
@@ -1519,7 +1519,7 @@ class TaskScored(Payload):
     end: ExecEnd | None = None
     exit_code: int | None = None
     reward: float | None = None
-    metrics: dict[str, JsonValue] = Field(default_factory=dict)
+    metrics: Annotated[dict[str, JsonValue], OPAQUE] = Field(default_factory=dict)
     source: Literal["reward.json", "reward.txt", "none"] = "none"
     error: str | None = None
     tainted: list[int] = Field(default_factory=list)

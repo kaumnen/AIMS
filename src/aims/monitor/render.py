@@ -34,7 +34,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from aims.events import SERVICE_PREFIX, BlobError, Event, EventStore, SweepPart
-from aims.events.schema import stated_size
+from aims.events.schema import opaque_fields, stated_size
 from aims.monitor.texts import MonitorTexts
 from aims.text import deeper, scrub
 
@@ -1110,8 +1110,9 @@ class Trajectory:
 
     async def _generic(self, event: Event) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        opaque = opaque_fields(event.type)
         for k, v in event.data.items():
-            if isinstance(v, dict) and set(v) == {"sha256", "size"}:
+            if k not in opaque and isinstance(v, dict) and set(v) == {"sha256", "size"}:
                 v = await self._text(v)
             out[k] = _capped(v, FIELD_BYTES)
         return out

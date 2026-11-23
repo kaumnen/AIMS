@@ -19,8 +19,11 @@ from aims.events import (
     Invalid,
     LocalEventStore,
     MissingBlobs,
+    ModelResponse,
     RunFinished,
     RunStarted,
+    ServiceRequest,
+    TaskScored,
     ToolCall,
     split_lines,
     verify_run,
@@ -733,3 +736,83 @@ def test_decoding_feeds_each_byte_of_a_file_once(
         # A writer fed small pieces feeds the rest of a piece again where a frame ends in it.
         # It reads the file once more to pack it.
         assert len(raw) <= Counted.fed <= 3 * len(raw)
+
+
+# Mappings that what the sandbox writes shapes as blob references
+
+T1 = "2026-11-10T00:00:01.000000Z"
+HELD = b"a file the agent wrote, and so can hash"
+FORGED: dict[str, Any] = {
+    "not hex": {"sha256": "not-a-sha", "size": 1},
+    "a list": {"sha256": ["a"], "size": 1},
+    "an object": {"sha256": {"k": 1}, "size": 1},
+    "no such blob": {"sha256": "ab" * 32, "size": 1},
+    "a size as text": {"sha256": "ab" * 32, "size": "5"},
+    "a held blob at another size": {"sha256": hashlib.sha256(HELD).hexdigest(), "size": 1},
+}
+
+
+def scored(metrics: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    return T1, TaskScored.type, TaskScored(reward=1.0, metrics=metrics).model_dump(mode="json")
+
+
+def requested(headers: dict[str, str]) -> tuple[str, str, dict[str, Any]]:
+    request = ServiceRequest(
+        service="metadata", time="t", method="GET", path="/", headers=headers, status=200
+    )
+    return T1, ServiceRequest.type, request.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("name", FORGED)
+async def test_a_mapping_written_in_the_sandbox_is_no_blob_reference(
+    tmp_path: Path, copy: LocalEventStore, name: str
+) -> None:
+    """The runner keeps a verifier's reward.json whole as the score's metrics, and the headers
+    of each request to the metadata service. The agent can write both, so a mapping there that
+    looks like a blob reference is data: the run verifies and a copy takes it with no blob. The
+    lines are as v0.2.3 wrote them, so a run it recorded so reads the same."""
+    run_id = str(uuid.uuid7())
+    lines = sealed(
+        run_id,
+        START,
+        scored({"reward": 1, "x": FORGED[name]}),
+        requested({"sha256": "cd" * 32, "size": "5"}),
+        (T1, RunFinished.type, RunFinished(status="completed").model_dump(mode="json")),
+    )
+    run_dir = tmp_path / "old" / run_id
+    run_dir.mkdir(parents=True)
+    BlobStore(run_dir / "blobs").put(HELD)
+    (run_dir / LOG).write_bytes(b"".join(lines))
+    v = verify_run(run_dir)
+    assert (v.ok, v.blob_problems()) == (True, [])
+    copy.prepare_run(run_id)
+    assert (await copy.ingest(run_id, lines)).finished
+    assert verify_run(copy.root / run_id).ok
+
+
+async def test_a_blob_reference_where_a_payload_holds_one_is_still_needed(
+    copy: LocalEventStore,
+) -> None:
+    """Only the fields written outside AIMS are passed over: a reference elsewhere in the same
+    event, or in an event of a type this store does not know, still needs its blob."""
+    body = BlobRef(sha256="ab" * 32, size=3)
+    other = "cd" * 32
+    response = ModelResponse(
+        call_id="m1",
+        attempt=1,
+        status="completed",
+        latency_ms=1,
+        body=body,
+        headers={"sha256": "ef" * 32, "size": "1"},
+    )
+    run_id = str(uuid.uuid7())
+    lines = sealed(
+        run_id,
+        START,
+        (T1, ModelResponse.type, response.model_dump(mode="json")),
+        (T1, "x.custom", {"metrics": {"sha256": other, "size": 1}}),
+    )
+    copy.prepare_run(run_id)
+    with pytest.raises(MissingBlobs) as caught:
+        await copy.ingest(run_id, lines)
+    assert caught.value.missing == [body.sha256, other]

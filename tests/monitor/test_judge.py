@@ -940,6 +940,44 @@ async def test_a_score_with_many_metrics_is_shortened_in_the_brief(store: LocalE
     assert score["metrics"][MORE_KEYS] == 896
 
 
+FORGED = [
+    {"sha256": ["a"], "size": 1},
+    {"sha256": "ab" * 32, "size": "5"},
+    {"sha256": "ab" * 32, "size": 5},
+]
+
+
+@pytest.mark.parametrize("forged", FORGED)
+async def test_a_score_whose_metrics_look_like_a_blob_shows_them_as_they_are(
+    store: LocalEventStore, forged: dict[str, Any]
+) -> None:
+    """The metrics are the verifier's reward.json, which the agent can write. Shaped as a blob
+    reference, they once failed the judge's reading of the run, and so its verdict."""
+    run = await make_run(store)
+    metrics = {"reward": 1, "x": forged}
+    await run.add("forged", TaskScored(reward=1.0, metrics=metrics, source="reward.json"), None)
+    judge = make_judge(store, run, Script(say(json.dumps(verdict()))))
+    payload_of(await judge.run(flags=[], sweeps=[]))
+    [row] = [a for a in judge._agents if a["agent"] is None]
+    assert row["score"]["metrics"] == metrics
+    out = await tool(judge, "events", from_seq=run.seqs["forged"])
+    assert out["events"][0]["data"]["metrics"] == metrics
+
+
+@pytest.mark.parametrize("forged", FORGED)
+async def test_a_blob_reference_named_by_no_string_or_sized_by_no_count_shows_unread(
+    store: LocalEventStore, forged: dict[str, Any]
+) -> None:
+    """In an event of a type AIMS does not write, as a hand-made log may hold."""
+    run = await make_run(store)
+    reader = make_judge(store, run, Script()).reader
+    missing = reader.blob_missing.format(sha256=forged["sha256"])
+    shown = await reader.compact(run.id, {"ref": forged}, 100, 10, kind="x.custom")
+    assert shown["ref"]["blob"] == forged["sha256"]
+    assert shown["ref"].get("head", missing) == missing
+    assert await reader.text(run.id, forged, 100) == missing
+
+
 async def test_a_reply_without_token_counts_counts_by_its_size_against_the_share(
     store: LocalEventStore,
 ) -> None:

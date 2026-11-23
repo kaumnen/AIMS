@@ -1,6 +1,7 @@
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cache
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
@@ -45,6 +46,15 @@ Timestamp = Annotated[AwareDatetime, PlainSerializer(format_ts, return_type=str)
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
+class Opaque:
+    """Marks a payload field that holds what was written outside AIMS: the metrics of a
+    verifier's reward.json, the headers of an HTTP request or answer. What wrote it may shape a
+    mapping as a blob reference, so no reader takes one in it for a reference."""
+
+
+OPAQUE = Opaque()
+
+
 class BlobRef(BaseModel):
     model_config = ConfigDict(
         frozen=True, extra="forbid", json_schema_serialization_defaults_required=True
@@ -79,11 +89,26 @@ class Payload(BaseModel):
         _registry[name] = cls
 
     def search_text(self) -> str:
-        return text_of(self.model_dump(mode="json"))
+        return text_of(self.model_dump(mode="json"), self.type)
 
 
 def payload_type(name: str) -> type[Payload] | None:
     return _registry.get(name)
+
+
+def opaque_fields(kind: object) -> frozenset[str]:
+    """The fields of event type `kind` marked Opaque; none for a type not registered."""
+    cls = _registry.get(kind) if type(kind) is str else None
+    return frozenset() if cls is None else _opaque(cls)
+
+
+@cache
+def _opaque(cls: type[Payload]) -> frozenset[str]:
+    return frozenset(
+        name
+        for name, field in cls.model_fields.items()
+        if any(isinstance(m, Opaque) for m in field.metadata)
+    )
 
 
 def payload_types() -> dict[str, type[Payload]]:
@@ -107,38 +132,55 @@ def stated_size(value: Mapping[str, Any]) -> int:
     return value["size"] if is_blob_ref(value) else LOOSE_CAP
 
 
-def blob_refs(value: Any) -> Iterator[str]:
-    for sha256, _ in blob_sizes(value):
+def blob_refs(kind: object, data: Any) -> Iterator[str]:
+    for sha256, _ in blob_sizes(kind, data):
         yield sha256
 
 
-def blob_sizes(value: Any) -> Iterator[tuple[str, Any]]:
-    """The sha256 and the stated size of each blob reference in `value`."""
+def blob_sizes(kind: object, data: Any) -> Iterator[tuple[str, Any]]:
+    """The sha256 and the stated size of each blob reference in `data`, the data of an event of
+    type `kind`. Its Opaque fields hold none. A sha256 or a size of a hand-made log may be any
+    JSON value."""
+    skip = opaque_fields(kind)
+    if skip and isinstance(data, Mapping) and not is_blob_ref(data):
+        for key, value in data.items():
+            if key not in skip:
+                yield from _refs(value)
+    else:
+        yield from _refs(data)
+
+
+def _refs(value: Any) -> Iterator[tuple[str, Any]]:
     if is_blob_ref(value):
         yield value["sha256"], value["size"]
     elif isinstance(value, Mapping):
         for item in value.values():
-            yield from blob_sizes(item)
+            yield from _refs(item)
     elif isinstance(value, list):
         for item in value:
-            yield from blob_sizes(item)
+            yield from _refs(item)
 
 
-def text_of(value: Any) -> str:
+def text_of(value: Any, kind: object = None) -> str:
+    """The texts in `value`, the data of an event of type `kind`, less those of its blob
+    references. A mapping in an Opaque field is no reference, so its texts count."""
+    skip = opaque_fields(kind)
+    if skip and isinstance(value, Mapping):
+        return "\n".join(t for k, item in value.items() for t in _texts(item, k not in skip))
     return "\n".join(_texts(value))
 
 
-def _texts(value: Any) -> Iterator[str]:
+def _texts(value: Any, refs: bool = True) -> Iterator[str]:
     if isinstance(value, str):
         if value:
             yield value
     elif isinstance(value, Mapping):
-        if not is_blob_ref(value):
+        if not (refs and is_blob_ref(value)):
             for item in value.values():
-                yield from _texts(item)
+                yield from _texts(item, refs)
     elif isinstance(value, list):
         for item in value:
-            yield from _texts(item)
+            yield from _texts(item, refs)
 
 
 class Event(BaseModel):
@@ -167,7 +209,7 @@ class Event(BaseModel):
             payload = self.payload()
         except ValidationError:
             payload = None
-        return text_of(self.data) if payload is None else payload.search_text()
+        return text_of(self.data, self.type) if payload is None else payload.search_text()
 
 
 @dataclass(frozen=True, slots=True)

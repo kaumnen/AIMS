@@ -831,7 +831,7 @@ class LocalEventStore:
             events, after, error = await asyncio.to_thread(_follow_all, head, fresh, run_id)
             if error is not None:
                 raise error
-            refs = {sha for e in events for sha in blob_refs(e.data)} - sink.blobs
+            refs = {sha for e in events for sha in blob_refs(e.type, e.data)} - sink.blobs
             if refs:
                 missing = await asyncio.to_thread(self._blobs(run_id).missing, sorted(refs))
                 sink.blobs.update(refs - set(missing))
@@ -1917,7 +1917,7 @@ def scan(path: Path, run_id: str) -> tuple[Head, dict[str, set[int | None]], Cha
     refs: dict[str, set[int | None]] = {}
     try:
         for event, after in read_events(path, run_id, Head()):
-            for sha256, size in blob_sizes(event["data"]):
+            for sha256, size in blob_sizes(event["type"], event["data"]):
                 name = sha256 if type(sha256) is str else _Unnamed(json.dumps(sha256))
                 # a size that is no count is never a blob's
                 refs.setdefault(name, set()).add(size if type(size) is int else None)

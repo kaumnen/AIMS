@@ -622,7 +622,7 @@ class Node:
                     await asyncio.to_thread(spool.write, chunk)
             await asyncio.to_thread(spool.seek, 0)
             while lines := await asyncio.to_thread(_batch, spool):
-                refs = dict.fromkeys(sha for line in lines for sha in blob_refs(_data(line)))
+                refs = dict.fromkeys(sha for line in lines for sha in blob_refs(*_data(line)))
                 for sha in await origins.missing_blobs(run_id, list(refs)):
                     async with client.run_blob(run_id, sha) as blob:
                         await origins.put_blob_stream(run_id, sha, blob, limit=BLOB_LIMIT)
@@ -748,8 +748,10 @@ class Node:
         return any(run_id in runs for runs in self._reads.values())
 
 
-def _data(line: bytes) -> object:
-    return json.loads(line)["data"]
+def _data(line: bytes) -> tuple[object, object]:
+    """The type and the data of the event on `line`."""
+    event = json.loads(line)
+    return event["type"], event["data"]
 
 
 def _batch(spool: IO[bytes]) -> list[bytes]:
