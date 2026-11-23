@@ -20,6 +20,7 @@ import pytest
 import typer
 from cp import control_plane
 from rich.console import Console
+from rich.text import Text
 from test_cli_monitor import run_stubbed, sealed
 from typer.testing import CliRunner
 
@@ -41,7 +42,7 @@ from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
 from aims.run.runner import Result, Runner
-from aims.run.view import Digest, HumanPrompt, JsonLines, LiveView, _Run, digest, summary
+from aims.run.view import TAIL, Digest, HumanPrompt, JsonLines, LiveView, _Run, digest, summary
 from aims.server.db import ServerDB
 from aims.terminal import VisibleLog, json_text, one_line, shown
 
@@ -684,3 +685,26 @@ async def test_the_live_view_notes_a_second_provider_of_a_model(tmp_path: Path) 
     assert note.startswith("vendor/a now served by River\\u001B")
     assert note.endswith(", after Wafer")
     assert "\x1b" not in note
+
+
+async def test_the_live_view_shows_a_long_note_on_one_line(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        view = LiveView(store, DeltaBus())
+    run = _Run("r1")
+
+    def event(kind: str, **data: Any) -> Any:
+        return SimpleNamespace(type=kind, data=data, agent_id="a")
+
+    reason = "\n".join(f"line {i} " + "x" * 300 for i in range(40))
+    view._on_event(run, event("monitor.degraded", part="judge", reason=reason, then="skip"))
+    # the provider comes from the answer, so a router can name one in many lines
+    for call, provider in [("c1", "Wafer"), ("c2", "\n".join("p" * 200 for _ in range(30)))]:
+        view._on_event(run, event("model.request", call_id=call, model="vendor/a"))
+        view._on_event(run, event("model.response", call_id=call, provider=provider))
+    _, degraded, served = (cast(Text, row).plain for row in view._monitor_rows(run))
+    assert degraded.startswith("  monitor judge: line 0 xxx")
+    assert served.startswith("  vendor/a now served by ppp")
+    for row in (degraded, served):
+        assert "\n" not in row
+        assert len(row) == 2 + TAIL
+        assert row.endswith("…")

@@ -376,7 +376,7 @@ class LiveView:
             head.append("  sweeping", style="magenta")
         rows: list[RenderableType] = [head]
         rows += [Text(f"  ! {line}", style="magenta") for line in run.shown]
-        rows += [Text(f"  {note}", style="yellow") for note in run.notes]
+        rows += [Text(f"  {_short(note, TAIL)}", style="yellow") for note in run.notes]
         if run.verdict:
             rows.append(Text(f"  verdict {_short(run.verdict, TAIL)}", style="cyan"))
         rows += [Text(f"  {_short(line, TAIL)}", style="yellow") for line in run.failed]
