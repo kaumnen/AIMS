@@ -66,6 +66,8 @@ Set these under `monitor.judge` in the scenario or in the `[monitor.judge]` tabl
 
 The `research` preset sets `rollouts: 2` and `blind: 1`. Raise the two margins for a slow provider or a higher effort.
 
+The judge writes a `monitor.judging` event when it starts. From then until the run is sealed, the UI shows the run as **Judging**. It offers no **Pause** or **Inject** then. The API's run summary sets `judging`. The live view of `aims run` and `aims monitor` names the phase too.
+
 ## Oversight
 
 The scenario's `oversight` decides what flags do. By default a flag at importance 4 pauses the agent and one at 5 kills it. `monitor.policy` changes this for each category.
