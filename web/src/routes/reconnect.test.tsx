@@ -95,8 +95,40 @@ test("a refused session shows the sign-in form and opens no stream", async () =>
   expect(usable()).toHaveLength(0);
 });
 
+const badGateway = () => new Response(null, { status: 502, headers: { "Content-Length": "0" } });
+const sessionReads = () =>
+  fetch.mock.calls.filter(([r]) => new URL(r.url).pathname === "/api/session").length;
+
+test("the control plane screen leaves by itself once the server answers again", async () => {
+  const source = await shown();
+  session = badGateway;
+  act(() => source.fail(true));
+  await screen.findByText(/Cannot reach the control plane/);
+  // the next read of the session answers: no click needed
+  expect(
+    await screen.findByRole("heading", { name: "Runs" }, { timeout: REOPEN_MS + 2000 }),
+  ).toBeTruthy();
+}, 15_000);
+
+test.each(["focus", "online"])("the control plane screen asks again on %s", async (event) => {
+  const source = await shown();
+  const answer = fetch.getMockImplementation();
+  let away = true;
+  fetch.mockImplementation(async (request) =>
+    away && new URL(request.url).pathname === "/api/session" ? badGateway() : answer!(request),
+  );
+  act(() => source.fail(true));
+  await screen.findByText(/Cannot reach the control plane/);
+  const reads = sessionReads();
+  away = false;
+  // well before its first wait is over
+  act(() => void window.dispatchEvent(new Event(event)));
+  await waitFor(() => expect(sessionReads()).toBe(reads + 1), { timeout: REOPEN_MS / 2 });
+  await screen.findByRole("heading", { name: "Runs" });
+});
+
 test.each([
-  ["no body", () => new Response(null, { status: 502, headers: { "Content-Length": "0" } })],
+  ["no body", badGateway],
   ["a text body", () => new Response("Bad Gateway", { status: 502 })],
 ])("a session read answered 502 with %s says the control plane is away", async (_, gateway) => {
   const source = await shown();

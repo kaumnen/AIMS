@@ -1,8 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useEffectEvent, useState } from "react";
 
 import { reconnectLive } from "@/api/channel";
 import { client } from "@/api/client";
+import { REOPEN_MAX_MS, REOPEN_MS } from "@/api/live";
 import { forgetSession, whoami } from "@/api/session";
 
 import { Button } from "./ui/button";
@@ -84,6 +85,26 @@ export function Unreachable({ retry }: { retry: () => void }) {
   useEffect(() => {
     void queryClient.invalidateQueries({ queryKey: ["runs"], refetchType: "none" });
   }, [queryClient]);
+  // It tries again by itself, as a stream does, and at once when the tab comes back or online.
+  const again = useEffectEvent(retry);
+  useEffect(() => {
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const wait = () => (timer = setTimeout(ask, Math.min(REOPEN_MAX_MS, REOPEN_MS * 2 ** tries++)));
+    const ask = () => {
+      clearTimeout(timer);
+      again();
+      wait();
+    };
+    wait();
+    addEventListener("focus", ask);
+    addEventListener("online", ask);
+    return () => {
+      clearTimeout(timer);
+      removeEventListener("focus", ask);
+      removeEventListener("online", ask);
+    };
+  }, []);
   return (
     <main className="grid min-h-dvh place-items-center px-4">
       <div className="flex max-w-sm flex-col gap-3">
