@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import IO, Annotated, Literal, NoReturn, Self, cast, get_args
 
 from fastapi import APIRouter, Depends, Header, Query, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from aims import __version__
+from aims.aio import settle
 from aims.channels import default_tools
 from aims.config import Settings
 from aims.events import (
@@ -112,6 +113,7 @@ from aims.server.auth import Principal, require
 from aims.server.codings import allowed
 from aims.server.files import Source, Sources
 from aims.server.problems import TITLES, ProblemError, ProblemException, responses
+from aims.server.responses import ClosingStreamingResponse
 from aims.server.runner_api import JOBS, send
 from aims.server.state import Connected, FileCache, ServerState
 from aims.text import NoLoneSurrogate, Utf8, scrub
@@ -1759,19 +1761,24 @@ async def get_blob(
         headers["Vary"] = "Accept-Encoding"
         return FileResponse(path, media_type="application/octet-stream", headers=headers)
     headers["Vary"] = "Accept-Encoding"
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         _decompressed(path), media_type="application/octet-stream", headers=headers
     )
 
 
-async def _decompressed(path: Path) -> AsyncIterator[bytes]:
+async def _decompressed(path: Path) -> AsyncGenerator[bytes]:
     iterator = decoded(path)
 
     def step() -> bytes | None:
         return next(iterator, None)
 
-    while (chunk := await asyncio.to_thread(step)) is not None:
-        yield chunk
+    try:
+        # A step runs to its end when the client goes meanwhile, so the close below never
+        # meets the iterator still in its thread.
+        while (chunk := await settle(asyncio.to_thread(step))) is not None:
+            yield chunk
+    finally:
+        iterator.close()
 
 
 class VerificationOut(Out):

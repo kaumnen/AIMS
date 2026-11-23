@@ -51,7 +51,7 @@ from aims.events import (
     chain,
     split_lines,
 )
-from aims.events.blobs import decode
+from aims.events.blobs import ZSTD_MAGIC, decode, decoded
 from aims.events.chain import MAX_LINE
 from aims.models import DeltaBus
 from aims.models.keys import KeysError, parse
@@ -2445,10 +2445,18 @@ def gc_held() -> Generator[None]:
 
 
 async def stalled(
-    cp: CP, path: str, token: str, *, query: str = "", runner: str | None = None
+    cp: CP,
+    path: str,
+    token: str,
+    *,
+    query: str = "",
+    runner: str | None = None,
+    frames: int = 3,
+    stops: bool = True,
 ) -> None:
-    """GET `path` straight through the app as a client that reads three body frames, then
-    stops reading and goes a moment later. What the server sends meanwhile backs up."""
+    """GET `path` straight through the app as a client that reads `frames` body frames, then
+    stops reading and goes a moment later. What the server sends meanwhile backs up. Unless
+    `stops`, it goes on reading until it goes."""
     headers = [(b"host", b"127.0.0.1"), (b"authorization", f"Bearer {token}".encode())]
     if runner is not None:
         headers.append((b"x-aims-runner", runner.encode()))
@@ -2467,20 +2475,21 @@ async def stalled(
         "server": ("127.0.0.1", 80),
     }
     gone = asyncio.Event()
-    frames = 0
+    read = 0
 
     async def receive() -> Message:
         await gone.wait()
         return {"type": "http.disconnect"}
 
     async def send(message: Message) -> None:
-        nonlocal frames
+        nonlocal read
         if message["type"] != "http.response.body":
             return
-        frames += 1
-        if frames == 3:
+        read += 1
+        if read == frames:
             asyncio.get_running_loop().call_later(0.2, gone.set)
-            await asyncio.Event().wait()
+            if stops:
+                await asyncio.Event().wait()
 
     app = create_app(cp.state, dispatcher=False)
     # in a group: FastAPI's keepalive task, sending into a response that has ended
@@ -2565,6 +2574,71 @@ async def test_a_ui_stream_that_stalls_and_drops_releases_its_subscription(cp: C
         await stalled(cp, "/api/stream", cp.operator, query=f"deltas={run_id}")
         assert cp.state.streams == 0
         assert not cp.state.bus.subscribers
+
+
+def open_fds(path: Path) -> int:
+    """How many fds of this process are open on the file at `path`."""
+    target = os.stat(path)
+    found = 0
+    for name in os.listdir("/dev/fd"):
+        with contextlib.suppress(OSError):
+            st = os.fstat(int(name))
+            found += (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino)
+    return found
+
+
+async def test_a_run_log_read_that_stalls_and_drops_closes_the_log(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner_api, "LOG_CHUNK", 1024)
+    run_id = await pushed(cp, local, [call(n) for n in range(100)])
+    log = cp.state.store.root / run_id / "events.jsonl"
+    with gc_held():
+        await stalled(cp, f"/runner/v1/runs/{run_id}/log", cp.runner, runner="pusher")
+        await asyncio.sleep(0.1)
+        assert open_fds(log) == 0
+
+
+async def compressed_blob(cp: CP, local: LocalEventStore) -> tuple[str, Path]:
+    """A pushed run with a blob of 6 MiB, stored as a zstd frame: the path of its blob."""
+    run_id = await local.create_run(STARTED)
+    big = await local.content(run_id, "ab" * 3 * 1024 * 1024)
+    assert isinstance(big, BlobRef)
+    await local.append(run_id, [Draft(AgentInput(kind="inject", step=0, text=big), "a1")])
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    pusher = FakeRunner(cp, "pusher")
+    await pusher.client.hello(pusher.hello_body())
+    await ship(local, pusher.client, run_id)
+    await pusher.client.aclose()
+    path = cp.state.store.blob_path(run_id, big.sha256)
+    assert path.read_bytes().startswith(ZSTD_MAGIC)
+    return f"/api/runs/{run_id}/blobs/{big.sha256}", path
+
+
+async def test_a_blob_read_that_stalls_and_drops_closes_the_blob(
+    cp: CP, local: LocalEventStore
+) -> None:
+    url, path = await compressed_blob(cp, local)
+    with gc_held():
+        await stalled(cp, url, cp.viewer)
+        await asyncio.sleep(0.1)
+        assert open_fds(path) == 0
+
+
+async def test_a_blob_read_that_drops_while_it_decodes_closes_the_blob(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def slow(path: Path) -> Generator[bytes]:
+        for chunk in decoded(path):
+            time.sleep(0.5)
+            yield chunk
+
+    url, path = await compressed_blob(cp, local)
+    monkeypatch.setattr(api, "decoded", slow)
+    with gc_held():
+        # it goes 0.2 s after the first chunk, while the next one decodes
+        await stalled(cp, url, cp.viewer, frames=1, stops=False)
+        assert open_fds(path) == 0
 
 
 async def test_a_stream_ends_when_its_session_does(cp: CP) -> None:

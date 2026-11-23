@@ -1,12 +1,12 @@
 """The audit log on `/api`, for operators: a page of rows newest first, or every row that
 matches as JSON Lines. `aims audit` reads the same rows."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from aims.events.index import BIND_MAX
 from aims.events.schema import when
@@ -14,6 +14,7 @@ from aims.server import audit
 from aims.server.api import MAX_PAGE, Operator, Out, State
 from aims.server.db import AuditRow, Outcome
 from aims.server.problems import responses
+from aims.server.responses import ClosingStreamingResponse
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
 EXPORT_PAGE = 1000
@@ -99,12 +100,12 @@ async def list_audit(
     }
     if format == "jsonl":
 
-        async def lines() -> AsyncIterator[str]:
+        async def lines() -> AsyncGenerator[str]:
             async for row in audit.every(state.db, page=EXPORT_PAGE, **filters):
                 yield entry(row).model_dump_json() + "\n"
 
         name = f"aims-audit-{datetime.now(UTC):%Y%m%d-%H%M%S}.jsonl"
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             lines(),
             media_type=JSONL,
             headers={"Content-Disposition": f'attachment; filename="{name}"'},

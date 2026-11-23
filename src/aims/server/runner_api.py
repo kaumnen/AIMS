@@ -4,14 +4,14 @@ claims jobs it is offered, and ships its runs: blobs first, then exact log lines
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from compression import zstd
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import TypeAdapter, ValidationError
 
@@ -24,6 +24,7 @@ from aims.events.store import TruthRefused, is_run_id
 from aims.server.auth import Principal, require
 from aims.server.db import Job
 from aims.server.problems import ProblemException, responses
+from aims.server.responses import ClosingStreamingResponse
 from aims.server.series import place_of
 from aims.server.state import Connected, ServerState
 from aims.text import scrub
@@ -652,14 +653,14 @@ async def run_log(
     if head is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     path = state.store.root / run_id / "events.jsonl"
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         _upto(path, head.offset),
         media_type="application/x-ndjson",
         headers={"Content-Length": str(head.offset)},
     )
 
 
-async def _upto(path: Path, size: int) -> AsyncIterator[bytes]:
+async def _upto(path: Path, size: int) -> AsyncGenerator[bytes]:
     with path.open("rb") as f:
         while size > 0 and (chunk := await asyncio.to_thread(f.read, min(size, LOG_CHUNK))):
             size -= len(chunk)

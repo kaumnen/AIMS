@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 import sys
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from compression import zstd
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,7 +94,7 @@ def _decoded(chunks: Iterable[bytes]) -> Iterator[bytes]:
         raise zstd.ZstdError("the data ends inside a frame")
 
 
-def decoded(path: Path) -> Iterator[bytes]:
+def decoded(path: Path) -> Generator[bytes]:
     """What the zstd frames in the file at `path` decode to, CHUNK bytes at a time. Raises
     ZstdError when they are not whole frames."""
     with path.open("rb") as f:
