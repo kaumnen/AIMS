@@ -511,13 +511,16 @@ def test_reward_json_of_many_numbers_keeps_reward_passed_and_total_first() -> No
 
 
 class Verifier:
-    """A sandbox for the verifier: every exec exits 0, and the read of the reward file gives
-    `data` as `cat` or `head -c N` would. It keeps the first `output_limit` bytes of an exec's
-    output, or of its own `limit`, as the sandbox does."""
+    """A sandbox for the verifier: every exec exits 0, the verifier's own command ends as `end`,
+    and the read of the reward file gives `data` as `cat` or `head -c N` would. It keeps the
+    first `output_limit` bytes of an exec's output, or of its own `limit`, as the sandbox does."""
 
-    def __init__(self, data: bytes, output_limit: int = 4 * 1024 * 1024) -> None:
+    def __init__(
+        self, data: bytes, output_limit: int = 4 * 1024 * 1024, end: str = "exited"
+    ) -> None:
         self.data = data
         self.output_limit = output_limit
+        self.end = end
         self.reads: list[str] = []
 
     async def exec(self, command: str, **kw: Any) -> ExecResult:
@@ -527,11 +530,13 @@ class Verifier:
             n = re.search(r"head -c (\d+) '?[^ ]*reward\.json", command)
             out = b"J\n" + (self.data if n is None else self.data[: int(n[1])])
         limit = kw.get("limit") or self.output_limit
+        # only the verifier's own command gets an env
+        end = self.end if "env" in kw else "exited"
         finished = ExecFinished(
             exec_id="e1",
             call_id=None,
-            end="exited",
-            exit_code=0,
+            end=cast(Any, end),
+            exit_code=0 if end == "exited" else None,
             pid=1,
             duration_ms=1,
             stdout="",
@@ -547,6 +552,23 @@ async def verify(sandbox: Verifier) -> TaskScored:
     bench = Bench(cast(Any, None), cast(Any, None), models(profile()))
     runner = Runner(bench, load(WORD_COUNT), Options())
     return await runner._verify(cast(AuditedSandbox, sandbox), "agent", "submitted", "done")
+
+
+@pytest.mark.anyio
+async def test_a_verifier_that_ends_early_says_so_beside_the_note_on_its_reward() -> None:
+    big = {"reward": 0.5, "passed": 3, "total": 4, "log": "x" * (2 * METRICS_BYTES)}
+    scored = await verify(Verifier(json.dumps(big).encode(), end="timeout"))
+    assert (scored.end, scored.reward, scored.metrics) == (
+        "timeout",
+        0.5,
+        {"reward": 0.5, "passed": 3, "total": 4},
+    )
+    assert (scored.error or "").startswith("the verifier ended with timeout; reward.json is ")
+    assert (scored.error or "").endswith("only its top-level numbers were kept")
+    plain = await verify(Verifier(b'{"reward": 0.5}', end="timeout"))
+    assert (plain.reward, plain.error) == (0.5, "the verifier ended with timeout")
+    done = await verify(Verifier(b'{"reward": 0.5}'))
+    assert (done.end, done.error) == ("exited", None)
 
 
 @pytest.mark.anyio

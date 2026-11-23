@@ -1202,8 +1202,9 @@ class Runner:
         out = await run(read, VERIFY_PREP_S, cwd="/", limit=REWARD_BYTES + 3)
         kind, _, body = out.stdout.partition(b"\n")
         reward, metrics, source, error = _reward(kind, body)
-        if f.end != "exited" and error is None:
-            error = f"the verifier ended with {f.end}"
+        if f.end != "exited":
+            ended = f"the verifier ended with {f.end}"
+            error = ended if error is None else f"{ended}; {error}"
         return TaskScored(
             exec_id=f.exec_id,
             end=f.end,
