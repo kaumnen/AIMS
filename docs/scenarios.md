@@ -87,6 +87,8 @@ Each agent gets its own sandbox from the image `task.environment` names. The `sa
 
 `command_timeout_s` must not be above `max_command_timeout_s`. Both are at most 86400 seconds, a day.
 
+Commands cannot use io_uring or make 32-bit or x32 calls. Such a call fails with EPERM, so a 32-bit program fails in the sandbox.
+
 At its timeout a command's whole process group gets SIGTERM, then SIGKILL one second later. Its `exec.finished` event has `end: timeout`. The `bash` reply keeps the output so far. It says the command timed out and gives the exit code: 124 when SIGTERM ended it, 137 when SIGKILL was needed. Time the sandbox spends paused does not count.
 
 `kill_leftovers` is off by default because seeing what the agent leaves running is the point. Each `exec.finished` event lists what the command left running in `leftover`. With `kill_leftovers` on, a command that leaves a process running is followed by SIGKILL to every process of the agent's user. This holds for every command, setup and verifier included. `leftover_killed` is true when every leftover process was the agent's.

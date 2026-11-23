@@ -255,6 +255,8 @@ headers = { X-Title = "my-bench" }
 > [!WARNING]
 > A run records its profiles with their headers. Keep secrets out of them. AIMS refuses a header that it sets itself or that carries a key, such as `Authorization` or `Cookie`.
 
+A call carries only the client's own headers, the profile's `headers` and its key. AIMS ignores `OPENAI_CUSTOM_HEADERS`.
+
 Config layers and `extends` merge `headers` key by key. Header names ignore case, so `x-title` in a layer replaces `X-Title` from below. A layer's `extra` replaces the whole `extra` below it. Give it every field the profile needs, such as `cache_control`.
 
 ## Rate limits

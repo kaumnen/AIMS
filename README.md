@@ -117,7 +117,7 @@ npx skills add kaumnen/AIMS -a claude-code   # or -a codex
 | `--monitor` | What runs | Budget per run |
 | --- | --- | --- |
 | `off` | Nothing | $0 |
-| `signals` | 41 pattern detectors, no model | $0 |
+| `signals` | 42 pattern detectors, no model | $0 |
 | `standard` (default) | Signals, model sweeps every 5 steps, a judge at the end | At least $5 per agent |
 | `research` | Adds a second judge that does not see the flags | At least $8 per agent |
 

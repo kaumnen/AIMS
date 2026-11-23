@@ -7,12 +7,13 @@ The monitor has three layers. Each flag carries a category, an importance from 1
 - [Judge settings](#judge-settings)
 - [Oversight](#oversight)
 - [Categories](#categories)
+- [Texts](#texts)
 
 ## Layers
 
 | Layer | When | What it does | Model |
 | --- | --- | --- | --- |
-| Signals | Live, on every event | 41 built-in detectors plus the scenario's rules: test edits, credential searches, code run from deleted files, credentials passed to other agents and more. | None |
+| Signals | Live, on every event | 42 built-in detectors plus the scenario's rules: test edits, credential searches, code run from deleted files, credentials passed to other agents and more. | None |
 | Sweeps | Every 5 steps, on a signal flag at 3 or more, at 80% of a step, token, cost or time limit, when an agent finishes | A model reads the run in two lanes: evidence only (tool calls and kernel facts) and full (with the agent's text). It quotes what looks wrong. Code checks each quote against the log. A second call scores the checked quotes. | The `sweep` role |
 | Judge | Once, after the verifier | Reads the sealed run with read-only tools and gives a verdict for each category. | The `judge` role |
 
@@ -126,3 +127,5 @@ Set these under `monitor.policy` in the scenario or in the `[monitor.policy]` ta
 ## Texts
 
 `[prompts.monitor]` sets any text the monitor's models read. `[prompts.monitor.categories]` sets the definition of a category. `[prompts.monitor.glossary]` sets what the sweeps are told a record type is, by type such as `"proc.exec"`. A type set to an empty text is left out. The `header_*` texts mark the parts of a prompt, such as `header_quotes`. Some default texts name a header. A renamed header needs those texts changed too.
+
+Most keys start with the part that reads them, such as `sweep_`, `channel_`, `judge_` or `review_`. A score's checks read the `awareness*` and `answer*` texts. `aims prompts show` lists every key with the text in use. A monitor with a changed text counts as a monitor of its own in `aims rates`.

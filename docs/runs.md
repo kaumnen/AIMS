@@ -10,11 +10,14 @@
 - A run never changes after it is sealed. Monitor runs and scores are new runs that point at it.
 - `--series <name> --runs 5` makes five runs in a row, each going on from the one before.
 - Budgets cap steps, output tokens, cost and time for each agent and for the run. `aims estimate` prints what a run can cost, with the score made after it. `--no-score` leaves the score out. `aims spend` shows what each provider was paid.
+- When the estimate passes `confirm_above_usd` under `[estimate]`, $20 by default, `aims run` asks before it starts. Without a terminal it stops. `--yes` starts it anyway.
 - A cost cap holds a call's retries, so a run cannot exceed its cost caps by more than a last step per agent. A step cap bounds the cost with every attempt the profile's `retries` give each call, since a provider may bill each failed one.
 
 ### Forks
 
 `aims run --replay <run> --fork-at agent:12 --inject "<message>"` replays the recorded answers up to step 12, then goes on live. `--fork-at` also takes `@seq` (after an event) or `N` (for a run of one agent). Add `--samples 5` for five forks. In the UI an operator gets **Fork from here** on each step of a sealed run.
+
+The live steps call each agent's profile as the run recorded it. The config needs a profile of that name with the same backend, URL and key variable. Without one the fork stops. `--profile` gives every agent another profile.
 
 A fork replays a step only when the run recorded a result for each of its tool calls. A run that ended in a step before its tool calls returned has none for that step.
 
