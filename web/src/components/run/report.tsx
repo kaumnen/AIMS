@@ -32,6 +32,10 @@ export const SECTIONS: Record<SectionId, ComponentType<SectionProps>> = {
   appendix: AppendixSection,
 };
 
+// The Markdown download under way. The report of its run from another source stops it: its file
+// would be of a report no longer shown.
+let reading: { run: string; from: string; stop: AbortController } | null = null;
+
 // The run's report, built by the server from its log, as `aims report` writes it.
 export default function ReportTab({
   runId,
@@ -69,6 +73,11 @@ export default function ReportTab({
   }, [more, fetching, failed, steps]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  // the source in the URL, or else the one the server picked for the report shown
+  const from = source ?? q.data?.header.pins.source;
+  useEffect(() => {
+    if (reading?.run === runId && from !== undefined && from !== reading.from) reading.stop.abort();
+  }, [runId, from]);
   // Print opens every fold and names the page as `aims report --html` does, so a saved PDF has
   // the run in its name. Both go back after.
   const article = useRef<HTMLElement>(null);
@@ -138,10 +147,14 @@ export default function ReportTab({
     print: (seq, run = runId) => printSeq(pins.base_url, run, seq),
   };
   const download = async () => {
+    const stop = new AbortController();
+    reading = { run: runId, from: source ?? pins.source, stop };
     setSaving(true);
     setSaveError(false);
     try {
-      const url = URL.createObjectURL(await reportMarkdown(runId, pins.source));
+      const blob = await reportMarkdown(runId, pins.source, stop.signal);
+      stop.signal.throwIfAborted();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `aims-report-${runId}.md`;
@@ -149,7 +162,7 @@ export default function ReportTab({
       // some browsers start the download after click returns
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch {
-      setSaveError(true);
+      if (!stop.signal.aborted) setSaveError(true);
     } finally {
       setSaving(false);
     }

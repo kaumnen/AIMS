@@ -56,10 +56,15 @@ export function reportQuery(runId: string, source: string | undefined, open: boo
 }
 
 // The same report as the Markdown file `aims report` writes.
-export async function reportMarkdown(runId: string, source: string): Promise<Blob> {
+export async function reportMarkdown(
+  runId: string,
+  source: string,
+  signal: AbortSignal,
+): Promise<Blob> {
   const { data, error } = await client.GET("/api/runs/{run_id}/report", {
     params: { path: { run_id: runId }, query: { source, format: "md" } },
     parseAs: "blob",
+    signal,
   });
   if (error) throw error;
   return data;

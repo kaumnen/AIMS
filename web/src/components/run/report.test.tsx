@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { reportSections, type ReportWarning } from "@/api/report";
 import type { RunSummary } from "@/api/runs";
@@ -137,6 +137,83 @@ test("a download that failed says so on its own source only", async () => {
   await waitFor(() => expect(reportRequests().at(-1)?.get("source")).toBe("live"));
   expect(await screen.findByRole("button", { name: "Download Markdown" })).toBeTruthy();
   expect(screen.queryByText("The Markdown did not download.")).toBeNull();
+});
+
+// Download Markdown with its read held until `answer`.
+async function heldDownload() {
+  const made = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:report");
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+  onTestFinished(() => {
+    made.mockRestore();
+    click.mockRestore();
+  });
+  const held = Promise.withResolvers<Response>();
+  let read: Request | undefined;
+  const base = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (request) => {
+    if (new URL(request.url).searchParams.get("format") !== "md") return base(request);
+    read = request;
+    return held.promise;
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Download Markdown" }));
+  await waitFor(() => expect(read).toBeDefined());
+  return {
+    stopped: () => read?.signal.aborted,
+    answer: () => held.resolve(new Response("# the review's report\n")),
+    saved: () => click.mock.calls.length,
+  };
+}
+
+const settle = () => act(() => new Promise((r) => setTimeout(r, 50)));
+
+test("a download under way stops when the source in the URL changes", async () => {
+  const router = renderAt(`/runs/${RUN}?tab=report`);
+  const download = await heldDownload();
+  fireEvent.click(screen.getByRole("button", { name: "Build from this source: the live monitor" }));
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ tab: "report", source: "live" }),
+  );
+  await waitFor(() => expect(download.stopped()).toBe(true));
+  download.answer();
+  await settle();
+  expect(download.saved()).toBe(0);
+  expect(screen.queryByText("The Markdown did not download.")).toBeNull();
+});
+
+test("a download under way stops when a build picks another source", async () => {
+  renderAt(`/runs/${RUN}?tab=report`);
+  const download = await heldDownload();
+  const report = fullReport();
+  state.report = {
+    ...report,
+    header: { ...report.header, pins: { ...report.header.pins, source: "live" } },
+  };
+  fireEvent.click(screen.getByRole("button", { name: "Build again" }));
+  await waitFor(() => expect(download.stopped()).toBe(true));
+  download.answer();
+  await settle();
+  expect(download.saved()).toBe(0);
+  expect(screen.queryByText("The Markdown did not download.")).toBeNull();
+});
+
+test("a download under way goes on as the run ends or the page shows another tab", async () => {
+  state.detail = reportDetail({ status: "running", state: "running", ended_at: null });
+  renderAt(`/runs/${RUN}?tab=report`);
+  const download = await heldDownload();
+  // the run ends: its report is built again, from the same source
+  state.detail = reportDetail();
+  const stream = FakeEventSource.all.findLast((s) => s.url.includes("runs=true"));
+  if (!stream) throw new Error("no list stream");
+  act(() => stream.send({ kind: "run", run: state.detail.run }));
+  await waitFor(() => expect(reportRequests().filter((q) => !q.has("format"))).toHaveLength(2));
+  await screen.findByRole("button", { name: "Download Markdown" });
+  fireEvent.click(screen.getByRole("tab", { name: "Steps" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Download Markdown" })).toBeNull(),
+  );
+  expect(download.stopped()).toBe(false);
+  download.answer();
+  await waitFor(() => expect(download.saved()).toBe(1));
 });
 
 test("hidden characters from the log show as visible escapes", () => {
