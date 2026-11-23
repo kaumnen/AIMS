@@ -17,7 +17,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, NoReturn, cast
 from urllib.parse import urlsplit
 
 import aiodocker
@@ -52,6 +52,7 @@ from aims.server.serve import (
     _spawn_runner,
     check,
     connect_host,
+    hold,
     listen,
     open_link,
     open_sockets,
@@ -1998,8 +1999,13 @@ async def ui_that_ends(data: Path, *args: str) -> tuple[int, list[str]]:
         env=env,
         cwd=data.parent,
     )
-    async with asyncio.timeout(60):
-        out, _ = await proc.communicate()
+    try:
+        async with asyncio.timeout(60):
+            out, _ = await proc.communicate()
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
     assert proc.returncode is not None
     return proc.returncode, out.decode().splitlines()
 
@@ -2052,6 +2058,73 @@ async def test_a_second_aims_ui_on_its_port_leaves_the_first_alone(tmp_path: Pat
         proc.send_signal(signal.SIGTERM)
         async with asyncio.timeout(30):
             assert await proc.wait() == 0
+
+
+async def test_a_second_aims_ui_on_its_data_dir_is_refused(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner") as (proc, _):
+        data = tmp_path / "server"
+        before = (data / "server.json").read_text()
+        local = json.loads(before)
+        code, lines = await ui_that_ends(data, "--port", "0")
+        assert (code, lines) == (
+            1,
+            [f"error: the data dir {data} is in use by the `aims ui` on {local['url']}"],
+        )
+        # its server.json and operator token are as they were
+        assert (data / "server.json").read_text() == before
+        async with httpx2.AsyncClient(
+            base_url=local["url"],
+            headers={"Authorization": f"Bearer {local['operator']}"},
+            trust_env=False,
+        ) as c:
+            assert (await c.get("/api/health")).status_code == 200
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await proc.wait() == 0
+
+
+async def test_aims_ui_on_a_data_dir_in_use_opens_none_of_its_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def opened(*args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError("the state was opened")
+
+    monkeypatch.setattr(serve_module, "open_state", opened)
+    data = tmp_path / "server"
+    held = hold(data)
+    assert held is not None
+    try:
+        options = UiOptions(port=0, data=data, runner=False, open_browser=False)
+        message = f"^the data dir {re.escape(str(data))} is in use by another `aims ui`$"
+        with pytest.raises(ServeError, match=message):
+            await serve(options)
+        (data / "server.json").write_text('{"url": "http://127.0.0.1:1", "token": "secret"}')
+        with pytest.raises(ServeError, match=r"in use by the `aims ui` on http://127.0.0.1:1$"):
+            await serve(options)
+        (data / "server.json").write_text("[")
+        with pytest.raises(ServeError, match=r"in use by another `aims ui`$"):
+            await serve(options)
+        assert sorted(p.name for p in data.iterdir()) == ["server.json", "server.lock"]
+    finally:
+        os.close(held)
+    again = hold(data)
+    assert again is not None
+    os.close(again)
+
+
+def test_a_data_dir_on_a_file_system_without_locks_is_used_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    def no_locks(fd: int, operation: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(serve_module.fcntl, "flock", no_locks)
+    with caplog.at_level(logging.WARNING, logger="aims.server"):
+        assert hold(tmp_path / "server") is None
+    assert "cannot lock" in caplog.text
+    assert "No locks available; a second aims ui on this data dir would not be stopped" in (
+        caplog.text
+    )
 
 
 async def test_aims_ui_on_the_port_of_another_is_refused(tmp_path: Path) -> None:

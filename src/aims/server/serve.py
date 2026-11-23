@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import errno
+import fcntl
 import html
 import json
 import logging
@@ -35,6 +36,8 @@ log = logging.getLogger("aims.server")
 
 PORT = 8484
 SERVER_JSON = "server.json"
+# An `aims ui` holds a lock on this file in its data dir for as long as it runs
+LOCK_FILE = "server.lock"
 LOCAL_RUNNER = "local"
 UI_RUNNER = "AIMS_UI_RUNNER"
 # What `aims ui` writes on its runner's stdin for a later stop: kill now
@@ -44,8 +47,8 @@ BACKLOG = 2048
 # As asyncio's create_server sets it by default
 REUSE_ADDRESS = os.name == "posix" and sys.platform != "cygwin"
 IN_USE_HINT = (
-    "another `aims ui` may be running with this data dir; `aims open` prints a link to it,"
-    " or give another --port"
+    "another `aims ui` may be running with this data dir; `aims open` prints a link to it."
+    " If none runs, give another --port"
 )
 
 
@@ -247,16 +250,59 @@ async def serve(o: UiOptions) -> int:
     in_use = IN_USE_HINT if (o.data / SERVER_JSON).exists() else None
     sockets = await listen(o.host.strip("[]"), o.port, in_use=in_use)
     try:
-        return await _serve(o, sockets)
+        lock = hold(o.data)
+        try:
+            return await _serve(o, sockets)
+        finally:
+            # last, once the state is closed
+            if lock is not None:
+                os.close(lock)
     finally:
         # uvicorn closes them when it stops; this covers a start that ended before
         for sock in sockets:
             sock.close()
 
 
+def hold(data: Path) -> int | None:
+    """An fd that holds the lock on the data dir `data`, which is made if need be, so that one
+    `aims ui` at a time uses it. The lock ends with the fd or the process. A file system
+    without locks gives None and a warning."""
+    data.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = data / LOCK_FILE
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        raise ServeError(f"cannot open {path}: {e.strerror or e}") from None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise ServeError(in_use_by(data)) from None
+    except OSError as e:
+        os.close(fd)
+        log.warning(
+            "cannot lock %s: %s; a second aims ui on this data dir would not be stopped",
+            path,
+            e.strerror or e,
+        )
+        return None
+    return fd
+
+
+def in_use_by(data: Path) -> str:
+    """Why `aims ui` cannot use the data dir `data`, with the address of the one that does if
+    its server.json tells. The token in it stays out."""
+    try:
+        info = json.loads((data / SERVER_JSON).read_text(encoding="utf-8"))
+        url = info.get("public") or info.get("url")
+    except OSError, ValueError, AttributeError:
+        url = None
+    if isinstance(url, str) and url:
+        return f"the data dir {data} is in use by the `aims ui` on {url}"
+    return f"the data dir {data} is in use by another `aims ui`"
+
+
 async def _serve(o: UiOptions, sockets: list[socket.socket]) -> int:
-    if not o.data.exists():
-        o.data.mkdir(mode=0o700, parents=True)
     tls = o.tls_cert is not None
     shown = None if o.public_url is None else public_url(o.public_url)
     # Behind a TLS proxy the browser is on https though this server is not.
