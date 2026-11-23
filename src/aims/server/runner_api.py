@@ -17,7 +17,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from aims import __version__
 from aims.aio import settle
-from aims.events import Diverged, Gap, Invalid, MissingBlobs, RunCorrupt, split_lines
+from aims.events import Diverged, Gap, Invalid, MissingBlobs, RunCorrupt, logged_events, split_lines
 from aims.events.blobs import BlobError
 from aims.events.chain import MAX_LINE
 from aims.events.store import TruthRefused, is_run_id
@@ -590,7 +590,9 @@ async def ingest_events(
     if job is not None and job.state == "claimed":
         moved = await state.db.set_job(run_id, "running")
     after = -1 if before is None else before.seq
-    for event in await store.events(run_id, after=after, types=["model.response"], limit=1000):
+    for event in await logged_events(
+        store, run_id, after=after, types=["model.response"], limit=1000
+    ):
         call_id = event.data.get("call_id")
         if isinstance(call_id, str):
             state.inflight.drop(run_id, call_id, final=event.data.get("retry") is not True)

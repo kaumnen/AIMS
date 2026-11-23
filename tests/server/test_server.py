@@ -43,7 +43,9 @@ from aims.events import (
     AgentInput,
     BlobRef,
     Draft,
+    Event,
     LocalEventStore,
+    ModelResponse,
     ResourceSample,
     RunFinished,
     RunStarted,
@@ -55,6 +57,7 @@ from aims.events import (
 )
 from aims.events.blobs import ZSTD_MAGIC, decode, decoded
 from aims.events.chain import MAX_LINE
+from aims.events.index import Index
 from aims.models import DeltaBus
 from aims.models.keys import KeysError, parse
 from aims.node import shipper as shipper_module
@@ -2882,6 +2885,34 @@ def test_a_finished_call_keeps_no_deltas_that_come_after_its_response() -> None:
     inflight.drop("r", "m2", final=False)
     inflight.add([d("m2", "start", attempt=2)])
     assert [(x.call_id, x.attempt) for x in inflight.of({"r"})] == [("m2", 2)]
+
+
+async def test_a_logged_response_drops_its_deltas_while_the_index_is_behind(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server's index takes no batch with a model response, as when another process
+    holds its write lock: the response is read from the log, so its call's deltas go."""
+    started = RunStarted(scenario="control", oversight="observe", agents=["a"])
+    run_id = await local.create_run(started)
+    reply = ModelResponse(call_id="m1", attempt=1, status="completed", latency_ms=1)
+    await local.append(run_id, [Draft(reply, "a")])
+    lines = split_lines((local.root / run_id / "events.jsonl").read_bytes())
+    assert (await raw_events(cp, fake.name, run_id, lines[:1])).status_code == 200
+    delta = WireDelta(run_id=run_id, agent_id="a", call_id="m1", attempt=1, kind="text", text="x")
+    cp.state.inflight.add([delta])
+    real = Index.add
+    refused: list[int] = []
+
+    async def add(index: Index, events: Sequence[Event], head: Any, **kw: Any) -> None:
+        if any(e.type == "model.response" for e in events):
+            refused.extend(e.seq for e in events)
+            raise sqlite3.OperationalError("database is locked")
+        await real(index, events, head, **kw)
+
+    monkeypatch.setattr(Index, "add", add)
+    assert (await raw_events(cp, fake.name, run_id, lines[1:])).status_code == 200
+    assert refused
+    assert cp.state.inflight.of({run_id}) == []
 
 
 async def sse_inflight(cp: CP, run_id: str) -> list[Any]:
