@@ -171,6 +171,7 @@ class ModelClient:
         request_params = params(profile, prompt)
         retries = profile.retries
         spent: float | None = None
+        billed = ModelUsage()
         unseen = 0.0
         attempt = counted = 0
         limited_since: float | None = None
@@ -248,12 +249,13 @@ class ModelClient:
                     outcome,
                     retry,
                     spent,
+                    billed,
                     cost,
                     unseen,
                     sized,
                 )
             )
-            spent = reply.cost_usd
+            spent, billed = reply.cost_usd, reply.billed
             asked = limited or outcome.ratelimit.retry_after_ms is not None
             if account is not None and outcome.status == "error" and asked:
                 account.pause(wait)
@@ -452,12 +454,14 @@ class ModelClient:
         o: _Outcome,
         retry: bool,
         spent: float | None,
+        billed: ModelUsage,
         priced: tuple[float | None, CostSource | None],
         unseen: float,
         sized: float = 0.0,
     ) -> Reply:
-        """Log the attempt with its own `priced` cost; the reply adds `spent`, what the attempts
-        before it cost, and carries `unseen` and `sized`."""
+        """Log the attempt with its own `priced` cost; the reply adds `spent` and `billed`, what
+        the attempts before it cost and the tokens they counted, and carries `unseen` and
+        `sized`."""
         a = o.assembled
         ex = o.exchange
         datas: list[bytes] = []
@@ -527,6 +531,7 @@ class ModelClient:
             reasoning_kind=a.reasoning_kind,
             finish_reason=a.finish_reason,
             usage=a.usage,
+            billed=_summed(billed, a.usage),
             cost_usd=_plus(spent, cost),
             unseen_usd=unseen,
             sized_usd=sized,
@@ -691,6 +696,20 @@ def _cost(price: Price | None, usage: ModelUsage) -> float | None:
     cached = min(cached, given)
     total = (given - cached) * price.input + cached * price.cached + made * price.output
     return round(total / 1_000_000, 10)
+
+
+def _summed(a: ModelUsage, b: ModelUsage) -> ModelUsage:
+    """The token counts of `a` and `b` together. A count neither of them has stays None."""
+
+    def add(x: int | None, y: int | None) -> int | None:
+        return x if y is None else y if x is None else x + y
+
+    return ModelUsage(
+        input_tokens=add(a.input_tokens, b.input_tokens),
+        cached_tokens=add(a.cached_tokens, b.cached_tokens),
+        output_tokens=add(a.output_tokens, b.output_tokens),
+        reasoning_tokens=add(a.reasoning_tokens, b.reasoning_tokens),
+    )
 
 
 def _plus(spent: float | None, cost: float | None) -> float | None:

@@ -103,7 +103,7 @@ class Totals:
     cost_complete: bool = True
 
     def add(self, reply: Reply, *, step: bool) -> None:
-        u = reply.usage
+        u = reply.billed
         self.steps += step
         self.input_tokens += u.input_tokens or 0
         self.cached_tokens += u.cached_tokens or 0

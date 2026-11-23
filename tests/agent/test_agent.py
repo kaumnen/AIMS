@@ -30,6 +30,7 @@ from aims.events import (
     AgentStep,
     ExecFinished,
     LocalEventStore,
+    ModelResponse,
     ReplayDivergence,
     RunStarted,
     ToolCall,
@@ -453,6 +454,28 @@ async def test_billed_retries_stay_within_the_estimate_s_ceiling(store: LocalEve
     assert (finished.reason, finished.steps) == ("budget_steps", 1)
     assert ceiling == pytest.approx(4 * 0.002)
     assert finished.cost_usd == pytest.approx(ceiling)
+
+
+async def test_the_tokens_of_a_billed_failed_attempt_count_as_its_cost_does(
+    store: LocalEventStore,
+) -> None:
+    """The output cap and the agent's usage count the tokens of every attempt, as the provider
+    may bill a failed one for them."""
+    p = retrying()
+    ok = call("bash", command="true") | {"usage": FULL}
+    budget = Budget(output_tokens=900, steps=3)
+    agent, run_id = await make_agent(store, Script(BILLED, ok, ok), p=p, budget=budget)
+    finished = await agent.run()
+    # step 1 wrote 500 output tokens in its failed attempt and 500 in its answer
+    assert (finished.reason, finished.steps) == ("budget_output_tokens", 1)
+    responses = await payloads(store, run_id, ModelResponse)
+    assert [r.usage.output_tokens for r in responses] == [500, 500]
+    assert finished.usage.output_tokens == 1000
+    assert finished.usage.input_tokens == 2000
+    assert finished.cost_usd == pytest.approx(2 * 0.002)
+    # the step keeps the answer's own usage; its total counts both attempts
+    (step,) = await payloads(store, run_id, AgentStep)
+    assert (step.usage.output_tokens, step.total.output_tokens) == (500, 1000)
 
 
 async def test_the_cost_cap_holds_a_call_s_billed_retries(store: LocalEventStore) -> None:

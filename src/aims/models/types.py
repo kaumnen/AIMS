@@ -74,10 +74,12 @@ class Prompt(_Strict):
 
 class Reply(_Strict):
     """The outcome of a model call, from its last attempt. `cost_usd` sums every attempt that
-    had a price, None when none had one. `unseen_usd` is what the failed attempts that may
-    have been billed with no cost reported count at under the call's spend cap. `sized_usd` is
-    what an answer of a priced profile that came with no token counts and no cost is taken to
-    cost by its size. Both count against caps only, never as cost."""
+    had a price, None when none had one. `billed` sums the token counts of every attempt, as a
+    failed one may have been billed for its tokens; `usage` holds the last attempt's alone.
+    `unseen_usd` is what the failed attempts that may have been billed with no cost reported
+    count at under the call's spend cap. `sized_usd` is what an answer of a priced profile that
+    came with no token counts and no cost is taken to cost by its size. Both count against caps
+    only, never as cost."""
 
     call_id: str
     profile: str
@@ -87,6 +89,7 @@ class Reply(_Strict):
     reasoning_kind: ReasoningKind = "none"
     finish_reason: str | None = None
     usage: ModelUsage = Field(default_factory=ModelUsage)
+    billed: ModelUsage = Field(default_factory=ModelUsage)
     cost_usd: float | None = None
     unseen_usd: float = 0.0
     sized_usd: float = 0.0
