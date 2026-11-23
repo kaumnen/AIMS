@@ -434,6 +434,34 @@ def test_aims_monitor_quiet_prints_no_estimate_but_the_no_price_warning(
     assert " ".join(quiet.stderr.split()) == f"{warning} error: not run"
 
 
+def test_aims_monitor_warns_of_each_of_its_profiles_with_no_price(
+    runs: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As `aims run` does: a profile that sets no price and names no list price row."""
+    root, origin = runs
+    config = tmp_path / "aims.toml"
+    config.write_text(UNLISTED.replace('price_key = "vendor-x/nothing"\n', ""))
+    monkeypatch.setenv("MODEL_API_KEY", "unused")
+    monkeypatch.setenv("AIMS_KEYS", "MODEL_API_KEY=https://api.example.com/v1")
+
+    async def stopped(*args: Any, **kwargs: Any) -> Any:
+        raise RunError("not run")
+
+    monkeypatch.setattr(offline, "monitor_offline", stopped)
+    args = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--config", str(config)]
+    warning = "warning: profile watch has no price, so its calls are not counted"
+    loud = invoke(*args, "--monitor", "standard")
+    assert loud.exit_code == 1, loud.output
+    said = " ".join(loud.stderr.split())
+    assert "Review: standard monitor; its models have no price" in said
+    assert warning in said
+    quiet = invoke(*args, "--monitor", "standard", "--quiet")
+    assert quiet.exit_code == 1, quiet.output
+    assert " ".join(quiet.stderr.split()) == f"{warning} error: not run"
+    data = lines(invoke(*args, "--monitor", "standard", "--json").stdout)
+    assert [(x["type"], x["unpriced"]) for x in data] == [("estimate", ["watch"])]
+
+
 def test_aims_monitor_lays_the_config_file_over_the_scenario(
     runs: tuple[Path, str], tmp_path: Path
 ) -> None:

@@ -6666,7 +6666,8 @@ export interface components {
          *     with no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay
          *     for before the cap, from past reviews' sweep cost per step or else the sweep prices; None
          *     when they cover them all. `total` is every sample together, and `confirm` says they start
-         *     only with a person's yes, as runs do. `listed` and `unlisted` are as in an Estimate.
+         *     only with a person's yes, as runs do. `unpriced`, `listed` and `unlisted` are as in an
+         *     Estimate, for the monitor's profiles.
          */
         ReviewEstimate: {
             /** Ceiling Usd */
@@ -6732,6 +6733,8 @@ export interface components {
             unlisted: {
                 [key: string]: string;
             };
+            /** Unpriced */
+            unpriced: string[];
         };
         /**
          * RunCaps

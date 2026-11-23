@@ -490,8 +490,10 @@ async def test_a_review_by_a_listed_monitor_is_sized_and_capped_at_its_list_pric
         e = await estimate_review(store, origin, live, "full", listing=listing)
     assert not plain.priced
     assert plain.lines == [
-        "Review: standard monitor; its models have no price, so its cost is not counted."
+        "Review: standard monitor; its models have no price, so its cost is not counted.",
+        "warning: profile listed-watch has no price, so its calls are not counted",
     ]
+    assert (plain.unpriced, e.unpriced) == (["listed-watch"], [])
     assert (e.priced, e.ceiling_usd, e.covers) == (True, live.budget_usd, None)
     assert e.confirm == (live.budget_usd > e.confirm_above_usd)
     assert e.lines[0] == (

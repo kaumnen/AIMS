@@ -1386,7 +1386,7 @@ def warning_lines(e: Estimate | ReviewEstimate) -> list[str]:
         return [*unpriced, *(f"warning: {w}" for w in e.warnings)]
     if e.preset not in MODEL_PRESETS:
         return []
-    return [unpriced_line(n, why) for n, why in e.unlisted.items()]
+    return [unpriced_line(n, e.unlisted.get(n)) for n in e.unpriced]
 
 
 def _replayed_line(part: VariantCost) -> str:
@@ -1559,7 +1559,8 @@ class ReviewEstimate(_Out):
     with no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay
     for before the cap, from past reviews' sweep cost per step or else the sweep prices; None
     when they cover them all. `total` is every sample together, and `confirm` says they start
-    only with a person's yes, as runs do. `listed` and `unlisted` are as in an Estimate."""
+    only with a person's yes, as runs do. `unpriced`, `listed` and `unlisted` are as in an
+    Estimate, for the monitor's profiles."""
 
     run_id: str
     preset: Preset
@@ -1577,6 +1578,7 @@ class ReviewEstimate(_Out):
     doubled: bool = False
     confirm_above_usd: float = CONFIRM_ABOVE_USD
     confirm: bool = False
+    unpriced: list[str] = Field(default_factory=list)
     listed: list[ListedPrice] = Field(default_factory=list)
     unlisted: dict[str, str] = Field(default_factory=dict)
     lines: list[str] = Field(default_factory=list)
@@ -1608,6 +1610,7 @@ async def estimate_review(
         confirm_above_usd=confirm_above_usd,
     )
     listing = listing or Listing()
+    out.unpriced = sorted({p.name for p in _watch_profiles(monitor) if p.price is None})
     for prof in _watch_profiles(monitor):
         if any(entry.profile == prof.name for entry in out.listed):
             continue
