@@ -26,7 +26,6 @@ from aims.events.blobs import (
     Ends,
     Part,
     holds_blob,
-    stored_size,
 )
 from aims.events.chain import MAX_LINE, ChainError, Head, follow, seal
 from aims.events.disk import make_dir, sweep, sync_dir, write_all
@@ -1020,14 +1019,10 @@ class LocalEventStore:
     async def put_blob_stream(
         self, run_id: str, sha256: str, chunks: AsyncIterator[bytes], *, limit: int
     ) -> BlobRef:
-        """Store a blob file sent as another store holds it, checked against `sha256`."""
+        """Store a blob file sent as another store holds it, checked against `sha256`. One
+        already stored is written again from what is sent, through the same caps: a good copy
+        then takes the place of a file an older writer kept past the bound."""
         blobs = self._blobs(run_id)
-        path = blobs.path(sha256)
-        if path.is_file():
-            async for _ in chunks:
-                pass
-            await asyncio.to_thread(sync_dir, blobs.root)
-            return BlobRef(sha256=sha256, size=await asyncio.to_thread(stored_size, path))
         writer: BlobWriter = await asyncio.to_thread(blobs.writer, sha256, limit=limit)
         try:
             pending: list[bytes] = []

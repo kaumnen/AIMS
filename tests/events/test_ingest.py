@@ -829,3 +829,33 @@ async def test_an_ingested_reference_that_names_no_sha256_is_invalid(
     with pytest.raises(Invalid, match="event 1 names a blob by no sha256") as caught:
         await copy.ingest(run_id, lines)
     assert caught.value.head == Head()
+
+
+async def test_a_blob_sent_again_goes_through_the_caps_and_heals_a_file_past_the_bound(
+    tmp_path: Path,
+) -> None:
+    """A store once drained the body of a blob it held with no cap and kept its file as it
+    was, so a good copy never took the place of one an older writer kept past the bound."""
+    async with await LocalEventStore.open(tmp_path / "s") as store:
+        run_id = await store.create_run(STARTED)
+        ref = await store.put_blob(run_id, b"hello")
+        limit = 1 << 20
+        pulled = 0
+
+        async def flood() -> AsyncIterator[bytes]:
+            nonlocal pulled
+            while pulled < 64 * compress_bound(limit):
+                pulled += 1 << 16
+                yield bytes(1 << 16)
+
+        with pytest.raises(BlobError, match=f"over {compress_bound(limit)} bytes"):
+            await store.put_blob_stream(run_id, ref.sha256, flood(), limit=limit)
+        # what was pulled past the cap is at most the batch the writer was handed
+        assert pulled <= compress_bound(limit) + (1 << 20) + (1 << 16)
+        assert await store.get_blob(run_id, ref.sha256, 5) == b"hello"
+        path = store.blob_path(run_id, ref.sha256)
+        path.write_bytes(PADDED["empty frames"])
+        assert holds_blob(path) is None
+        out = await store.put_blob_stream(run_id, ref.sha256, chunks(HELLO), limit=limit)
+        assert out == ref
+        assert (holds_blob(path), path.read_bytes()) == (5, HELLO)

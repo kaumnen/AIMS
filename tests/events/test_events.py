@@ -1105,7 +1105,8 @@ async def test_blobs_already_stored_are_synced_again(
 
     synced.clear()
     assert await store.put_blob_stream(run_id, ref.sha256, chunks(), limit=1 << 20) == ref
-    assert synced == [ident(blobs)]
+    # written again through the writer, which syncs the directory once it is in place
+    assert synced[-1] == ident(blobs)
 
 
 async def test_a_new_run_syncs_its_entries_before_its_lines(
