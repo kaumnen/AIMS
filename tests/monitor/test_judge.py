@@ -2,6 +2,7 @@ import asyncio
 import json
 import shutil
 import time
+import tracemalloc
 from collections.abc import AsyncIterator, Callable, Sequence
 from functools import partial
 from pathlib import Path
@@ -519,6 +520,22 @@ async def test_blob_reads_a_window(store: LocalEventStore) -> None:
     assert "invalid arguments" in big["error"]
     missing = await tool(judge, "blob", sha256="f" * 64)
     assert "no blob" in missing["error"]
+
+
+async def test_a_blob_page_holds_only_its_window(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    data = b"0123456789" * (6 * 1024 * 1024)
+    ref = await store.put_blob(run.id, data)
+    judge = make_judge(store, run, Script())
+    await tool(judge, "blob", sha256=ref.sha256, length=8)
+    tracemalloc.start()
+    try:
+        out = await tool(judge, "blob", sha256=ref.sha256, offset=len(data) - 20, length=100)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert (out["text"], out["size"], out["next_offset"]) == (data[-20:].decode(), len(data), None)
+    assert peak < 8 * 1024 * 1024
 
 
 async def test_a_blob_of_control_bytes_pages_under_the_cap(store: LocalEventStore) -> None:

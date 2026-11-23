@@ -49,6 +49,7 @@ from aims.events import (
     ProcFork,
     payload_type,
 )
+from aims.events.blobs import Part
 from aims.events.schema import format_ts, is_blob_ref
 from aims.models import (
     Item,
@@ -533,6 +534,13 @@ class Reader:
                 self._blobs[key] = data
                 self._cached += len(data)
         return data
+
+    async def part(self, run_id: str, sha256: str, start: int, length: int) -> Part:
+        """`length` bytes of a blob from `start`, from the cache when it holds the blob."""
+        data = self._blobs.get((run_id, sha256))
+        if data is not None:
+            return Part(data[start : start + length], min(start, len(data)), len(data))
+        return await self.store.get_part(run_id, sha256, start, length)
 
     async def text(self, run_id: str, value: Any, limit: int, *, end: bool = False) -> str:
         """A `Content` value as text, clipped to `limit` characters: its head and tail, or with
@@ -1478,22 +1486,24 @@ class Judge:
         return dumps({"matches": rows, "next_from_seq": nxt})
 
     async def _blob(self, args: BlobArgs) -> str:
+        offset = args.offset or 0
         try:
-            data = await self.reader.blob(self.source, args.sha256)
+            part = await self.reader.part(
+                self.source, args.sha256, offset, args.length or BLOB_LENGTH
+            )
         except BlobError, KeyError:
             return dumps({"error": f"the run has no blob {args.sha256}"})
-        offset = args.offset or 0
-        chunk = data[offset : offset + (args.length or BLOB_LENGTH)]
+        chunk, size = part.data, part.size
 
         def page(n: int, cut: bool = False) -> str:
             end = offset + n
             out: dict[str, Any] = {
                 "sha256": args.sha256,
-                "size": len(data),
+                "size": size,
                 "offset": offset,
                 "length": n,
                 "text": chunk[:n].decode("utf-8", "replace"),
-                "next_offset": end if end < len(data) else None,
+                "next_offset": end if end < size else None,
             }
             if cut:
                 out["cut"] = BLOB_CUT

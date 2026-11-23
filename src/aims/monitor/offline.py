@@ -30,6 +30,7 @@ from aims.events import (
     SampleWindow,
     Verification,
 )
+from aims.events.blobs import Part
 from aims.events.index import FlagInfo
 from aims.models import DeltaBus, Limiters, ModelClient, ModelsConfig, Profile, Prompt
 from aims.models.replay import Recording
@@ -436,6 +437,16 @@ class OriginStore:
             return await self.source.get_blob(run_id, sha256, size)
         except BlobError, KeyError:
             return await self.store.get_blob(self.run_id, sha256, size)
+
+    async def get_part(
+        self, run_id: str, sha256: str, start: int | None, length: int, size: int | None = None
+    ) -> Part:
+        if run_id != self.origin:
+            return await self.store.get_part(run_id, sha256, start, length, size)
+        try:
+            return await self.source.get_part(run_id, sha256, start, length, size)
+        except BlobError, KeyError:
+            return await self.store.get_part(self.run_id, sha256, start, length, size)
 
     async def content(self, run_id: str, text: str) -> Content:
         return await self.store.content(self._at(run_id), text)

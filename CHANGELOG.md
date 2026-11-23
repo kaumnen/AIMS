@@ -73,6 +73,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- The judge's blob tool reads only the window it was asked for. Each page decoded the whole blob.
 - A blob read through a mapping that is no exact blob reference stops at 16 MiB, the snapshot capture cap. Such a reference skipped the size bound, so an import could make the monitor's cost estimate read a large blob whole.
 - A replay miss reads a recorded request body only up to the size its reference states.
 - A fork takes a recorded scenario input only through an exact blob reference with its size. A loose reference read its blob whole.

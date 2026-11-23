@@ -6,6 +6,7 @@ import secrets
 import sys
 from collections.abc import Iterable, Iterator, Sequence
 from compression import zstd
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -121,6 +122,56 @@ def read_blob(path: Path, size: int | None = None) -> bytes | None:
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class Part:
+    """`data` holds the bytes of a blob from `start`; `size` is the length of the whole blob."""
+
+    data: bytes
+    start: int
+    size: int
+
+
+def read_part(path: Path, start: int | None, length: int, size: int | None = None) -> Part | None:
+    """`length` bytes of the blob at `path` from `start`, or its last `length` bytes when `start`
+    is None. None when the file does not hold the blob it is named by, or holds more than `size`
+    bytes. It reads the whole file to check it, a chunk at a time, and keeps only the part."""
+    if size is not None and not (type(size) is int and size >= 0):
+        return None
+    with path.open("rb") as f:
+        if f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC:
+            f.seek(0)
+            with contextlib.suppress(zstd.ZstdError):
+                part = _part(_decoded(_chunks(f)), start, length, size, path.name)
+                if part is not None:
+                    return part
+        f.seek(0)
+        return _part(_chunks(f), start, length, size, path.name)
+
+
+def _part(
+    chunks: Iterable[bytes], start: int | None, length: int, limit: int | None, name: str
+) -> Part | None:
+    seen = hashlib.sha256()
+    kept = bytearray()
+    total = 0
+    for data in chunks:
+        seen.update(data)
+        if start is None:
+            if length:
+                kept += data[-length:]
+                del kept[: max(0, len(kept) - length)]
+        elif total + len(data) > start and len(kept) < length:
+            at = max(0, start - total)
+            kept += data[at : at + length - len(kept)]
+        total += len(data)
+        if limit is not None and total > limit:
+            return None
+    if seen.hexdigest() != name:
+        return None
+    at = total - len(kept) if start is None else min(start, total)
+    return Part(bytes(kept), at, total)
+
+
 class BlobStore:
     """Content-addressed files named by the sha256 of their uncompressed bytes."""
 
@@ -181,6 +232,17 @@ class BlobStore:
         if data is None:
             raise BlobError(f"blob {sha256} does not match its hash")
         return data
+
+    def part(self, sha256: str, start: int | None, length: int, size: int | None = None) -> Part:
+        """`length` bytes of the blob from `start`, its last ones when `start` is None. The
+        whole blob is checked against its hash; only the part is kept."""
+        try:
+            part = read_part(self.path(sha256), start, length, size)
+        except FileNotFoundError:
+            raise BlobError(f"missing blob {sha256}") from None
+        if part is None:
+            raise BlobError(f"blob {sha256} does not match its hash")
+        return part
 
 
 class BlobWriter:

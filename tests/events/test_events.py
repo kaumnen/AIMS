@@ -51,7 +51,7 @@ from aims.events import (
 from aims.events import chain as chain_module
 from aims.events import log as log_module
 from aims.events import store as store_module
-from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore, read_blob, stored_size
+from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore, Part, read_blob, stored_size
 from aims.events.chain import GENESIS, MAX_LINE, Head, digest, follow, seal
 from aims.events.disk import make_dir
 from aims.events.index import Index
@@ -1374,6 +1374,39 @@ async def test_checking_and_sizing_a_blob_holds_none_of_it(store: LocalEventStor
     assert verify_run(store.root / run_id).ok
     blobs.path(sha).write_bytes(frame[:-4])
     assert verify_run(store.root / run_id).bad_blobs == (sha,)
+
+
+def test_a_part_of_a_blob_is_read_whole_and_kept_alone(tmp_path: Path) -> None:
+    blobs = BlobStore(tmp_path)
+    data = bytes(range(256)) * (256 * 1024)
+    ref = blobs.put(data)
+    for start, length in ((0, 10), (1000, 300), (len(data) - 5, 10), (len(data) + 9, 4)):
+        part = blobs.part(ref.sha256, start, length)
+        assert part.data == data[start : start + length]
+        assert (part.start, part.size) == (min(start, len(data)), len(data))
+    tail = blobs.part(ref.sha256, None, 70_000)
+    assert (tail.data, tail.start) == (data[-70_000:], len(data) - 70_000)
+    assert blobs.part(ref.sha256, None, 0).data == b""
+    assert peak_of(lambda: blobs.part(ref.sha256, 5, 100)) < 4 * MIB
+    assert peak_of(lambda: blobs.part(ref.sha256, None, 100)) < 4 * MIB
+    with pytest.raises(BlobError, match="does not match its hash"):
+        blobs.part(ref.sha256, 0, 10, size=len(data) - 1)
+    assert blobs.part(ref.sha256, 0, 3, size=len(data)).data == data[:3]
+
+    # many frames, a frame stored as is, a file whose bytes are not its name's
+    many = data[:300_000]
+    sha = hashlib.sha256(many).hexdigest()
+    blobs.path(sha).write_bytes(zstd.compress(many[:100_000]) + zstd.compress(many[100_000:]))
+    assert blobs.part(sha, 99_990, 20).data == many[99_990:100_010]
+    frame = zstd.compress(b"hello")
+    raw = hashlib.sha256(frame).hexdigest()
+    blobs.path(raw).write_bytes(frame)
+    assert blobs.part(raw, 0, 100) == Part(frame, 0, len(frame))
+    blobs.path(sha).write_bytes(zstd.compress(many[:-1]))
+    with pytest.raises(BlobError, match="does not match its hash"):
+        blobs.part(sha, 0, 10)
+    with pytest.raises(BlobError, match="missing blob"):
+        blobs.part("f" * 64, 0, 10)
 
 
 async def test_temp_files_a_killed_write_left_go_once_no_write_can_own_them(

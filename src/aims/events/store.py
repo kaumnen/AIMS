@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Protocol, Self
 
 from aims.aio import settle
-from aims.events.blobs import TEMP, BlobStore, BlobWriter, holds_blob, stored_size
+from aims.events.blobs import TEMP, BlobStore, BlobWriter, Part, holds_blob, stored_size
 from aims.events.chain import MAX_LINE, ChainError, Head, follow, seal
 from aims.events.disk import make_dir, sweep, sync_dir, write_all
 from aims.events.index import (
@@ -155,6 +155,10 @@ class EventStore(Protocol):
     async def put_blobs(self, run_id: str, datas: Sequence[bytes]) -> list[BlobRef]: ...
 
     async def get_blob(self, run_id: str, sha256: str, size: int | None = None) -> bytes: ...
+
+    async def get_part(
+        self, run_id: str, sha256: str, start: int | None, length: int, size: int | None = None
+    ) -> Part: ...
 
     async def content(self, run_id: str, text: str) -> Content: ...
 
@@ -1011,6 +1015,13 @@ class LocalEventStore:
         """A blob's bytes. Pass the `size` its reference states: a blob that would decode past
         it raises BlobError."""
         return await asyncio.to_thread(self._blobs(run_id).get, sha256, size)
+
+    async def get_part(
+        self, run_id: str, sha256: str, start: int | None, length: int, size: int | None = None
+    ) -> Part:
+        """`length` bytes of a blob from `start`, its last ones when `start` is None. The read
+        checks the whole blob and holds only the part."""
+        return await asyncio.to_thread(self._blobs(run_id).part, sha256, start, length, size)
 
     async def content(self, run_id: str, text: str) -> Content:
         """Inline short text, store long text as a blob. A lone surrogate is written `\\ud800`."""
