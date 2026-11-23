@@ -38,6 +38,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.events.index import Index
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
@@ -147,6 +148,31 @@ async def test_the_end_tables_show_markup_in_agent_text_as_written(tmp_path: Pat
     assert "judge: judge said [/x] and [bold]b" in table
     assert "severity 4: summary [/x] and [bold]b" in table
     assert "pause a by monitor: [/x] and [bold]b" in table
+
+
+async def test_the_end_tables_read_the_monitor_past_an_index_that_is_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index takes no monitor event, as when another process holds its write lock: the
+    run's end reads them from its log."""
+    real = Index.add
+    refused: list[int] = []
+
+    async def add(index: Index, events: Any, head: Any, **kw: Any) -> None:
+        if any(e.type.startswith("monitor.") for e in events):
+            refused.extend(e.seq for e in events)
+            raise sqlite3.OperationalError("database is locked")
+        await real(index, events, head, **kw)
+
+    monkeypatch.setattr(Index, "add", add)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await flagged_run(store, "text")
+        found = await digest(store, run_id)
+    assert refused
+    assert [e.type for e in found.flags] == ["monitor.flag"]
+    assert [e.type for e in found.actions] == ["monitor.action"]
+    assert [e.type for e in found.degraded] == ["monitor.degraded"]
+    assert found.verdict is not None
 
 
 @pytest.fixture

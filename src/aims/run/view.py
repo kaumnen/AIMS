@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from aims.aio import stopped
-from aims.events import BlobRef, Event, EventStore, MonitorVerdict, ResumeThen
+from aims.events import BlobRef, Event, EventStore, MonitorVerdict, ResumeThen, logged_events
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
@@ -513,11 +513,12 @@ class Digest:
 
 
 async def digest(store: EventStore, run_id: str) -> Digest:
-    """The monitor's findings in `run_id`, read back from its log."""
+    """The monitor's findings in `run_id`, read back from its log, also past an index that is
+    behind it, as right after the run."""
     out = Digest(run_id)
     types = [*MONITOR_TYPES, "monitor.degraded", "operator.action"]
-    cursor: int | None = None
-    while page := await store.events(run_id, after=cursor, limit=1000, types=types):
+    cursor = -1
+    while page := await logged_events(store, run_id, after=cursor, limit=1000, types=types):
         cursor = page[-1].seq
         for e in page:
             data = e.data
