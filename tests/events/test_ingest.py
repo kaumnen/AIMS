@@ -816,3 +816,16 @@ async def test_a_blob_reference_where_a_payload_holds_one_is_still_needed(
     with pytest.raises(MissingBlobs) as caught:
         await copy.ingest(run_id, lines)
     assert caught.value.missing == [body.sha256, other]
+
+
+@pytest.mark.parametrize("sha256", ["x" * 64, "A" * 64, 5, ["a"], {"k": 1}])
+async def test_an_ingested_reference_that_names_no_sha256_is_invalid(
+    copy: LocalEventStore, sha256: object
+) -> None:
+    run_id = str(uuid.uuid7())
+    refs = [{"sha256": sha256, "size": 1}, {"sha256": "ab" * 32, "size": 1}]
+    lines = sealed(run_id, START, (T1, "x.custom", {"refs": refs}))
+    copy.prepare_run(run_id)
+    with pytest.raises(Invalid, match="event 1 names a blob by no sha256") as caught:
+        await copy.ingest(run_id, lines)
+    assert caught.value.head == Head()

@@ -46,6 +46,11 @@ Timestamp = Annotated[AwareDatetime, PlainSerializer(format_ts, return_type=str)
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
+def is_sha256(value: object) -> bool:
+    """Whether `value` is a sha256 as a blob is named by: 64 lowercase hex digits, a str."""
+    return type(value) is str and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
 class Opaque:
     """Marks a payload field that holds what was written outside AIMS: the metrics of a
     verifier's reward.json, the headers of an HTTP request or answer. What wrote it may shape a

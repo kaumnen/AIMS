@@ -56,7 +56,16 @@ from aims.events.log import (
     tail_only,
 )
 from aims.events.payloads import LogTruncated, RunFinished, RunStarted
-from aims.events.schema import BlobRef, Content, Draft, Event, blob_refs, blob_sizes, now
+from aims.events.schema import (
+    BlobRef,
+    Content,
+    Draft,
+    Event,
+    blob_refs,
+    blob_sizes,
+    is_sha256,
+    now,
+)
 from aims.text import scrub
 
 log = logging.getLogger("aims.events")
@@ -831,7 +840,13 @@ class LocalEventStore:
             events, after, error = await asyncio.to_thread(_follow_all, head, fresh, run_id)
             if error is not None:
                 raise error
-            refs = {sha for e in events for sha in blob_refs(e.type, e.data)} - sink.blobs
+            refs: set[str] = set()
+            for e in events:
+                for sha in blob_refs(e.type, e.data):
+                    if not is_sha256(sha):
+                        raise Invalid(f"event {e.seq} names a blob by no sha256", head)
+                    refs.add(sha)
+            refs -= sink.blobs
             if refs:
                 missing = await asyncio.to_thread(self._blobs(run_id).missing, sorted(refs))
                 sink.blobs.update(refs - set(missing))

@@ -548,6 +548,50 @@ async def test_ingest_refuses_gaps_divergence_and_missing_blobs(
     assert r.json()["head"]["seq"] == -1
 
 
+@pytest.mark.parametrize("sha256", ["x" * 64, "A" * 64, 5, ["a"], {"k": 1}])
+async def test_ingest_of_a_reference_that_names_no_sha256_is_invalid_not_a_crash(
+    cp: CP, fake: FakeRunner, sha256: object
+) -> None:
+    run_id = str(uuid.uuid7())
+    head = chain.Head()
+    lines: list[bytes] = []
+    for kind, data in (
+        (STARTED.type, STARTED.model_dump(mode="json")),
+        ("x.custom", {"refs": [{"sha256": sha256, "size": 1}, {"sha256": "ab" * 32, "size": 1}]}),
+    ):
+        ts = "2026-11-23T00:00:00.000000Z"
+        _, line, head = chain.seal(head, run_id=run_id, ts=ts, agent_id=None, type=kind, data=data)
+        lines.append(line)
+    r = await raw_events(cp, "fake", run_id, lines)
+    assert (r.status_code, r.json()["code"], r.json()["head"]["seq"]) == (422, "invalid", -1)
+
+
+@pytest.mark.parametrize("sha256", ["x" * 64, ["a"]])
+async def test_a_hand_made_log_that_names_a_blob_by_no_sha256_is_refused_not_a_crash(
+    cp: CP, tmp_path: Path, sha256: object
+) -> None:
+    root = tmp_path / "hand"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+    path = root / run_id / "events.jsonl"
+    last = json.loads(path.read_bytes().splitlines()[-1])
+    head = chain.Head(seq=last["seq"], hash=last["hash"], offset=path.stat().st_size)
+    ts = "2026-11-23T00:00:00.000000Z"
+    data = {"ref": {"sha256": sha256, "size": 1}}
+    _, line, _ = chain.seal(head, run_id=run_id, ts=ts, agent_id=None, type="x.custom", data=data)
+    with path.open("ab") as f:
+        f.write(line)
+    async with await LocalEventStore.open(root) as store:
+        client = ControlClient(cp.url, cp.runner, runner="pusher")
+        try:
+            await client.hello(FakeRunner(cp, "pusher").hello_body())
+            shipper = await ship(store, client, run_id)
+        finally:
+            await client.aclose()
+    assert shipper.refused is not None
+    assert "event 1 names a blob by no sha256" in shipper.refused
+
+
 async def test_a_wrong_version_runner_is_refused(cp: CP) -> None:
     client = ControlClient(cp.url, cp.runner, runner="old")
     hello = FakeRunner(cp, "old").hello_body().model_copy(update={"version": "0.0.1"})

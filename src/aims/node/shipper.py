@@ -8,7 +8,7 @@ import httpx2
 
 from aims.events import LocalEventStore
 from aims.events.chain import Head as LogHead
-from aims.events.schema import blob_refs
+from aims.events.schema import blob_refs, is_sha256
 from aims.node.client import ApiError, ControlClient
 from aims.wire import Head
 
@@ -279,7 +279,9 @@ class Shipper:
             for line in lines:
                 event = json.loads(line)
                 for sha in blob_refs(event["type"], event["data"]):
-                    out[sha] = None
+                    # the control plane refuses the batch of a hand-made one, with the reason
+                    if is_sha256(sha):
+                        out[sha] = None
             return list(out)
 
         wanted = [sha for sha in await asyncio.to_thread(refs) if sha not in self.sent]

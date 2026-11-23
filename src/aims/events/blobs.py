@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import IO, Any, Protocol
 
 from aims.events.disk import make_dir, sync_dir
-from aims.events.schema import BlobRef
+from aims.events.schema import BlobRef, is_sha256
 
 
 class BlobError(Exception):
@@ -447,11 +447,7 @@ class BlobStore:
     def path(self, sha256: str) -> Path:
         """The file of blob `sha256`. Raises BlobError when it is no sha256, as a reference
         read from a log may hold."""
-        if (
-            type(sha256) is not str
-            or len(sha256) != 64
-            or not all(c in "0123456789abcdef" for c in sha256)
-        ):
+        if not is_sha256(sha256):
             raise BlobError(f"not a sha256: {sha256!r}")
         return self.root / sha256
 
