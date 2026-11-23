@@ -3289,6 +3289,7 @@
           "monitor.cleared",
           "monitor.degraded",
           "monitor.flag",
+          "monitor.judging",
           "monitor.sweep",
           "monitor.verdict",
           "net.connect",
@@ -3424,6 +3425,9 @@
           },
           "monitor.flag": {
             "$ref": "#/components/schemas/MonitorFlag"
+          },
+          "monitor.judging": {
+            "$ref": "#/components/schemas/MonitorJudging"
           },
           "monitor.sweep": {
             "$ref": "#/components/schemas/MonitorSweep"
@@ -3561,6 +3565,7 @@
           "monitor.cleared",
           "monitor.degraded",
           "monitor.flag",
+          "monitor.judging",
           "monitor.sweep",
           "monitor.verdict",
           "net.connect",
@@ -9080,6 +9085,21 @@
         "title": "MonitorJob",
         "type": "object"
       },
+      "MonitorJudging": {
+        "additionalProperties": false,
+        "description": "The judge started. `timeout_s` is the most it runs, the wait for the index included.",
+        "properties": {
+          "timeout_s": {
+            "title": "Timeout S",
+            "type": "number"
+          }
+        },
+        "required": [
+          "timeout_s"
+        ],
+        "title": "MonitorJudging",
+        "type": "object"
+      },
       "MonitorSweep": {
         "additionalProperties": false,
         "description": "One review of an agent's trajectory by a sweep model in one lane. The event's agent is\nthe agent reviewed.\n\n`parts` are what the lane shows the model. `step_from` to `step_to` is the review range and\n`seq_to` the last event rendered. `calls` names the model calls made: extract, evaluate and\nthe window scorer. `hits` counts the flags written, `dropped` the hits that cited events the\nmodel was not shown, `unverified` the hits whose quote was not found. `suspicion` is the mean\nof `history_suspicion`, over the whole trajectory, and `window_suspicion`, over the review\nrange alone; `escalated` means the extractor's window score fell in the uncertain band and\nthe sweep model scored it again. `collapsed` counts older steps shown as one line to fit\n`tokens`. `coalesced` counts the triggers this sweep answered. `error` is set when the sweep\nfailed. `no_room` is true when it stopped because the monitor budget had no room for a call:\nthe call was not sent, or a failed call was not tried again. The run-wide channel sweep,\nnamed `channels`, has no agent and steps 0 to 0.",
@@ -13380,7 +13400,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), and `listed_usd` those of them at a list price AIMS laid on the\nprofile. `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names\nthe self-test case the run plays (None for case runs made before it was kept). `held`\nlists its agents paused now, by the monitor or an operator, one entry per pause.\n`commands` counts the commands sent to it through the control plane, `commands_waiting`\nthose the runner has not answered yet and `commands_dropped` those settled without its\nanswer.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), and `listed_usd` those of them at a list price AIMS laid on the\nprofile. `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names\nthe self-test case the run plays (None for case runs made before it was kept). `held`\nlists its agents paused now, by the monitor or an operator, one entry per pause.\n`judging` is true from its `monitor.judging` until it is sealed: its judge runs. `commands`\ncounts the commands sent to it through the control plane, `commands_waiting` those the\nrunner has not answered yet and `commands_dropped` those settled without its answer.",
         "properties": {
           "case": {
             "anyOf": [
@@ -13475,6 +13495,11 @@
             },
             "title": "Held",
             "type": "array"
+          },
+          "judging": {
+            "default": false,
+            "title": "Judging",
+            "type": "boolean"
           },
           "kind": {
             "default": "scenario",
@@ -13708,6 +13733,7 @@
           "monitor_mode",
           "case",
           "held",
+          "judging",
           "commands",
           "commands_waiting",
           "commands_dropped"

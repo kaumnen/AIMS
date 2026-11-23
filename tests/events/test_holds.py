@@ -12,6 +12,8 @@ from aims.events import (
     Draft,
     HoldInfo,
     LocalEventStore,
+    MonitorJudging,
+    MonitorVerdict,
     OperatorAction,
     RunFinished,
     RunStarted,
@@ -259,3 +261,51 @@ async def test_the_run_summary_lists_its_holds(cp: CP, store: LocalEventStore) -
     }
     assert hold["since"].endswith("Z")
     assert hold["until"] > hold["since"]
+
+
+async def judging(store: LocalEventStore, run_id: str) -> bool:
+    info = await store.run(run_id)
+    assert info is not None
+    return info.judging
+
+
+async def test_a_run_judges_from_its_judges_start_to_its_seal_in_any_batching(
+    tmp_path: Path,
+) -> None:
+    story = [
+        Draft(AgentFinished(reason="submitted"), "a1"),
+        Draft(MonitorJudging(timeout_s=600)),
+        Draft(MonitorVerdict()),
+    ]
+    for batch in (1, len(story)):
+        async with await LocalEventStore.open(tmp_path / f"b{batch}") as store:
+            run_id = await store.create_run(STARTED)
+            assert not await judging(store, run_id)
+            for i in range(0, len(story), batch):
+                await store.append(run_id, story[i : i + batch])
+            assert await judging(store, run_id)
+            await store.rebuild()
+            assert await judging(store, run_id)
+            await store.append(run_id, [Draft(RunFinished(status="completed"))])
+            assert not await judging(store, run_id)
+            await store.rebuild()
+            assert not await judging(store, run_id)
+
+
+async def test_a_judge_start_sealed_in_the_same_batch_is_no_judge_phase(
+    store: LocalEventStore,
+) -> None:
+    run_id = await store.create_run(STARTED)
+    ended = [Draft(MonitorJudging(timeout_s=600)), Draft(RunFinished(status="cancelled"))]
+    await store.append(run_id, ended)
+    assert not await judging(store, run_id)
+
+
+async def test_the_run_summary_says_when_its_judge_runs(cp: CP, store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    await store.append(run_id, [Draft(MonitorJudging(timeout_s=600))])
+    await cp.state.store.ingest(run_id, split_lines((store.root / run_id / LOG).read_bytes()))
+    async with cp.client(cp.viewer) as c:
+        run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        (listed,) = (await c.get("/api/runs")).json()["items"]
+    assert (run["status"], run["judging"], listed["judging"]) == ("running", True, True)

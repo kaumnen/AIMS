@@ -1352,6 +1352,14 @@ class MonitorVerdict(Payload):
         ]
 
 
+class MonitorJudging(Payload):
+    """The judge started. `timeout_s` is the most it runs, the wait for the index included."""
+
+    type = "monitor.judging"
+
+    timeout_s: float
+
+
 class MonitorAction(Payload):
     """What the monitor's policy decided, written before it acts. `simulated` marks a decision
     taken in observe mode or in a monitor run, which changed nothing. `flags` are the seqs of the

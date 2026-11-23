@@ -33,6 +33,7 @@ export function run(runId: string, over: Partial<RunSummary> = {}): RunSummary {
     monitor_mode: null,
     case: null,
     held: [],
+    judging: false,
     commands: 0,
     commands_waiting: 0,
     commands_dropped: 0,

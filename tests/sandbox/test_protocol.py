@@ -70,6 +70,7 @@ TYPES = {
     "monitor.verdict",
     "monitor.action",
     "monitor.degraded",
+    "monitor.judging",
     "agent.started",
     "agent.input",
     "agent.step",

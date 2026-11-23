@@ -1270,6 +1270,56 @@ async def test_cancelling_the_judge_is_not_taken_for_a_cut(tmp_path: Path) -> No
         assert degraded.data["reason"] == "the judge was cancelled"
 
 
+async def test_the_judge_marks_its_start_before_its_first_call(tmp_path: Path) -> None:
+    script = Script()
+    original = script.handle
+    asked = asyncio.Event()
+
+    async def handle(request: httpx2.Request) -> httpx2.Response:
+        asked.set()
+        await asyncio.sleep(3600)
+        return original(request)
+
+    script.handle = handle  # ty: ignore[invalid-assignment]
+    config = {"sweeps": [], "judge": {"timeout_s": 60}}
+    async with harness(tmp_path, config=config, script=script, real_judge=True) as h:
+        await h.add(started())
+        judging = asyncio.create_task(h.monitor.judge())
+        async with asyncio.timeout(3):
+            await asked.wait()
+        types = [e.type for e in await h.store.every(h.run_id)]
+        assert types[2:] == ["monitor.judging", "model.request"]
+        [mark] = await h.of("monitor.judging")
+        assert (mark.agent_id, mark.data) == (None, {"timeout_s": 60})
+        info = await h.store.run(h.run_id)
+        assert info is not None
+        assert info.judging
+        h.monitor.cut()
+        async with asyncio.timeout(3):
+            await judging
+
+
+async def test_a_stop_as_the_judge_marks_its_start_keeps_it_from_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs: list[int] = []
+    async with harness(tmp_path, judge=slow_judge(runs)) as h:
+        await h.monitor.judge(skip=True)
+        assert await h.of("monitor.judging") == []
+        append = h.monitor._append
+
+        async def stopped(drafts: Sequence[Draft]) -> list[Event]:
+            written = await append(drafts)
+            h.monitor.cut()
+            return written
+
+        monkeypatch.setattr(h.monitor, "_append", stopped)
+        async with asyncio.timeout(1):
+            await h.monitor.judge()
+        assert [e.type for e in await h.store.every(h.run_id)] == ["run.started", "monitor.judging"]
+        assert runs == []
+
+
 def behind(h: H, monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     """Make the run's index refuse every batch while the flag returned holds, and try to catch
     up often."""
@@ -1321,7 +1371,8 @@ async def test_the_judge_waits_for_an_index_behind_the_log(
         broken[0] = False
         async with asyncio.timeout(5):
             await judging
-        assert seen == [[0, 1, 2]]
+        # the judge's start mark is fed too, so the judge waits for it
+        assert seen == [[0, 1, 2, 3]]
         assert [d["reason"] for d in degraded_in_log(h)] == ["the judge gave no verdict"]
 
 

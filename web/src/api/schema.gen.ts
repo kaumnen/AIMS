@@ -2955,7 +2955,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "file.xattr" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "net.listen" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.degraded" | "score.unexplained" | "score.unit" | "selftest.case" | "service.ended" | "service.request" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "file.xattr" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.judging" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "net.listen" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.degraded" | "score.unexplained" | "score.unit" | "selftest.case" | "service.ended" | "service.request" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2990,6 +2990,7 @@ export interface components {
             "monitor.cleared": components["schemas"]["MonitorCleared"];
             "monitor.degraded": components["schemas"]["MonitorDegraded"];
             "monitor.flag": components["schemas"]["MonitorFlag"];
+            "monitor.judging": components["schemas"]["MonitorJudging"];
             "monitor.sweep": components["schemas"]["MonitorSweep"];
             "monitor.verdict": components["schemas"]["MonitorVerdict"];
             "net.connect": components["schemas"]["NetConnect"];
@@ -5239,6 +5240,14 @@ export interface components {
             scenario: string;
         };
         /**
+         * MonitorJudging
+         * @description The judge started. `timeout_s` is the most it runs, the wait for the index included.
+         */
+        MonitorJudging: {
+            /** Timeout S */
+            timeout_s: number;
+        };
+        /**
          * MonitorSweep
          * @description One review of an agent's trajectory by a sweep model in one lane. The event's agent is
          *     the agent reviewed.
@@ -6953,9 +6962,9 @@ export interface components {
          *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names
          *     the self-test case the run plays (None for case runs made before it was kept). `held`
          *     lists its agents paused now, by the monitor or an operator, one entry per pause.
-         *     `commands` counts the commands sent to it through the control plane, `commands_waiting`
-         *     those the runner has not answered yet and `commands_dropped` those settled without its
-         *     answer.
+         *     `judging` is true from its `monitor.judging` until it is sealed: its judge runs. `commands`
+         *     counts the commands sent to it through the control plane, `commands_waiting` those the
+         *     runner has not answered yet and `commands_dropped` those settled without its answer.
          */
         RunSummary: {
             /** Case */
@@ -6999,6 +7008,11 @@ export interface components {
             group: string | null;
             /** Held */
             held: components["schemas"]["HoldInfo"][];
+            /**
+             * Judging
+             * @default false
+             */
+            judging: boolean;
             /**
              * Kind
              * @default scenario
@@ -16066,7 +16080,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.degraded", "score.unexplained", "score.unit", "selftest.case", "service.ended", "service.request", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.judging", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.degraded", "score.unexplained", "score.unit", "selftest.case", "service.ended", "service.request", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];

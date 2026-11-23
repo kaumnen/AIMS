@@ -20,6 +20,7 @@ from aims.events import (
     MonitorCleared,
     MonitorDegraded,
     MonitorFlag,
+    MonitorJudging,
     MonitorVerdict,
     SweepTrigger,
     logged_events,
@@ -364,12 +365,13 @@ class Monitor:
 
     async def judge(self, *, skip: bool = False) -> None:
         """Run the judge after the verifier, before the seal; `skip` on a cancelled run. It
-        starts once the index holds every event fed, and is skipped if the index stays behind
-        the log for the judge's timeout. The wait counts against that timeout: the judge gets
-        what is left of it. A `cut` ends it early and the run still seals. A judge
-        its timeout cut short writes the verdicts it has, and `monitor.degraded` names the
-        rollouts that gave none. A rollout that failed otherwise beside a verdict shows only in
-        the verdict's `rollouts`."""
+        writes `monitor.judging` when it starts, unless the budget is spent. It reads once the
+        index holds every event fed, and is skipped if the index stays behind the log for the
+        judge's timeout. The wait counts against that timeout: the judge gets what is left of
+        it. A `cut` ends it early and the run still seals. A judge its timeout cut short writes
+        the verdicts it has, and `monitor.degraded` names the rollouts that gave none. A
+        rollout that failed otherwise beside a verdict shows only in the verdict's
+        `rollouts`."""
         config = self.config.judge
         if skip or config is None or self.monitor.judge is None:
             return
@@ -379,6 +381,10 @@ class Monitor:
         left = self.monitor.budget_usd - self._purse.counted - self._purse.held
         if left <= 0:
             await self._degrade("judge", "the monitor budget is spent", "skip")
+            return
+        # A live run's monitor is fed this event too, so the wait for the index covers it.
+        await self._append([Draft(MonitorJudging(timeout_s=config.timeout_s))])
+        if self._cut:
             return
         loop = asyncio.get_running_loop()
         began = loop.time()

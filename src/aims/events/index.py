@@ -33,6 +33,7 @@ from aims.events.payloads import (
     MonitorAction,
     MonitorCleared,
     MonitorFlag,
+    MonitorJudging,
     MonitorVerdict,
     OperatorAction,
     Oversight,
@@ -96,7 +97,8 @@ create table runs (
     preset text,
     monitor_mode text,
     selftest_case text,
-    held text not null default '{{}}'
+    held text not null default '{{}}',
+    judging integer not null default 0
 ) strict;
 
 create index runs_by_origin on runs (origin, run_id) where origin is not null;
@@ -303,7 +305,7 @@ class RunInfo(BaseModel):
     `reward` is the last verifier reward and `reviews` counts the monitor runs over it.
     `preset` is the preset of the monitor that watched it, or that a monitor run ran,
     `monitor_mode` a monitor run's mode, `case` the self-test case it plays and `held` its
-    agents paused now."""
+    agents paused now. `judging` is true while it runs, from its `monitor.judging` on."""
 
     run_id: str
     scenario: str
@@ -332,6 +334,7 @@ class RunInfo(BaseModel):
     monitor_mode: str | None = None
     case: str | None = None
     held: list[HoldInfo] = Field(default_factory=list)
+    judging: bool = False
 
 
 def monitor_of(config: Mapping[str, Any]) -> tuple[str | None, str | None]:
@@ -478,6 +481,7 @@ RUN_KEYS = (
     "preset",
     "monitor_mode",
     "case",
+    "judging",
     "categories",
     "held",
 )
@@ -983,16 +987,19 @@ class Index:
                     [tuple(w[f] for f in SAMPLE_FIELDS) for w in windows],
                 )
             await self._hold(run_id, [e for e in fresh if e.type in HOLD_TYPES])
+            # the judge phase runs from `monitor.judging` to the seal
+            judging = 1 if any(e.type == MonitorJudging.type for e in fresh) else None
             await self._db.execute(
                 "update runs set last_seq = ?, last_hash = ?, log_offset = ?,"
-                " status = coalesce(?, status), ended_at = coalesce(?, ended_at)"
-                " where run_id = ? and last_seq < ?",
+                " status = coalesce(?, status), ended_at = coalesce(?, ended_at),"
+                " judging = coalesce(?, judging) where run_id = ? and last_seq < ?",
                 (
                     head.seq,
                     head.hash,
                     head.offset,
                     None if finished is None else _end_status(finished),
                     None if finished is None else format_ts(finished.ts),
+                    judging if finished is None else 0,
                     run_id,
                     head.seq,
                 ),
@@ -1450,8 +1457,8 @@ class Index:
             " origin, flags, max_importance, verdict_severity, severity, series, series_index,"
             " variant, run_group, steps, nano_usd / 1e9, listed_nano_usd / 1e9, reward,"
             " (select count(*) from runs m where m.origin = runs.run_id and m.kind = 'monitor'),"
-            " preset, monitor_mode,"
-            f" selftest_case, categories, held from runs {clause}",
+            " preset, monitor_mode, selftest_case, judging != 0 and status = 'running',"
+            f" categories, held from runs {clause}",
             args,
         ) as cur:
             rows = await cur.fetchall()

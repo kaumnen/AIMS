@@ -454,6 +454,7 @@ def summary(
         monitor_mode=info.monitor_mode if info is not None else planned[1],
         case=None if info is None else info.case,
         held=[] if info is None else info.held,
+        judging=info is not None and info.judging,
     )
 
 
