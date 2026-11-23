@@ -1533,13 +1533,35 @@ class LocalEventStore:
         return [*page, *(e for e in tail if e.seq > last)][:limit]
 
     async def every(self, run_id: str, *, types: Sequence[str] = ()) -> list[Event]:
-        """Every event of a run in seq order, read page by page past the index's page cap."""
-        out: list[Event] = []
-        cursor: int | None = None
-        while page := await self.events(run_id, after=cursor, limit=MAX_PAGE, types=types):
-            out.extend(page)
-            cursor = page[-1].seq
-        return out
+        """Every event of a run in seq order, read page by page past the index's page cap.
+
+        Each page is read in one snapshot with the run's head and the index's generation. A
+        reset of the index, or a head behind one an earlier page found, as a drop or a rebuild
+        by another process leaves, would end the read short. The read then starts again, once.
+        In that read a reset, or a head behind any found before, raises IndexChanged."""
+        floor = -1
+        for read in range(2):
+            out: list[Event] = []
+            cursor: int | None = None
+            generation: int | None = None
+            while True:
+                async with self._index.snapshot() as now:
+                    indexed = await self._index.head(run_id)
+                    page = await self._index.events(
+                        run_id, after=cursor, limit=MAX_PAGE, types=types
+                    )
+                head = -1 if indexed is None else indexed[0].seq
+                generation = now if generation is None else generation
+                if now != generation or head < floor:
+                    break
+                floor = head
+                if not page:
+                    return out
+                out.extend(page)
+                cursor = page[-1].seq
+            if not read:
+                log.warning("run %s: the index changed while it was read; it is read again", run_id)
+        raise IndexChanged(f"run {run_id}: the index changed while it was read")
 
     async def samples(
         self,

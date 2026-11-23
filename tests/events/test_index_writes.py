@@ -679,12 +679,19 @@ async def test_a_cancelled_read_past_a_lagging_index_stops_reading_the_log(
 
 
 async def index_elsewhere(
-    store: LocalEventStore, breaker: Breaker, run_id: str, events: int, *, reset: bool = True
+    store: LocalEventStore,
+    breaker: Breaker | None,
+    run_id: str,
+    events: int,
+    *,
+    reset: bool = True,
 ) -> None:
     """Another process resets the index, then indexes the first `events` events of the run
     from its log, as a rebuild part way does."""
     other = await Index.open(store.root / INDEX)
-    left, breaker.left = breaker.left, 0
+    left = 0 if breaker is None else breaker.left
+    if breaker is not None:
+        breaker.left = 0
     try:
         if reset:
             await other.reset()
@@ -694,7 +701,8 @@ async def index_elsewhere(
             end = Head(seq=events - 1, hash=first[-1].hash, offset=sum(map(len, lines)))
             await other.add(first, end)
     finally:
-        breaker.left = left
+        if breaker is not None:
+            breaker.left = left
         await other.close()
 
 
@@ -755,6 +763,85 @@ async def test_logged_events_read_again_when_the_index_head_moved_back_after_the
         with pytest.raises(store_module.IndexChanged, match="moved back"):
             await logged_events(store, run_id, limit=1000)
         assert reads == [99] * store_module.LOGGED_TRIES
+
+
+async def a_long_sealed_run(store: LocalEventStore) -> str:
+    """A sealed run of 2,500 events, two and a half pages of the index."""
+    run_id = await store.create_run(STARTED)
+    for first in range(1, 2499, 500):
+        await store.append(run_id, [call(i) for i in range(first, min(first + 500, 2499))])
+    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    assert len(await store.every(run_id)) == 2500
+    return run_id
+
+
+def change_after_pages(
+    monkeypatch: pytest.MonkeyPatch, pages: Sequence[int], change: Callable[[], Awaitable[None]]
+) -> list[int]:
+    """Make `change` after each page read of the index whose number is in `pages`, from 1;
+    returns the pages it was made after."""
+    real = Index.events
+    read = [0]
+    made: list[int] = []
+
+    async def events(index: Index, *args: Any, **kw: Any) -> list[Event]:
+        page = await real(index, *args, **kw)
+        read[0] += 1
+        if read[0] in pages:
+            await change()
+            made.append(read[0])
+        return page
+
+    monkeypatch.setattr(Index, "events", events)
+    return made
+
+
+async def every_or_error(store: LocalEventStore, run_id: str) -> list[int] | str:
+    """The seqs `every` gives, or the name of the error it raises."""
+    try:
+        return [e.seq for e in await store.every(run_id)]
+    except Exception as e:
+        return type(e).__name__
+
+
+@pytest.mark.parametrize("change", ["drop", "reset", "rebuilt in part"])
+async def test_every_event_of_a_run_the_index_changed_under_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await a_long_sealed_run(store)
+
+        async def made() -> None:
+            if change == "drop":
+                other = await Index.open(store.root / INDEX)
+                try:
+                    await other._remove_row(run_id)
+                finally:
+                    await other.close()
+            else:
+                await index_elsewhere(store, None, run_id, 1000 if change != "reset" else 0)
+
+        at = change_after_pages(monkeypatch, [1], made)
+        assert await every_or_error(store, run_id) == "IndexChanged"
+        assert at == [1]
+
+
+async def test_every_event_of_a_run_indexed_again_is_read_again_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await a_long_sealed_run(store)
+
+        async def rebuilt() -> None:
+            await index_elsewhere(store, None, run_id, 2500)
+
+        at = change_after_pages(monkeypatch, [1], rebuilt)
+        assert [e.seq for e in await store.every(run_id)] == list(range(2500))
+        assert at == [1]
+        monkeypatch.undo()
+        at = change_after_pages(monkeypatch, [1, 3], rebuilt)
+        assert await every_or_error(store, run_id) == "IndexChanged"
+        assert at == [1, 3]
 
 
 async def caught_up(store: LocalEventStore, run_id: str) -> bool:
@@ -1062,7 +1149,11 @@ async def test_cut_lines_another_process_indexes_after_the_cut_are_taken_out(
             want = [0, 1, 2, 3] if seals else [0, 1, 2]
 
             async def healed() -> bool:
-                if await indexed(store, run_id) != logged(store, run_id):
+                try:
+                    if await indexed(store, run_id) != logged(store, run_id):
+                        return False
+                except store_module.IndexChanged:
+                    # the retake dropped the run's rows during the read
                     return False
                 return (await store.verify(run_id)).ok
 
