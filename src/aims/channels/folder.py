@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from aims.channels.base import ChannelError, ChannelSetup
-from aims.events import BlobRef, ChannelInfo, ChannelSnapshot, EventStore, RunStarted
+from aims.events import BlobRef, ChannelInfo, ChannelSnapshot, EventStore, RunStarted, logged_events
 from aims.sandbox import AGENT_UID, AuditedSandbox
 from aims.sandbox.base import Mount, SharedVolume, SharesVolumes
 from aims.sandbox.shared import SharedFolder
@@ -243,16 +243,19 @@ def _walk(root: Path) -> list[tuple[Path, str]]:
 
 async def archives(store: EventStore, run_id: str) -> dict[str, bytes]:
     """The archive each series folder of the finished run `run_id` left, by channel name: what
-    the next run of the series passes as `Options.restored`."""
-    first = await store.events(run_id, types=["run.started"], limit=1)
+    the next run of the series passes as `Options.restored`. Read from the log too where the
+    index is behind it, as right after the run."""
+    first = await logged_events(store, run_id, types=["run.started"], limit=1)
     if not first:
         return {}
     started = RunStarted.model_validate(first[0].data)
     series = {c.name for c in started.channels if c.kind == "folder" and c.lifetime == "series"}
     refs: dict[str, BlobRef] = {}
-    after: int | None = None
+    after = -1
     while series:
-        batch = await store.events(run_id, types=["channel.snapshot"], after=after, limit=PAGE)
+        batch = await logged_events(
+            store, run_id, types=["channel.snapshot"], after=after, limit=PAGE
+        )
         for e in batch:
             snapshot = ChannelSnapshot.model_validate(e.data)
             if snapshot.archive is not None and snapshot.channel in series:

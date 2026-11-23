@@ -5,9 +5,10 @@ import hashlib
 import io
 import json
 import os
+import sqlite3
 import tarfile
 import tracemalloc
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -37,6 +38,7 @@ from aims.events import (
     ProcExec,
     RunStarted,
 )
+from aims.events.index import Index
 from aims.prompts import OMITTED, Prompts, TextError
 from aims.run.job import monitor_for
 from aims.run.runner import Bench, Options, Runner, Texts, resolve_texts
@@ -484,6 +486,24 @@ async def test_a_series_folder_carries_over(store: LocalEventStore) -> None:
     sha = hashlib.sha256(archive).hexdigest()
     assert started.channels[0].restored == BlobRef(sha256=sha, size=len(archive))
     await again.close({})
+
+
+async def test_a_series_folder_hands_its_archive_on_while_the_index_is_behind(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    volume = FakeVolume(tree("d0"), tree("d1"), archive=docker_tar("shared", ("a", b"a")))
+    run_id, folder = await start_folder(store, scenario(), volume)
+    refused: list[int] = []
+
+    async def add(index: Any, events: Sequence[Event], head: Any, **kw: Any) -> None:
+        refused.extend(e.seq for e in events)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(Index, "add", add)
+    archive = await folder.close({})
+    assert archive is not None
+    assert refused
+    assert await archives(store, run_id) == {"notes": archive}
 
 
 async def test_a_run_folder_logs_its_archive_but_hands_none_on(store: LocalEventStore) -> None:

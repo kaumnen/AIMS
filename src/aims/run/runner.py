@@ -50,6 +50,7 @@ from aims.events import (
     RunStatus,
     Series,
     TaskScored,
+    logged_events,
 )
 from aims.events.schema import format_ts
 from aims.models import (
@@ -1107,8 +1108,11 @@ class Runner:
         return scripts.get(agent.id, agent.script or [])
 
     async def _collect_finished(self, result: Result) -> None:
+        """The agents' ends, also those the index is still behind on."""
         assert self.run_id is not None
-        events = await self.bench.store.events(self.run_id, types=["agent.finished"], limit=1000)
+        events = await logged_events(
+            self.bench.store, self.run_id, types=["agent.finished"], limit=1000
+        )
         for e in events:
             payload = e.payload()
             if isinstance(payload, AgentFinished) and e.agent_id is not None:

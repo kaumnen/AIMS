@@ -5,16 +5,20 @@ import asyncio
 import contextlib
 import json
 import os
-from collections.abc import AsyncIterator, Callable
+import sqlite3
+from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from scripted import Script, call, models, profile
 from test_audit import FakeSandbox
 
-from aims.events import LocalEventStore, RunFinished
-from aims.run.runner import Bench, Options, Runner
+from aims.events import AgentFinished, Draft, Event, LocalEventStore, RunFinished, RunStarted
+from aims.events.chain import Head
+from aims.events.index import Index
+from aims.run.runner import Bench, Options, Result, Runner
 from aims.sandbox import AuditedSandbox, DockerBackend, SandboxBackend, SandboxError
 from aims.sandbox.base import SandboxSpec
 from aims.scenario import Bundle, load
@@ -206,6 +210,31 @@ async def test_an_operator_cancel_during_the_start_ends_it_and_closes_what_came_
     assert result.run_id is not None
     (sealed,) = await store.events(result.run_id, types=["run.finished"])
     assert cast("RunFinished", sealed.payload()).status == "cancelled"
+
+
+async def test_a_run_finds_its_agents_ends_while_its_index_is_behind(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ends the agents logged, read once they are done, as after a kill. The index takes
+    no batch once one holds an agent's end, as when another process holds its write lock past
+    the busy timeout: the ends are read from the log."""
+    run_id = await store.create_run(RunStarted(scenario="s", oversight="observe", agents=["a"]))
+    real = Index.add
+    ended: list[str | None] = []
+
+    async def add(index: Index, events: Sequence[Event], head: Head, **kw: Any) -> None:
+        ended.extend(e.agent_id for e in events if e.type == "agent.finished")
+        if ended:
+            raise sqlite3.OperationalError("database is locked")
+        await real(index, events, head, **kw)
+
+    monkeypatch.setattr(Index, "add", add)
+    await store.append(run_id, [Draft(AgentFinished(reason="submitted", steps=1), "a")])
+    assert ended == ["a"]
+    result = Result(run_id=run_id, status="completed")
+    run = cast("Runner", SimpleNamespace(run_id=run_id, bench=SimpleNamespace(store=store)))
+    await Runner._collect_finished(run, result)
+    assert [(a, f.reason) for a, f in result.agents.items()] == [("a", "submitted")]
 
 
 FOLDER = """\
