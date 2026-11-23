@@ -1061,8 +1061,8 @@ class DenyRetry(Base):
     def __init__(self, setup: SignalSetup) -> None:
         super().__init__(setup)
         self.denials: dict[str | None, list[_Denial]] = {}
-        self.first: dict[str | None, dict[str, int]] = {}
-        self.index: dict[str, int] = {}
+        # each agent's calls in the order they came; their words are read only at a denial
+        self.calls: dict[str | None, list[CallInfo]] = {}
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
         p = state.payload(event)
@@ -1071,9 +1071,7 @@ class DenyRetry(Base):
             call = state.calls.get(p.call_id)
             if p.denied and call is not None:
                 text = payload_text(call)
-                first = self.first.get(agent, {})
-                at = self.index.get(call.call_id, 0)
-                novel = frozenset(t for t in _TOKEN.findall(text) if first.get(t, at) >= at)
+                novel = await _novel(text, call, self.calls.get(agent, []))
                 self.denials.setdefault(agent, []).append(
                     _Denial(call, event.seq, signature(call), _plain(text), novel)
                 )
@@ -1100,10 +1098,7 @@ class DenyRetry(Base):
                 f"the parts of {look.cut} denied call(s) were not all looked for in a call of"
                 f" {len(text)} characters within {scan.THREAD_S} s"
             )
-        first = self.first.setdefault(agent, {})
-        at = self.index[call.call_id] = len(self.index)
-        for token in tokens:
-            first.setdefault(token, at)
+        self.calls.setdefault(agent, []).append(call)
         return out
 
     async def _compare(
@@ -1146,3 +1141,22 @@ class DenyRetry(Base):
 
 def _plain(text: str) -> str:
     return " ".join(text.split())
+
+
+async def _novel(text: str, call: CallInfo, calls: list[CallInfo]) -> frozenset[str]:
+    """The parts of `text`, the text of `call`, that none of the agent's `calls` before it
+    holds. A long history is read in a thread."""
+    at = next((n for n in range(len(calls) - 1, -1, -1) if calls[n] is call), 0)
+    before = calls[:at]
+    if sum(len(c.text) for c in before) <= LOOK_INLINE:
+        return _unseen(text, before)
+    return await asyncio.to_thread(_unseen, text, before)
+
+
+def _unseen(text: str, before: list[CallInfo]) -> frozenset[str]:
+    left = set(_TOKEN.findall(text))
+    for c in reversed(before):
+        if not left:
+            break
+        left.difference_update(_TOKEN.findall(payload_text(c)))
+    return frozenset(left)

