@@ -396,6 +396,7 @@ class LocalEventStore:
         self._lags: dict[str, _Lag] = {}
         self._truths = asyncio.Lock()
         self._sealed: dict[str, Head] = {}
+        self._generation: int | None = None
         self._closed = False
 
     @classmethod
@@ -413,6 +414,7 @@ class LocalEventStore:
             raise
         store = cls(root, index, ingest_only=ingest_only)
         try:
+            store._generation = await index.generation()
             await store._sweep()
             await store.sync()
         except BaseException:
@@ -504,6 +506,7 @@ class LocalEventStore:
         """Where the indexed part of a run's log ends."""
         indexed = await self._index.head(run_id)
         if indexed is None:
+            await self._missed(run_id)
             return None
         head, status = indexed
         if status == "corrupt":
@@ -734,6 +737,8 @@ class LocalEventStore:
             indexed = await self._index.head(run_id)
             if (-1 if indexed is None else indexed[0].seq) >= seq:
                 return
+            if indexed is None:
+                await self._missed(run_id)
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(poll):
                     await changed.wait()
@@ -1175,6 +1180,8 @@ class LocalEventStore:
             indexed = await self._index.head(run_id)
             if indexed is None and not self.logged(run_id):
                 raise KeyError(f"unknown run {run_id}")
+            if indexed is None:
+                await self._missed(run_id)
             head = Head() if indexed is None else indexed[0]
             if head.finished and cursor >= head.seq:
                 return
@@ -1374,7 +1381,10 @@ class LocalEventStore:
         await self._index.put_costs(rows)
 
     async def run(self, run_id: str) -> RunInfo | None:
-        return await self._index.run(run_id)
+        info = await self._index.run(run_id)
+        if info is None:
+            await self._missed(run_id)
+        return info
 
     async def runs_of(self, run_ids: Sequence[str]) -> dict[str, RunInfo]:
         """The runs of `run_ids` the index holds, by run id."""
@@ -1613,6 +1623,7 @@ class LocalEventStore:
     async def rebuild(self) -> None:
         """Drop the index and rebuild it from every run log, accepting each log as it is."""
         await self._index.reset()
+        self._generation = await self._index.generation()
         await self.sync()
 
     async def sync(self) -> None:
@@ -1843,6 +1854,25 @@ class LocalEventStore:
             lag = self._lags[run_id] = _Lag()
             lag.task = asyncio.create_task(self._heal(run_id, lag))
         return lag
+
+    async def _missed(self, run_id: str) -> None:
+        """Note a read of the index that found no run `run_id`. Another process that resets
+        the index, as one with another index VERSION does at its open, indexes every run again
+        but those whose log a writer holds, which it leaves to that writer. When a writer or
+        sink here holds this run and the index's generation changed, every run held here is
+        indexed again from its log, at once."""
+        if not self._open(run_id):
+            return
+        generation = await self._index.generation()
+        if generation == self._generation:
+            return
+        self._generation = generation
+        held = sorted(r for r in {*self._writers, *self._sinks} if self._open(r))
+        log.warning(
+            "the index was reset elsewhere; %d run(s) held here are indexed again", len(held)
+        )
+        for held_id in held:
+            self._lag(held_id)
 
     def _open(self, run_id: str) -> bool:
         """Whether a writer or sink here holds the run's log."""

@@ -2208,6 +2208,53 @@ async def test_verify_fails_a_log_past_its_index_that_holds_another_event_at_its
         assert verified.error == "the last event the index holds is not the log's"
 
 
+async def first_seqs(stream: AsyncIterator[Event], n: int) -> list[int]:
+    """The seqs of the first `n` events of `stream`."""
+    seqs: list[int] = []
+    async for event in stream:
+        seqs.append(event.seq)
+        if len(seqs) == n:
+            break
+    return seqs
+
+
+@pytest.mark.parametrize("held", ["writer", "sink"])
+@pytest.mark.parametrize("read", ["run", "logged", "stream"])
+async def test_a_run_held_here_is_indexed_again_after_another_process_reset_the_index(
+    tmp_path: Path, held: str, read: str
+) -> None:
+    """Another process with another index VERSION opens the folder: it resets the index and
+    indexes every run again, but leaves a log a writer holds to its writer."""
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root, ingest_only=held == "sink") as store:
+        if held == "writer":
+            run_id = await store.create_run(STARTED)
+            await store.append(run_id, [call(1), call(2)])
+        else:
+            async with await LocalEventStore.open(tmp_path / "source") as source:
+                run_id = await source.create_run(STARTED)
+                await source.append(run_id, [call(1), call(2)])
+            await store.ingest(run_id, split_lines((source.root / run_id / LOG).read_bytes()))
+        reset_index(root)
+        async with await LocalEventStore.open(root) as other:
+            assert await other.run(run_id) is None
+            async with asyncio.timeout(5):
+                if read == "run":
+                    assert await store.run(run_id) is None
+                elif read == "logged":
+                    assert [e.seq for e in await logged_events(store, run_id)] == [0, 1, 2]
+                else:
+                    assert await first_seqs(store.stream(run_id), 3) == [0, 1, 2]
+            for _ in range(100):
+                if await other.run(run_id) is not None:
+                    break
+                await asyncio.sleep(0.02)
+            info = await other.run(run_id)
+            assert info is not None
+            assert (info.status, info.events) == ("running", 3)
+            assert (await store.verify(run_id)).ok
+
+
 @pytest.mark.parametrize("stays", [False, True])
 async def test_a_reader_indexes_no_line_of_a_log_a_live_writer_holds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, stays: bool
