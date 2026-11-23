@@ -874,6 +874,45 @@ def test_tokens_add_billed_calls_to_the_priced_ones() -> None:
     assert t.priced(None, 0.9) == pytest.approx(0.752)
 
 
+def test_tokens_count_no_cost_below_0_and_no_more_cached_than_input() -> None:
+    price = Price(input=1.0, cached=0.1, output=2.0)
+    t = Tokens()
+    t.add({"input_tokens": 100, "cached_tokens": 1000, "output_tokens": -5}, -5.0)
+    t.add({}, -1.0, billed=True)
+    assert (t.input, t.reported, t.cached, t.output, t.cost, t.billed) == (100, 100, 100, 0, 0, 0)
+    assert t.priced(price, 0.9) == pytest.approx(100 * 0.1 / 1e6)
+
+
+@pytest.mark.anyio
+async def test_the_history_counts_no_cost_below_0_and_no_more_cached_than_input(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    """Run A's answer says 100 input tokens, 1000 of them cached. Run B's provider billed its
+    answer -5 USD, as a log from before the client refused such a cost can hold, and so does
+    the cost row an older AIMS kept for it."""
+    settings, path = write(tmp_path)
+    bundle = load_scenario(path)
+    over = ModelUsage(input_tokens=100, cached_tokens=1000, output_tokens=0)
+    run_a = await record(store, settings, bundle, 1e-5, usage=over)
+    usage = ModelUsage(input_tokens=100, output_tokens=10)
+    run_b = await record(store, settings, bundle, -5.0, usage=usage, source="provider")
+
+    found = await history(store)
+    assert found.spend == {"example": pytest.approx(1e-5)}
+    assert found.shares == {"agent-model": 1.0}
+    price = settings.models.get("agent").price
+    costs = {p.run_id: sum(t.priced(price, 0.0) for t in p.agents.values()) for p in found.runs}
+    # A: 100 cached input tokens at $0.1 a million. B, by its tokens: 100 input tokens at $1 and
+    # 10 output tokens at $2.
+    assert costs == {run_a: pytest.approx(1e-5), run_b: pytest.approx(1.2e-4)}
+
+    info = await store.run(run_b)
+    assert info is not None
+    old = {"v": 5, "past": None, "spend": {"example": -5.0}, "cached": {}}
+    await store.put_costs([(run_b, info.head, json.dumps(old))])
+    assert (await history(store)).spend == {"example": pytest.approx(1e-5)}
+
+
 @pytest.mark.anyio
 async def test_a_billed_call_without_token_counts_still_counts(
     tmp_path: Path, store: LocalEventStore

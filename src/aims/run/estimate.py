@@ -70,8 +70,9 @@ TYPES = (
     "operator.action",
 )
 PAGE = 1000
-# The shape of a run's cost row in the index; a row of another shape is read again.
-ROW = 5
+# The shape of a run's cost row in the index and the rules that made it; a row of another
+# version is read again.
+ROW = 6
 MILLION = 1_000_000
 
 
@@ -272,16 +273,19 @@ class Tokens:
     billed: float = 0.0
 
     def add(self, usage: Mapping[str, Any], cost: float, billed: bool = False) -> None:
+        """Count a call that cost `cost`, as the client counts it: a cost below 0 as none, a
+        count below 0 as 0 and a cached part as at most the input."""
+        cost = max(cost, 0.0)
         self.cost += cost
         if billed:
             self.billed += cost
             return
-        tokens = _int(usage.get("input_tokens"))
+        tokens = _count(usage.get("input_tokens"))
         self.input += tokens
         if usage.get("cached_tokens") is not None:
             self.reported += tokens
-            self.cached += _int(usage.get("cached_tokens"))
-        self.output += _int(usage.get("output_tokens"))
+            self.cached += min(_count(usage.get("cached_tokens")), tokens)
+        self.output += _count(usage.get("output_tokens"))
 
     def priced(self, price: Price | None, share: float) -> float:
         """The cost at `price`, with `share` of the unreported input cached, and what the
@@ -477,28 +481,32 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
                     if call is None or d.get("source") == "replay":
                         continue
                     model, watching, where = call
-                    cost = d.get("cost_usd")
-                    if isinstance(cost, int | float):
-                        spend[where] += float(cost)
+                    # A cost below 0, which a log from before the client refused one can hold,
+                    # counts as none, as the client counts it now.
+                    cost = _num(d.get("cost_usd"))
+                    paid = isinstance(d.get("cost_usd"), int | float) and cost >= 0
+                    if paid:
+                        spend[where] += cost
                     usage = _dict(d.get("usage"))
                     counted = usage.get("input_tokens") is not None and (
                         usage.get("output_tokens") is not None
                     )
-                    billed = d.get("cost_source") == "provider" and isinstance(cost, int | float)
+                    billed = d.get("cost_source") == "provider" and paid
                     if not counted and not billed:
                         continue
                     if counted and usage.get("cached_tokens") is not None:
-                        cached[model][0] += _int(usage.get("cached_tokens"))
-                        cached[model][1] += _int(usage.get("input_tokens"))
+                        given = _count(usage.get("input_tokens"))
+                        cached[model][0] += min(_count(usage.get("cached_tokens")), given)
+                        cached[model][1] += given
                     tokens = sides[watching].setdefault(model, Tokens(provider=where))
-                    tokens.add(usage, _num(cost), billed)
+                    tokens.add(usage, cost if paid else 0.0, billed)
                 case "agent.finished":
                     steps[e.agent_id or ""] = _int(d.get("steps"))
                     capped = capped or _str(d.get("reason")).startswith("budget_")
                 case "monitor.degraded":
                     watch_capped = watch_capped or d.get("part") == "budget"
                 case "monitor.sweep":
-                    swept += _num(d.get("cost_usd"))
+                    swept += max(_num(d.get("cost_usd")), 0.0)
                     reached[e.agent_id] = max(reached.get(e.agent_id, 0), _int(d.get("step_to")))
                 case "operator.action":
                     cut = cut or "kill" in (d.get("action"), d.get("then"))
@@ -2017,3 +2025,8 @@ def _num(value: object) -> float:
 
 def _int(value: object) -> int:
     return int(_num(value))
+
+
+def _count(value: object) -> int:
+    """A token count, 0 for a count below 0."""
+    return max(_int(value), 0)
