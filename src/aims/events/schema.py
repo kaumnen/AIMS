@@ -95,9 +95,16 @@ def is_blob_ref(value: object) -> bool:
     return isinstance(value, Mapping) and value.keys() == {"sha256", "size"}
 
 
-def stated_size(value: Mapping[str, Any]) -> int | None:
-    """The size a blob reference in event data states, None for any other mapping."""
-    return value["size"] if is_blob_ref(value) else None
+LOOSE_CAP = 16 * 1024 * 1024
+"""The most bytes read through a mapping that names a blob by its sha256 but is no blob
+reference. A snapshot change names the file it captured so, next to the size stat saw, which a
+file still being written passes. A snapshot captures no more than 16 MiB in all."""
+
+
+def stated_size(value: Mapping[str, Any]) -> int:
+    """The most bytes a read through `value` takes: the size a blob reference states, else
+    LOOSE_CAP."""
+    return value["size"] if is_blob_ref(value) else LOOSE_CAP
 
 
 def blob_refs(value: Any) -> Iterator[str]:

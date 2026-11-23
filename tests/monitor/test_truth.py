@@ -11,6 +11,7 @@ import stat
 import tarfile
 import threading
 import time
+import tracemalloc
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -22,6 +23,7 @@ from aims.channels import ChannelSetup
 from aims.channels.folder import Folder
 from aims.events import BlobError, LocalEventStore, RunStarted
 from aims.events.blobs import BlobStore
+from aims.events.schema import LOOSE_CAP
 from aims.monitor.config import JUDGE_MIN_OUTPUT, MAX_HOLD_S
 from aims.plants.canary import Canary, check, make, render
 from aims.run import truth
@@ -1290,6 +1292,24 @@ def test_a_scan_reads_blobs_only_from_the_run_store(tmp_path: Path) -> None:
         assert _texts({"sha256": sha, "size": 10}, run_dir) == []
         assert _texts({"sha256": sha}, run_dir) == []
     assert _texts({"sha256": own.sha256}, run_dir) == ["own text"]
+
+
+def test_a_blob_named_without_a_reference_reads_up_to_the_loose_cap(tmp_path: Path) -> None:
+    (tmp_path / "blobs").mkdir()
+    store = BlobStore(tmp_path / "blobs")
+    fits = store.put(b"k" * LOOSE_CAP)
+    over = store.put(b"k" * (4 * LOOSE_CAP))
+    change = {"path": "/work/a.txt", "size": 3}
+    assert _texts({**change, "sha256": fits.sha256}, tmp_path) == ["k" * LOOSE_CAP]
+    tracemalloc.start()
+    try:
+        assert _texts({**change, "sha256": over.sha256}, tmp_path) == []
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < LOOSE_CAP + 4 * 1024 * 1024
+    # a blob reference states its own bound
+    assert _texts(over.model_dump(), tmp_path) == ["k" * (4 * LOOSE_CAP)]
 
 
 PLANT = """\
