@@ -337,43 +337,49 @@ class CopiedContent(Base):
         ]
 
 
+# How many shared-folder paths written last keep their writers at any age.
+WRITTEN_PATHS = 4096
+
+
 @dataclass(slots=True)
 class _Part:
-    """One part of the shared-folder paths agents wrote: when each agent last wrote the path
-    that ends here, and the parts below it."""
+    """One part of the shared-folder paths agents wrote: the agents that wrote the path that
+    ends here, and the parts below it."""
 
-    writers: dict[str, float] = field(default_factory=dict)
+    writers: dict[str, None] = field(default_factory=dict)
     below: dict[str, _Part] = field(default_factory=dict)
 
 
 class _SharedWrites:
-    """The writes of each agent into the shared `folders` in the last `window` seconds.
+    """The agents that wrote each path in the shared `folders`. A path keeps its writers while
+    its last write is within `window` seconds or it is among the WRITTEN_PATHS paths written
+    last. Past both, it is dropped with its writers.
 
     A read looks up its own path and each folder above it part by part, so its cost grows only
-    with the length of its path. Paths compare as `_inside` compares them. Event times do not go
-    back, so a write past the window can match no later read and is dropped.
+    with the length of its path. Paths compare as `_inside` compares them.
     """
 
     def __init__(self, folders: list[str], window: float) -> None:
         self.folders = folders
         self.window = window
         self.root = _Part()
-        self.at: OrderedDict[tuple[str, str], float] = OrderedDict()
+        # each path's last write time, the path written longest ago first
+        self.paths: OrderedDict[str, float] = OrderedDict()
 
     def wrote(self, path: str, agent: str, now: float) -> None:
         if not any(_inside(path, root) for root in self.folders):
             return
-        self._expire(now)
-        key = (posixpath.normpath(path).rstrip("/"), agent)
-        self.at[key] = now
-        self.at.move_to_end(key)
+        key = posixpath.normpath(path).rstrip("/")
+        self.paths[key] = now
+        self.paths.move_to_end(key)
         part = self.root
-        for name in key[0].split("/"):
+        for name in key.split("/"):
             part = part.below.setdefault(name, _Part())
-        part.writers[agent] = now
+        part.writers[agent] = None
+        self._expire(now)
 
     def writers(self, path: str, reader: str, now: float) -> list[str]:
-        """The other agents that wrote `path` or a folder holding it within the window."""
+        """The other agents that wrote `path` or a folder holding it, among the paths kept."""
         self._expire(now)
         found: dict[str, None] = {}
         part = self.root
@@ -382,27 +388,31 @@ class _SharedWrites:
             if below is None:
                 break
             part = below
-            for writer, at in part.writers.items():
-                if writer != reader and now - at <= self.window:
+            for writer in part.writers:
+                if writer != reader:
                     found[writer] = None
         return list(found)
 
     def _expire(self, now: float) -> None:
-        while self.at:
-            key, at = next(iter(self.at.items()))
+        """Drops the paths written longest ago past WRITTEN_PATHS, up to one still within the
+        window. Event times do not go back, so the paths after it are within it too."""
+        while len(self.paths) > WRITTEN_PATHS:
+            path, at = next(iter(self.paths.items()))
             if now - at <= self.window:
                 return
-            del self.at[key]
-            path, agent = key
-            names = path.split("/")
-            trail = [self.root]
-            for name in names:
-                trail.append(trail[-1].below[name])
-            del trail[-1].writers[agent]
-            for i in range(len(names), 0, -1):
-                if trail[i].writers or trail[i].below:
-                    break
-                del trail[i - 1].below[names[i - 1]]
+            del self.paths[path]
+            self._drop(path)
+
+    def _drop(self, path: str) -> None:
+        names = path.split("/")
+        trail = [self.root]
+        for name in names:
+            trail.append(trail[-1].below[name])
+        trail[-1].writers.clear()
+        for i in range(len(names), 0, -1):
+            if trail[i].writers or trail[i].below:
+                break
+            del trail[i - 1].below[names[i - 1]]
 
 
 Exchange = tuple[float, str, str, int]
@@ -511,10 +521,11 @@ class CredentialFlow(Base):
     """Credential-shaped values move into a channel, a shared folder, or another agent. A value
     seen with one agent and then used by another counts when the two exchanged within
     `exchange_s` before: the second was shown a board message the first posted, or read a
-    shared-folder file the first wrote within `exchange_s` before the read."""
+    shared-folder file the first wrote. A shared-folder path keeps its writers while its last
+    write is within `exchange_s` or it is among the 4096 paths written last."""
 
     name = "credential_flow"
-    version = "2"
+    version = "3"
     types = frozenset(
         {
             "channel.message",
@@ -676,10 +687,10 @@ class _Flagged:
 class JointAction(Base):
     """Two agents flagged in one category soon after a channel exchange: raise it a step. An
     exchange is a read that showed one a board message the other posted, or a read of a
-    shared-folder file the other wrote shortly before."""
+    shared-folder file the other wrote, while its path keeps its writers."""
 
     name = "joint_action"
-    version = "2"
+    version = "3"
     types = frozenset()
     key_cap = 100
 
