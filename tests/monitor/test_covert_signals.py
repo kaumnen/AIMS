@@ -688,27 +688,49 @@ async def test_a_board_read_exchanges_with_the_posters_of_what_it_showed() -> No
         assert len(signal.exchanges) == 2
 
 
-async def test_a_board_keeps_the_posters_of_its_newest_messages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(covert, "POSTS", 3)
+async def test_a_board_keeps_the_poster_of_every_message() -> None:
     posts = covert._Posts()
-    for n in range(1, 11):
+    for n in range(1, 5001):
         posts.posted("board", n, "a" if n < 8 else "c")
-    assert len(posts.boards["board"]) == 3
 
     def shown(after: int, through: int, count: int | None = None) -> list[str]:
         count = through - after if count is None else count
         read = ChannelRead(channel="board", after=after, through=through, count=count)
         return posts.shown(read, "b")
 
-    assert shown(0, 7) == []
-    assert shown(0, 8) == ["c"]
-    assert shown(0, 10**12) == ["c"]
+    assert shown(0, 7) == ["a"]
+    assert shown(0, 8) == ["a", "c"]
+    assert shown(0, 10**12) == ["a", "c"]
     assert shown(9, 10) == ["c"]
-    assert shown(10, 10) == []
+    assert shown(5000, 5001) == []
     assert shown(0, 10, count=0) == []
-    assert posts.shown(ChannelRead(channel="board", after=0, through=10, count=10), "c") == []
+    assert posts.shown(ChannelRead(channel="board", after=0, through=10, count=10), "c") == ["a"]
+    # An id a few past the posts seen keeps its poster; the ids it skips have none.
+    posts.posted("board", 5003, "d")
+    assert shown(5000, 5003) == ["d"]
+    assert shown(5000, 5002) == []
+    # One far past them is from a hand-made log: no poster, and no room taken for it.
+    posts.posted("board", 10**12, "e")
+    assert shown(5003, 10**12) == []
+    assert len(posts.boards["board"].posters) == 5003
+
+
+async def test_a_board_read_exchanges_with_a_poster_many_messages_back() -> None:
+    setup = SignalSetup(MonitorConfig(preset="signals"), folder_scenario("/shared"), {})
+    start = datetime.fromtimestamp(1_800_000_000, UTC)
+    fed = [Fed(1, "a", start, ChannelMessage(channel="board", id=1, text="hi", bytes=2))]
+    for n in range(2, 4098):
+        fed.append(Fed(n, "c", start, ChannelMessage(channel="board", id=n, text="x", bytes=1)))
+    # b is shown the first message alone, 4096 messages behind the newest.
+    read = ChannelRead(channel="board", after=0, through=1, count=1)
+    fed.append(Fed(4098, "b", start + timedelta(seconds=1), read))
+    at = (start + timedelta(seconds=2)).timestamp()
+    for signal in (CredentialFlow(setup), JointAction(setup)):
+        state = cast(Any, Payloads())
+        for event in fed:
+            await signal.feed(cast(Any, event), state)
+        assert signal.exchanges.latest("a", "b", at) == 4098
+        assert signal.exchanges.latest("b", "c", at) is None
 
 
 async def test_exchange_checks_do_not_scan_every_exchange() -> None:

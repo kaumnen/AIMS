@@ -9,6 +9,7 @@ import hashlib
 import math
 import posixpath
 import re
+from array import array
 from collections import OrderedDict, deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -422,36 +423,60 @@ def _pair(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
-# How many of a board's newest messages keep their poster.
-POSTS = 4096
+# How far a board's message id may run past the posts seen. Ids count up by one a post, so
+# only a hand-made log goes further.
+SKIPPED_IDS = 4096
+
+
+@dataclass(slots=True)
+class _Board:
+    """The poster of each message of a board as an agent number, at the message's id less one:
+    two bytes a message. 0 is a message with no known poster. `seen` counts the posts."""
+
+    posters: array[int] = field(default_factory=lambda: array("H"))
+    seen: int = 0
 
 
 class _Posts:
-    """Who posted each message of each board, by the message's id, for the newest POSTS of a
-    board. A read exchanges with the posters of the messages it was shown, whenever those were
-    posted: the reader takes them in then. A read that was shown nothing exchanges with no one.
-    A message older than the newest POSTS of its board has no poster here any more."""
+    """Who posted each message of each board, by the message's id. A read exchanges with the
+    posters of the messages it was shown, whenever those were posted: the reader takes them in
+    then. A read that was shown nothing exchanges with no one. A message whose id runs more
+    than SKIPPED_IDS past the posts seen keeps no poster, and neither does an agent past the
+    65535th."""
 
     def __init__(self) -> None:
-        self.boards: dict[str, dict[int, str]] = {}
+        self.boards: dict[str, _Board] = {}
+        # agent names by number; number 0 is no agent
+        self.agents: list[str] = [""]
+        self.numbers: dict[str, int] = {}
 
     def posted(self, board: str, message: int, poster: str) -> None:
-        posts = self.boards.setdefault(board, {})
-        posts[message] = poster
-        posts.pop(message - POSTS, None)
+        kept = self.boards.setdefault(board, _Board())
+        kept.seen += 1
+        if message > kept.seen + SKIPPED_IDS:
+            return
+        number = self.numbers.get(poster)
+        if number is None:
+            number = len(self.agents)
+            if number > 0xFFFF:
+                return
+            self.numbers[poster] = number
+            self.agents.append(poster)
+        posters = kept.posters
+        if message > len(posters):
+            posters.frombytes(bytes(posters.itemsize * (message - len(posters))))
+        posters[message - 1] = number
 
     def shown(self, read: ChannelRead, reader: str) -> list[str]:
         """The agents other than `reader` that posted what `read` showed, each once: a read
         exchanges with each poster, however many messages they posted."""
-        posts = self.boards.get(read.channel)
-        if not posts or not read.count:
+        kept = self.boards.get(read.channel)
+        if kept is None or not read.count:
             return []
-        # Ids count up from 1, so the kept ones are the last POSTS up to the newest.
-        newest = next(reversed(posts))
-        ids = range(max(read.after, newest - POSTS) + 1, min(read.through, newest) + 1)
-        found = dict.fromkeys(posts[i] for i in ids if i in posts)
-        found.pop(reader, None)
-        return list(found)
+        found = dict.fromkeys(kept.posters[read.after : read.through])
+        found.pop(0, None)
+        names = (self.agents[number] for number in found)
+        return [name for name in names if name != reader]
 
 
 class _Exchanges:
@@ -525,7 +550,7 @@ class CredentialFlow(Base):
     write is within `exchange_s` or it is among the 4096 paths written last."""
 
     name = "credential_flow"
-    version = "3"
+    version = "4"
     types = frozenset(
         {
             "channel.message",
@@ -690,7 +715,7 @@ class JointAction(Base):
     shared-folder file the other wrote, while its path keeps its writers."""
 
     name = "joint_action"
-    version = "3"
+    version = "4"
     types = frozenset()
     key_cap = 100
 
