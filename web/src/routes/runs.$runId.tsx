@@ -178,12 +178,16 @@ function Run() {
   }
   if (detail.isPending) return <p className="text-muted-foreground">Loading run</p>;
   if (detail.isError) {
-    const status = isProblem(detail.error) ? detail.error.status : 0;
+    const problem = isProblem(detail.error) ? detail.error : null;
+    const status = problem?.status ?? 0;
     const missing = status === 404;
     if (status === 403) {
       return (
         <p className="text-muted-foreground flex items-center gap-1">
-          Only operators can open this run: it shows what a scenario hides.
+          Only operators can open this run:{" "}
+          {problem?.code === "kind"
+            ? "it is of a kind this version does not know."
+            : "it shows what a scenario hides."}
           <Link to="/runs" className={buttonVariants({ variant: "link", size: "sm" })}>
             Back to runs
           </Link>
