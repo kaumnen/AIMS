@@ -54,12 +54,24 @@ def reads(payload: Mapping[str, Any]) -> set[str]:
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class Unindexed:
+    """What `_unindexed` read: the generation of the index, then each run with a log here the
+    index does not hold, with the runs it was made from."""
+
+    generation: int
+    runs: Mapping[str, set[str]]
+
+
 async def family(
-    state: ServerState, run_id: str, unindexed: Mapping[str, set[str]] | None = None
+    state: ServerState, run_id: str, unindexed: Unindexed | None = None
 ) -> Family | None:
     """None when the control plane holds no run or job `run_id`. `unindexed` is what
     `_unindexed` read before the call, or is read here first: read before the index is asked,
-    a run that a rebuild indexes meanwhile is in it or in what the index lists."""
+    a run that a rebuild indexes meanwhile is in it or in what the index lists. A reset since
+    then, as when another process opens the folder with another index version, empties the
+    index and fills it again run by run. The index's generation tells of it: the family then
+    counts as not indexed yet, since the index may lack some of it."""
     if unindexed is None:
         unindexed = await _unindexed(state)
     info = await state.store.run(run_id)
@@ -78,9 +90,11 @@ async def family(
         for r, k in found:
             runs.setdefault(r, k)
     blocked, offline = await _check(state, runs)
-    behind = [r for r, made in unindexed.items() if r in runs or made & runs.keys()]
+    behind = [r for r, made in unindexed.runs.items() if r in runs or made & runs.keys()]
     behind += [r for r in runs if await _unheld(state, r)]
     indexing = f"run {behind[0]} is not indexed yet" if behind else None
+    if indexing is None and await state.store.generation() != unindexed.generation:
+        indexing = "the index was reset meanwhile"
     return Family(run_id, runs, blocked, offline, indexing)
 
 
@@ -92,13 +106,15 @@ async def _unheld(state: ServerState, run_id: str) -> bool:
         return False
 
 
-async def _unindexed(state: ServerState) -> dict[str, set[str]]:
+async def _unindexed(state: ServerState) -> Unindexed:
     """Each run with a log here the index does not hold, with the runs it was made from. The
     index is read once, before the logs are listed: a run made in between has a log and is
-    looked at on its own."""
+    looked at on its own. Its generation is read first, so a reset after it shows."""
+    generation = await state.store.generation()
     held = await state.store.indexed()
     behind = [r for r in state.store.run_ids() if r not in held]
-    return {r: await _made_of(state, r) for r in behind if await _unheld(state, r)}
+    runs = {r: await _made_of(state, r) for r in behind if await _unheld(state, r)}
+    return Unindexed(generation, runs)
 
 
 async def _made_of(state: ServerState, run_id: str) -> set[str]:

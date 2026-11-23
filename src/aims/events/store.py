@@ -1317,6 +1317,11 @@ class LocalEventStore:
         """Every run the index holds, as one read sees them."""
         return await self._index.run_ids()
 
+    async def generation(self) -> int:
+        """The generation of the index, which a reset changes, as when another process with
+        another index version opens the folder and indexes every run again."""
+        return await self._index.generation()
+
     async def ended_before(self, at: str) -> list[str]:
         """The runs that ended before the timestamp `at`."""
         return await self._index.ended_before(at)

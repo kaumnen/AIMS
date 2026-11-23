@@ -286,6 +286,77 @@ async def test_a_delete_waits_while_the_index_does_not_hold_the_runs_made_from_i
         assert sorted(r.json()["run_ids"]) == sorted([run, review, score])
 
 
+async def family_of_three(
+    cp: CP, local: LocalEventStore, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """A run that ended ten days ago, its monitor run and a score of both."""
+    with monkeypatch.context() as m:
+        m.setattr(event_store, "now", lambda: back(10))
+        run = await made(cp, local, runner)
+    review = await made(cp, local, runner, kind="monitor", origin=run)
+    score = await made(cp, local, runner, kind="score", origin=run, monitor=review)
+    return [run, review, score]
+
+
+async def reset_elsewhere(cp: CP, run: str) -> None:
+    """Another process resets the index, as a new index version does when it opens the
+    folder, and has indexed `run` again so far. The runs made from it sort after it."""
+    other = await Index.open(cp.state.store.root / event_store.INDEX)
+    try:
+        await other.reset()
+    finally:
+        await other.close()
+    await cp.state.store._index_log(run)
+
+
+async def test_prune_keeps_a_family_the_index_was_reset_under(
+    cp: CP, local: LocalEventStore, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = await family_of_three(cp, local, runner, monkeypatch)
+    real = retention.family
+    resets: list[str] = []
+
+    async def family(state: Any, root: str, unindexed: Any = None) -> Any:
+        if not resets:
+            await reset_elsewhere(cp, runs[0])
+            resets.append(root)
+        return await real(state, root, unindexed)
+
+    monkeypatch.setattr(retention, "family", family)
+    assert await retention.prune(cp.state, 5) == []
+    assert resets == [runs[0]]
+    monkeypatch.undo()
+    await cp.state.store.sync()
+    assert [r for r in runs if await cp.state.store.run(r) is None] == []
+    assert sorted(await retention.prune(cp.state, 5)) == sorted(runs)
+
+
+async def test_a_delete_waits_while_another_process_resets_the_index(
+    cp: CP, local: LocalEventStore, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = await family_of_three(cp, local, runner, monkeypatch)
+    real = retention._unindexed
+    resets: list[bool] = []
+
+    async def unindexed(state: Any) -> Any:
+        out = await real(state)
+        if not resets:
+            await reset_elsewhere(cp, runs[0])
+            resets.append(True)
+        return out
+
+    monkeypatch.setattr(retention, "_unindexed", unindexed)
+    async with cp.client(cp.operator) as c:
+        r = await c.delete(f"/api/runs/{runs[0]}")
+        assert r.status_code == 503, r.text
+        assert r.json()["code"] == "indexing"
+        assert resets == [True]
+        monkeypatch.undo()
+        await cp.state.store.sync()
+        r = await c.delete(f"/api/runs/{runs[0]}")
+        assert sorted(r.json()["run_ids"]) == sorted(runs)
+
+
 async def test_a_run_whose_folder_went_before_its_rows_reads_as_unknown(
     cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
