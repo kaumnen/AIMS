@@ -891,7 +891,7 @@ def test_a_file_of_more_than_max_frames_is_read_as_is(tmp_path: Path) -> None:
         if held:
             assert writer.commit().size == len(blob)
         else:
-            with pytest.raises(BlobError, match="do not match"):
+            with pytest.raises(BlobError, match=f"goes on past {MAX_FRAMES} zstd frames"):
                 writer.commit()
 
 

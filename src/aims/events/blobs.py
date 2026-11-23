@@ -75,6 +75,10 @@ def _frames(raw: bytes, limit: int | None = None) -> bytes | None:
     return b"".join(parts)
 
 
+class _TooManyFrames(zstd.ZstdError):
+    """Data that goes on past MAX_FRAMES frames."""
+
+
 class _Frames:
     """Decodes zstd frames from data fed a piece at a time, CHUNK bytes of output at a time.
     The one decoder every streaming read and write uses. A frame that is whole in the data fed
@@ -101,7 +105,7 @@ class _Frames:
                 return
             elif frame is None:
                 if self.count >= MAX_FRAMES:
-                    raise zstd.ZstdError(f"more than {MAX_FRAMES} frames")
+                    raise _TooManyFrames(f"more than {MAX_FRAMES} frames")
                 frame = self._frame = zstd.ZstdDecompressor()
                 carried = False
                 piece = rest
@@ -564,6 +568,8 @@ class BlobWriter:
         self._frames: _Frames | None = None
         self._start = b""
         self._done = False
+        # whether decoding stopped at MAX_FRAMES
+        self._many = False
 
     def write(self, chunk: bytes) -> None:
         if not chunk:
@@ -598,7 +604,8 @@ class BlobWriter:
                 if self._decoded_size > self.limit:
                     raise BlobError(f"blob {self.sha256} is over {self.limit} bytes")
                 self._decoded.update(out)
-        except zstd.ZstdError:
+        except zstd.ZstdError as e:
+            self._many = isinstance(e, _TooManyFrames)
             self._decoded = None
             self._done = True
 
@@ -621,6 +628,11 @@ class BlobWriter:
                 if size > self.limit:
                     raise BlobError(f"blob {self.sha256} is over {self.limit} bytes")
                 self._pack(size, framed=False)
+            elif self._many:
+                raise BlobError(
+                    f"the file sent for blob {self.sha256} goes on past {MAX_FRAMES} zstd frames,"
+                    " the most a store decodes"
+                )
             else:
                 raise BlobError(f"the bytes sent do not match blob {self.sha256}")
             if size > self.limit:
