@@ -803,17 +803,57 @@ async def _stop_lines(store: Any, kind: str, run_ids: list[str]) -> list[str]:
     return lines
 
 
-async def _seal_left(store: Any, say: Callable[[str], object]) -> None:
+async def _seal_left(store: Any, say: Callable[[str], object]) -> list[str]:
     """Seal as failed each run in `store` that an earlier process left running, as `aims
     runner` does when it starts. `say` gets one line with how many. A run another process
-    still writes is left alone."""
+    still writes is left alone. Returns the runs it sealed."""
     from aims.run.runner import ENDED, seal_unsealed
 
-    sealed = len(await seal_unsealed(store, reason=ENDED))
-    if sealed == 1:
+    sealed = await seal_unsealed(store, reason=ENDED)
+    if len(sealed) == 1:
         say("an earlier process left 1 run running; it is sealed as failed")
     elif sealed:
-        say(f"an earlier process left {sealed} runs running; they are sealed as failed")
+        say(f"an earlier process left {len(sealed)} runs running; they are sealed as failed")
+    return sealed
+
+
+SHIP_SEALED_S = 30.0
+
+
+async def _ship_sealed(
+    store: Any, run_ids: list[str], link: tuple[str, str] | None, say: Callable[[str], object]
+) -> None:
+    """Ship the runs of `run_ids` that the control plane at `link` holds a copy of, so it
+    shows them sealed too. `_seal_left` sealed them; a run the control plane never got stays
+    here. Waits at most SHIP_SEALED_S, as a shipper tries again without end; `say` gets what
+    did not reach it."""
+    import asyncio
+
+    from aims.node.client import ControlClient
+    from aims.node.shipper import Shipper
+
+    if link is None or not run_ids:
+        return
+    client = ControlClient(*link, runner=f"push@{_hostname()}")
+    try:
+        async with asyncio.timeout(SHIP_SEALED_S):
+            await client.hello(_push_hello(client.runner))
+            heads = await client.heads(run_ids)
+            for run_id in run_ids:
+                head = heads.get(run_id)
+                if head is None or head.seq < 0 or head.deleted:
+                    continue
+                shipper = Shipper(store, client, run_id, seen=True)
+                await shipper.run()
+                if reason := shipper.diverged or shipper.refused:
+                    say(f"{run_id} did not reach the control plane: {reason}")
+    except Exception as e:
+        # The command goes on whatever went wrong here, as an answer that is no control
+        # plane's. Its first line is enough to say why.
+        why = (str(e) or type(e).__name__).splitlines()[0]
+        say(f"the sealed runs did not reach the control plane: {why}; `aims push` them later")
+    finally:
+        await client.aclose()
 
 
 async def _stopped(store: Any, run_id: str, kind: str) -> None:
@@ -1544,8 +1584,12 @@ async def _run(**o: Any) -> int:
     except (ConfigError, ProfileError, TextError) as e:
         return fail(str(e))
     models, prompts = settings.models, settings.prompts
+
+    def say(text: str) -> None:
+        err.print(shown(text, "yellow"))
+
     async with await LocalEventStore.open(o["runs_dir"]) as store:
-        await _seal_left(store, lambda text: err.print(shown(text, "yellow")))
+        await _ship_sealed(store, await _seal_left(store, say), o["link"], say)
         origin = None
         fork_base: Fork | None = None
         try:
@@ -2542,28 +2586,31 @@ def push(
     raise typer.Exit(code)
 
 
+def _push_hello(name: str) -> Any:
+    """The hello of a client that only ships runs: it takes no job."""
+    from aims.node.link import arch
+    from aims.wire import RunnerHello, TracerHealth
+
+    return RunnerHello(
+        name=name,
+        version=__version__,
+        arch=arch(),
+        tracer=TracerHealth(alive=False, detail="push only"),
+        slots=0,
+    )
+
+
 async def _push(
     root: Path, only: list[str] | None, url: str, token: str, *, quiet: bool = False
 ) -> int:
-    from aims import __version__
     from aims.events import LocalEventStore
     from aims.node.client import ControlClient
-    from aims.node.link import arch
     from aims.node.shipper import Shipper
-    from aims.wire import RunnerHello, TracerHealth
 
     async with await LocalEventStore.open(root) as store:
         client = ControlClient(url, token, runner=f"push@{_hostname()}")
         try:
-            await client.hello(
-                RunnerHello(
-                    name=client.runner,
-                    version=__version__,
-                    arch=arch(),
-                    tracer=TracerHealth(alive=False, detail="push only"),
-                    slots=0,
-                )
-            )
+            await client.hello(_push_hello(client.runner))
             failed = 0
             for run_id in only or store.run_ids():
                 info = await store.run(run_id)
@@ -2747,8 +2794,12 @@ async def _monitor_runs(**o: Any) -> int:
         return fail(str(e))
     mode = "signals_only" if o["signals_only"] else "judge_only" if o["judge_only"] else "full"
     results: list[OfflineResult] = []
+
+    def say(text: str) -> None:
+        err.print(shown(text, "yellow"))
+
     async with await LocalEventStore.open(o["runs_dir"]) as store:
-        await _seal_left(store, lambda text: err.print(shown(text, "yellow")))
+        await _ship_sealed(store, await _seal_left(store, say), o["link"], say)
         planned = []
         costs = []
         lists = PriceLists()

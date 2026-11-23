@@ -1669,6 +1669,99 @@ async def test_push_goes_on_past_a_run_deleted_under_it(
     assert f"{second} completed 2 events" in result.output
 
 
+async def left_runs(cp: CP, root: Path) -> tuple[str, str]:
+    """Two runs a linked process left running in `root` as it died: the control plane got
+    the lines of the first, never any of the second."""
+    from aims.node.client import ControlClient
+    from aims.node.shipper import Shipper
+    from aims.wire import RunnerHello, TracerHealth
+
+    started = RunStarted(scenario="left", oversight="observe", agents=["a"])
+    async with await LocalEventStore.open(root) as store:
+        held = await store.create_run(started)
+        await store.append(held, [Draft(ToolCall(call_id="c", name="x", arguments="{}"), "a")])
+        local = await store.create_run(started)
+        client = ControlClient(cp.url, cp.runner, runner="run-host-1")
+        hello = RunnerHello(
+            name=client.runner, version=cli.__version__, arch="x", tracer=TracerHealth(alive=True)
+        )
+        await client.hello(hello)
+        task = asyncio.create_task(Shipper(store, client, held, seen=True).run())
+        try:
+            async with asyncio.timeout(10):
+                while True:
+                    head = await cp.state.store.head(held)
+                    if head is not None and head.seq >= 1:
+                        break
+                    await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            await client.aclose()
+    return held, local
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # each ends in an error after it seals: it names a run there is none of
+        ["monitor", "01a18000-0000-7000-8000-000000000001", "--signals-only"],
+        ["run", "--replay", "01a18000-0000-7000-8000-000000000001", "--monitor", "off"],
+    ],
+)
+async def test_a_linked_command_ships_the_runs_it_seals_that_the_control_plane_holds(
+    cp: CP, tmp_path: Path, command: list[str]
+) -> None:
+    root = tmp_path / "runs"
+    held, local = await left_runs(cp, root)
+    info = await cp.state.store.run(held)
+    assert info is not None
+    assert info.status == "running"
+    args = [*command, "--runs-dir", str(root), "--server", cp.url]
+    env = {"AIMS_TOKEN": cp.runner}
+    result = await asyncio.to_thread(CliRunner().invoke, app, args, env=env)
+    assert result.exit_code == 1, result.output
+    said = " ".join(result.output.split())
+    assert "an earlier process left 2 runs running; they are sealed as failed" in said
+    assert "did not reach" not in said
+    info = await cp.state.store.run(held)
+    assert info is not None
+    assert info.status == "failed"
+    copy = cp.state.store.root / held / "events.jsonl"
+    assert copy.read_bytes() == (root / held / "events.jsonl").read_bytes()
+    # a run the control plane never got stays here
+    assert await cp.state.store.run(local) is None
+
+
+async def test_a_sealed_run_that_does_not_reach_the_control_plane_says_to_push_it(
+    cp: CP, tmp_path: Path
+) -> None:
+    """The command goes on with a hint, whether nothing answers or something that is no
+    control plane answers 200."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        closed = f"http://127.0.0.1:{s.getsockname()[1]}"
+    junk = ThreadingHTTPServer(("127.0.0.1", 0), type("Junk", (Refusing,), {"status": 200}))
+    threading.Thread(target=junk.serve_forever, daemon=True).start()
+    try:
+        for name, url in (("closed", closed), ("junk", f"http://127.0.0.1:{junk.server_port}")):
+            root = tmp_path / name / "runs"
+            held, _ = await left_runs(cp, root)
+            args = ["monitor", held, "--signals-only", "--runs-dir", str(root), "--server", url]
+            env = {"AIMS_TOKEN": "aims_x"}
+            result = await asyncio.to_thread(CliRunner().invoke, app, args, env=env)
+            assert result.exception is None or isinstance(result.exception, SystemExit), name
+            said = " ".join(result.output.split())
+            assert "the sealed runs did not reach the control plane:" in said, name
+            assert "`aims push` them later" in said, name
+            # the command went on to its own work, which finds no scenario in the run
+            assert f"error: {held}: run {held} is not a scenario run" in said, name
+    finally:
+        junk.shutdown()
+        junk.server_close()
+
+
 class Refusing(BaseHTTPRequestHandler):
     """Answers every request with its class's status and a problem body."""
 
