@@ -76,6 +76,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- Settings > Models fits the screen. At 800 to 1024 px wide the page was up to 271 px wider than the screen, so the Check buttons were off screen. The Keys column now shows from 1024 px up. A check's problem wraps.
+- A sweep's summary and error wrap on a phone. They ran past the edge of the screen.
 - The monitor reads only the head and tail of a large blob it shows. Its state, judge, renders, channel checks and scoring decoded each blob whole, so a 512 MiB text took up to 1.5 GiB. Each now holds at most 1 MiB of it. Past 1 MiB two renders differ. A 160-byte short form counts fewer bytes as cut. Tool call arguments are parsed from their two ends. JSON that breaks there shows as one cut text. When it still parses, a long field counts fewer bytes as cut. A long `command` then also shows on its exec.
 - The board tools' texts show in `aims prompts show`, `GET /api/prompts`, the settings page and a scenario's Prompts tab, under the names the scenario gives its board tools. A config file's board texts are checked when it loads. A board text in the config no longer fails the runs of a scenario without a board.
 - A blob download gives the blob's own bytes. A blob kept as the zstd frame it arrived as came back decoded, or empty when the frame was cut. A damaged blob file gives 404. A blob that arrives as plain bytes is stored as a zstd frame.
