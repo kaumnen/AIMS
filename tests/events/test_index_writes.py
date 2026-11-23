@@ -1356,7 +1356,7 @@ async def test_a_run_no_writer_here_holds_is_corrupt_once_and_takes_its_events_a
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """With no writer or sink here, nothing tells lines a writer cut from a log that lost
-    events: the index keeps the run corrupt until a rebuild."""
+    events: the index keeps the run corrupt until it is built again, as its error says."""
     root = tmp_path / "runs"
     async with await LocalEventStore.open(root) as store:
         run_id = await store.create_run(STARTED)
@@ -1373,16 +1373,22 @@ async def test_a_run_no_writer_here_holds_is_corrupt_once_and_takes_its_events_a
             assert info is not None
             assert info.status == "corrupt"
             assert len(caplog.records) == 1
-            assert "rebuild the index" in caplog.records[0].getMessage()
+            told = caplog.records[0].getMessage()
+            assert "Then delete index.sqlite with its -wal and -shm files" in told
             with pytest.raises(RunCorrupt):
                 await store.append(run_id, [call(2)])
             assert (await store.verify(run_id)).error == (
                 "the last event the index holds is not the log's"
             )
-            await store.rebuild()
-            await store.append(run_id, [call(2)])
-            assert await indexed(store, run_id) == logged(store, run_id) == [0, 1, 2]
-            assert (await store.verify(run_id)).ok
+    for name in (INDEX, f"{INDEX}-wal", f"{INDEX}-shm"):
+        (root / name).unlink(missing_ok=True)
+    async with await LocalEventStore.open(root) as store:
+        info = await store.run(run_id)
+        assert info is not None
+        assert info.status == "running"
+        await store.append(run_id, [call(2)])
+        assert await indexed(store, run_id) == logged(store, run_id) == [0, 1, 2]
+        assert (await store.verify(run_id)).ok
 
 
 async def test_a_sealed_run_the_index_is_behind_on_reads_its_log_head_once(

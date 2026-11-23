@@ -1736,8 +1736,10 @@ class LocalEventStore:
                     if status != "corrupt":
                         await self._index.mark_corrupt(run_id)
                     raise RunCorrupt(
-                        f"run {run_id}: the log no longer holds event {head.seq} recorded by the"
-                        " index; rebuild the index to accept the log as it is"
+                        f"run {run_id}: the log no longer holds event {head.seq}, which the index"
+                        " recorded. To index the log as it is, stop every aims process that uses"
+                        f" the folder of runs. Then delete {INDEX} with its -wal and -shm files in"
+                        " that folder. The next start indexes every log again"
                     )
                 await self._retake(run_id)
                 head = Head()
