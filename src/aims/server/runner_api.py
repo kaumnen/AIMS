@@ -476,6 +476,8 @@ async def put_truth(
         if size > TRUTH_LIMIT:
             raise ProblemException(413, "Too large", f"a truth file is at most {TRUTH_LIMIT} bytes")
         chunks.append(chunk)
+    if state.before_truth is not None:
+        await state.before_truth(run_id)
     try:
         kept = await state.store.put_truth(run_id, b"".join(chunks))
     except TruthRefused as e:

@@ -3,6 +3,7 @@ each run once its truth file arrives, what the scenario list says about each sce
 newest model check of each profile."""
 
 import asyncio
+import contextlib
 import hashlib
 import io
 import json
@@ -10,12 +11,12 @@ import shutil
 import sqlite3
 import tarfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-from cp import CP, control_plane
+from cp import CP, control_plane, start, stop, write_ui
 from scripted import profile
 from test_monitor_api import call, started
 from test_score_api import RECORD, ScoreRunner
@@ -44,6 +45,9 @@ from aims.run.job import Job, bundle_of, job_bundle
 from aims.run.runner import RunError
 from aims.scenario import Bundle, Scenario, folder_tar, parse
 from aims.server import api, score_api
+from aims.server.app import create_app
+from aims.server.db import OPEN_STATES
+from aims.server.state import ServerState, close_state, open_state
 from aims.wire import MonitorJob, OfferMessage
 
 pytestmark = pytest.mark.anyio
@@ -556,6 +560,91 @@ async def test_a_score_that_waited_too_long_for_the_index_says_why(
         ]
     finally:
         await fake.close()
+
+
+@contextlib.asynccontextmanager
+async def started_on(data: Path, project: Path, ui: Path) -> AsyncGenerator[ServerState]:
+    """A control plane started on the data dir `data`, as `aims ui` starts after a stop."""
+    state = await open_state(data, project=project)
+    try:
+        server, task, _ = await start(create_app(state, ui=ui))
+        try:
+            yield state
+        finally:
+            await stop(server, task)
+    finally:
+        await close_state(state)
+
+
+@pytest.mark.parametrize("where", ["queue", "wait"])
+async def test_a_score_a_hard_stop_left_unqueued_is_kept_as_one_that_did_not_start(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, where: str
+) -> None:
+    """The control plane is killed after it kept a run's truth file and before it queued the
+    score the run's job asked for: as it queues it, or as it waits for the index. As it starts
+    again it keeps that score as one that did not start, with the reason. It queues none, so
+    none spends."""
+    fake = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
+    await fake.connect()
+    try:
+        run_id = await shipped_for_score(cp, local, fake)
+        parked = asyncio.Event()
+        if where == "queue":
+
+            async def park(*args: object, **kwargs: object) -> None:
+                parked.set()
+                await asyncio.Event().wait()
+
+            monkeypatch.setattr(score_api, "queue_score", park)
+        else:
+            monkeypatch.setattr(score_api, "INDEXED_POLL_S", 0.05)
+            real = cp.state.store.run
+
+            async def behind(asked: str) -> Any:
+                if asked == run_id:
+                    parked.set()
+                    return None
+                return await real(asked)
+
+            monkeypatch.setattr(cp.state.store, "run", behind)
+        put = asyncio.create_task(fake.client.put_truth(run_id, truth.encode(RECORD)))
+        await asyncio.wait_for(parked.wait(), 10)
+        # what a kill leaves on disk
+        image = tmp_path / "image"
+        await asyncio.to_thread(shutil.copytree, cp.state.data, image)
+        put.cancel()
+        await asyncio.gather(put, return_exceptions=True)
+    finally:
+        await fake.close()
+    assert (image / "runs" / run_id / "truth.json").is_file()
+    ui = write_ui(tmp_path / "ui-after")
+    for _ in range(2):
+        async with started_on(image, cp.project, ui) as state:
+            scores = await state.db.jobs_page(before=None, limit=10, kind="score")
+            assert [(j.payload["origin"], j.state, j.reason) for j in scores] == [
+                (run_id, "done", "the control plane stopped before it queued this score")
+            ]
+            assert not any(j.state in OPEN_STATES for j in await state.db.jobs())
+            assert list((image / score_api.PENDING).iterdir()) == []
+
+
+async def test_a_score_that_queued_leaves_nothing_for_the_next_start(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """A score that queued and was deleted later does not come back as one that did not
+    start."""
+    fake = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
+    await fake.connect()
+    try:
+        run_id = await shipped_for_score(cp, local, fake)
+        await fake.client.put_truth(run_id, truth.encode(RECORD))
+    finally:
+        await fake.close()
+    [score] = await cp.state.db.jobs_page(before=None, limit=10, kind="score")
+    assert list((cp.state.data / score_api.PENDING).iterdir()) == []
+    await cp.state.db.forget([score.run_id])
+    await score_api.keep_lost(cp.state)
+    assert await cp.state.db.jobs_page(before=None, limit=10, kind="score") == []
 
 
 async def test_a_score_that_fails_to_queue_keeps_the_truth_file(

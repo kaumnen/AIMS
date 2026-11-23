@@ -4,8 +4,10 @@ monitor flags for review. The same code as `aims score`, `aims rates` and `aims 
 import asyncio
 import dataclasses
 import logging
+import os
 import time
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Query
@@ -13,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from aims.config import Settings
 from aims.events import Label, LabelKind
+from aims.events.disk import make_dir, sync_dir
+from aims.events.store import is_run_id
 from aims.models import ProfileError
 from aims.models.listprice import Listing
 from aims.monitor.offline import origin_agents
@@ -129,7 +133,7 @@ async def score_after(state: ServerState, run_id: str) -> None:
     index does not hold it, the score waits up to INDEXED_WAIT_S. A score that cannot queue is
     kept as a score job that ended before it started, with the reason."""
     job = await state.db.job(run_id)
-    if job is None or not job.payload.get("options", {}).get("score"):
+    if job is None or not _asks_score(job):
         return
     end = time.monotonic() + INDEXED_WAIT_S
     while True:
@@ -147,7 +151,7 @@ async def score_after(state: ServerState, run_id: str) -> None:
             late = time.monotonic() >= end or state.stopping.is_set()
             if e.problem.code != "indexing" or late:
                 scenario = info.scenario if info is not None else _scenario_name(job)
-                await _unqueued(state, job, run_id, scenario, e)
+                await _unqueued(state, job, run_id, scenario, str(e))
                 return
         except Exception:
             log.exception("scoring run %s failed", run_id)
@@ -156,11 +160,11 @@ async def score_after(state: ServerState, run_id: str) -> None:
 
 
 async def _unqueued(
-    state: ServerState, job: sdb.Job, run_id: str, scenario: str | None, e: ProblemException
+    state: ServerState, job: sdb.Job, run_id: str, scenario: str | None, why: str
 ) -> None:
     """Keep a score of run `run_id` that could not queue as a score job that ended before it
     started, with the reason."""
-    log.warning("run %s was not scored: %s", run_id, e)
+    log.warning("run %s was not scored: %s", run_id, why)
     now = time.time()
     row = sdb.Job(
         run_id=str(uuid.uuid7()),
@@ -176,10 +180,81 @@ async def _unqueued(
         token=job.token,
         created=now,
         updated=now,
-        reason=str(e),
+        reason=why,
     )
     await state.db.add_jobs([row])
     state.touch_job(row)
+
+
+def _asks_score(job: sdb.Job) -> bool:
+    options = job.payload.get("options")
+    return isinstance(options, dict) and bool(options.get("score"))
+
+
+# A score the control plane is about to queue. Its mark goes in before the run's truth file is
+# kept and out once the score queued or was kept as one that did not. A hard stop between the
+# two leaves the mark for the next start.
+PENDING = "scores-pending"
+LOST = "the control plane stopped before it queued this score"
+
+
+async def mark_pending(state: ServerState, run_id: str) -> None:
+    """Mark the score of run `run_id` as pending, before its truth file is kept: its job asks
+    for a score and no truth file is here yet."""
+    job = await state.db.job(run_id)
+    if job is not None and _asks_score(job) and is_run_id(run_id):
+        truth = state.store.truth_path(run_id)
+        await asyncio.to_thread(_mark, state.data / PENDING, run_id, truth)
+
+
+def _mark(folder: Path, run_id: str, truth: Path) -> None:
+    if truth.is_file():
+        return
+    make_dir(folder, parents=True)
+    fd = os.open(folder / run_id, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    sync_dir(folder)
+
+
+async def unmark_pending(state: ServerState, run_id: str) -> None:
+    await asyncio.to_thread((state.data / PENDING / run_id).unlink, missing_ok=True)
+
+
+async def keep_lost(state: ServerState) -> None:
+    """Keep each score that a hard stop left pending as a score job that did not start, with
+    the reason. None is queued, so none spends; a person starts it again. The control plane
+    runs this as it starts, before it serves."""
+    folder = state.data / PENDING
+
+    def marks() -> list[str]:
+        return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+
+    for run_id in await asyncio.to_thread(marks):
+        if is_run_id(run_id):
+            await _keep_lost(state, run_id)
+        await unmark_pending(state, run_id)
+
+
+async def _keep_lost(state: ServerState, run_id: str) -> None:
+    """A run with no job here, no truth file or a score already, or one cancelled, needs no
+    score kept."""
+    job = await state.db.job(run_id)
+    if job is None or not _asks_score(job) or job.reason == "cancelled":
+        return
+    if not await asyncio.to_thread(state.store.truth_path(run_id).is_file):
+        return
+    if await state.db.jobs_page(before=None, limit=1, kind="score", origin=run_id):
+        return
+    if await state.store.runs(kind="score", origin=run_id, limit=1):
+        return
+    info = await state.store.run(run_id)
+    if info is not None and info.status == "cancelled":
+        return
+    scenario = info.scenario if info is not None else _scenario_name(job)
+    await _unqueued(state, job, run_id, scenario, LOST)
 
 
 def _scenario_name(job: sdb.Job) -> str | None:

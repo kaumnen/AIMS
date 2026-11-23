@@ -3,6 +3,7 @@ touches Docker; runners do."""
 
 import asyncio
 import json
+import logging
 import mimetypes
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -45,6 +46,8 @@ from aims.server.limits import BodyLimit
 from aims.server.problems import Problem
 from aims.server.state import ServerState
 from aims.wire import RunnerFeed, StreamMessage
+
+log = logging.getLogger("aims.server")
 
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]", "::1")
 REF = "#/components/schemas/{model}"
@@ -114,6 +117,11 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        # before it serves: a truth upload would race the marks it reads
+        try:
+            await score_api.keep_lost(state)
+        except Exception:
+            log.exception("the scores a stop left pending were not looked at")
         task = asyncio.create_task(dispatch.run(state)) if dispatcher else None
         try:
             yield
@@ -132,13 +140,19 @@ def create_app(
     )
     app.state.server = state
 
+    async def before_truth(run_id: str) -> None:
+        await score_api.mark_pending(state, run_id)
+
     async def on_truth(run_id: str) -> None:
         await score_api.score_after(state, run_id)
+        # only the upload that kept the file takes the mark away: another may still wait
+        await score_api.unmark_pending(state, run_id)
         state.poke()
 
     async def on_job_done(job: Job, status: str | None) -> None:
         await edit_api.after_check(state, job, status)
 
+    state.before_truth = before_truth
     state.on_truth = on_truth
     state.on_job_done = on_job_done
     app.state.auth = state.auth

@@ -293,6 +293,8 @@ class ServerState:
     # set as the server shuts down, so live streams end instead of holding it open
     stopping: asyncio.Event = field(default_factory=asyncio.Event)
     _history: tuple[int, History] | None = None
+    # called with a run's id before a truth file of it is kept here
+    before_truth: Callable[[str], Awaitable[None]] | None = None
     # called with a run's id once its truth file is kept here
     on_truth: Callable[[str], Awaitable[None]] | None = None
     # called once with a job as the end of its run moves it to done, and the run's status
