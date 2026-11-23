@@ -263,6 +263,14 @@ async def test_healthz_needs_no_token_and_tells_nothing_else(cp: CP) -> None:
         await stop(server, task)
 
 
+async def test_the_test_control_plane_stops_a_server_restarted_into_it(tmp_path: Path) -> None:
+    async with control_plane(tmp_path) as cp:
+        port = int(cp.url.rsplit(":", 1)[1])
+        await stop(cp.server, cp.task)
+        cp.server, cp.task, _ = await start(create_app(cp.state, dispatcher=False), port)
+    assert cp.task.done()
+
+
 async def test_the_api_schema_needs_a_viewer_token(cp: CP, tmp_path: Path) -> None:
     async with cp.client() as anon:
         r = await anon.get("/api/openapi.json")

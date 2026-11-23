@@ -133,20 +133,15 @@ async def control_plane(tmp: Path, *, auth: bool = True) -> AsyncGenerator[CP]:
         viewer = await state.db.create_token("viewer", "viewer")
         runner = await state.db.create_token("r1", "runner")
         server, task, port = await start(create_app(state, ui=ui))
+        cp = CP(f"http://127.0.0.1:{port}", state, project, operator, viewer, runner, server, task)
         try:
-            yield CP(
-                f"http://127.0.0.1:{port}",
-                state,
-                project,
-                operator,
-                viewer,
-                runner,
-                server,
-                task,
-            )
+            yield cp
         finally:
             # as `aims ui` stops: open streams end before the server and the db close
             state.stopping.set()
-            await stop(server, task)
+            # a test may have restarted the server into `cp`
+            await stop(cp.server, cp.task)
+            if cp.task is not task:
+                await stop(server, task)
     finally:
         await close_state(state)
