@@ -11,6 +11,7 @@ from pathlib import Path
 
 from aims.config import ConfigError, Layers, Settings, layers, load
 from aims.events import Event, LocalEventStore
+from aims.events.store import CONTROL_PLANE
 from aims.models import Delta, DeltaBus, ProfileError
 from aims.models.add import ServerLists
 from aims.models.keys import Keys, KeysError, reported
@@ -366,6 +367,20 @@ class ServerState:
             )
 
 
+MARK = (
+    "A control plane keeps its runs here. Only it writes this folder. aims commands that write"
+    " runs refuse it.\n"
+)
+
+
+def _mark(root: Path) -> None:
+    """Mark `root` as this control plane's runs folder, so a command that writes runs refuses
+    it: a run another process sealed there would differ from what the runners ship."""
+    path = root / CONTROL_PLANE
+    if not path.exists():
+        path.write_text(MARK, encoding="utf-8")
+
+
 async def open_state(
     data: Path,
     *,
@@ -386,6 +401,12 @@ async def open_state(
         await audit.prune(db, config.layers)
         store = await LocalEventStore.open(data / "runs", ingest_only=True)
     except BaseException:
+        await db.close()
+        raise
+    try:
+        await asyncio.to_thread(_mark, store.root)
+    except BaseException:
+        await store.close()
         await db.close()
         raise
     state = ServerState(

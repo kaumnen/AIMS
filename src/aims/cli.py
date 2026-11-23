@@ -54,8 +54,9 @@ class _App(typer.Typer):
     """An error no command handles ends with exit code 1 and its traceback on stderr, written
     through visible(). Typer's Rich traceback prints the error's text as it is, escape bytes
     too. Exit, usage errors, Ctrl-C and a closed pipe end in typer as before. A folder of runs
-    that cannot be written ends with one line: a person can do that, it is no fault of aims.
-    An answer to a question that is not UTF-8 is invalid input. The question is asked again."""
+    that cannot be written, or a control plane's that a command would write, ends with one
+    line: a person can do that, it is no fault of aims. An answer to a question that is not
+    UTF-8 is invalid input. The question is asked again."""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         import io
@@ -67,9 +68,9 @@ class _App(typer.Typer):
         try:
             return super().__call__(*args, **kwargs)
         except Exception as e:
-            from aims.events.store import IndexUnwritable
+            from aims.events.store import ControlPlaneRuns, IndexUnwritable
 
-            if isinstance(e, IndexUnwritable):
+            if isinstance(e, IndexUnwritable | ControlPlaneRuns):
                 _echo(f"error: {e}", err=True)
                 raise SystemExit(1) from None
             import contextlib
@@ -316,7 +317,7 @@ def verify(
         """What the store says of the run, as the server and a report say it. None when the
         index does not open."""
         try:
-            store = await LocalEventStore.open(path.parent)
+            store = await LocalEventStore.open(path.parent, reads=True)
         except (OSError, sqlite3.Error) as e:
             _echo(
                 f"note: the index in {path.parent} did not open, so it was not checked: {e}",
@@ -361,7 +362,7 @@ def check_plants(
     from aims.terminal import json_text
 
     async def main() -> tuple[list[Any], list[str]]:
-        async with await LocalEventStore.open(runs_dir) as store:
+        async with await LocalEventStore.open(runs_dir, reads=True) as store:
             return await check_run(store, run), await gaps_of(store, run)
 
     try:
@@ -2607,7 +2608,7 @@ async def _push(
     from aims.node.client import ControlClient
     from aims.node.shipper import Shipper
 
-    async with await LocalEventStore.open(root) as store:
+    async with await LocalEventStore.open(root, reads=True) as store:
         client = ControlClient(url, token, runner=f"push@{_hostname()}")
         try:
             await client.hello(_push_hello(client.runner))
@@ -3977,7 +3978,7 @@ def rates_cmd(
     from aims.terminal import json_text
 
     async def main() -> Rates:
-        async with await LocalEventStore.open(runs_dir) as store:
+        async with await LocalEventStore.open(runs_dir, reads=True) as store:
             origins: list[str] | None = None
             if runs or series or group:
                 picked = set(runs or [])
@@ -4052,7 +4053,7 @@ def report_cmd(
         raise typer.BadParameter("--out and --html name the same file", param_hint="--html")
 
     async def main() -> RunReport:
-        async with await LocalEventStore.open(runs_dir) as store:
+        async with await LocalEventStore.open(runs_dir, reads=True) as store:
             return await build(store, run, source=source, base_url=base_url)
 
     try:

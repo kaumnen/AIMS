@@ -76,6 +76,8 @@ INDEX = "index.sqlite"
 TRUTH = "truth.json"
 LABELS = "labels.jsonl"
 GRAVE = ".deleted."
+# in the runs folder of a control plane, which only it writes
+CONTROL_PLANE = "control-plane.txt"
 INLINE_LIMIT = 8 * 1024
 CHUNK = 1000
 # the marks the lag of a run keeps of where `unindexed` read its log
@@ -111,6 +113,11 @@ class TruthRefused(ValueError):
 class IndexUnwritable(sqlite3.OperationalError):
     """The index did not open because the folder of runs, or the index in it, cannot be
     written. Every reader opens the index to write, since it is brought up to the logs first."""
+
+
+class ControlPlaneRuns(Exception):
+    """A store that may write runs did not open: the folder is a control plane's. A run
+    another process seals or adds there would differ from what the runners ship."""
 
 
 class IngestError(Exception):
@@ -407,8 +414,17 @@ class LocalEventStore:
         self._closed = False
 
     @classmethod
-    async def open(cls, root: Path, *, ingest_only: bool = False) -> LocalEventStore:
+    async def open(
+        cls, root: Path, *, ingest_only: bool = False, reads: bool = False
+    ) -> LocalEventStore:
+        """`reads` says the caller only reads runs. Only such a store, or one that only
+        ingests, opens the runs folder of a control plane."""
         await asyncio.to_thread(make_dir, root, parents=True)
+        if not (ingest_only or reads) and await asyncio.to_thread((root / CONTROL_PLANE).exists):
+            raise ControlPlaneRuns(
+                f"{root} is the runs folder of a control plane. Only the control plane writes"
+                " there; use another folder"
+            )
         try:
             index = await Index.open(root / INDEX)
         except sqlite3.Error as e:

@@ -1762,6 +1762,56 @@ async def test_a_sealed_run_that_does_not_reach_the_control_plane_says_to_push_i
         junk.server_close()
 
 
+def test_a_command_that_writes_runs_refuses_a_control_planes_runs_folder(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run there is a copy of one a runner ships. A seal or a new run from another process
+    would differ from what the runner ships next."""
+    from aims.server.state import close_state, open_state
+
+    data = tmp_path / "server"
+    runs = data / "runs"
+
+    async def make() -> str:
+        # the control plane's copy of a run its runner still writes
+        async with await LocalEventStore.open(runs) as store:
+            started = RunStarted(scenario="left", oversight="observe", agents=["a"])
+            run_id = await store.create_run(started)
+            tool = ToolCall(call_id="c", name="x", arguments="{}")
+            await store.append(run_id, [Draft(tool, "a")])
+        await close_state(await open_state(data))
+        return run_id
+
+    run = asyncio.run(make())
+    log = (runs / run / "events.jsonl").read_bytes()
+    monkeypatch.setenv("AIMS_TOKEN", "aims_x")
+    writing = [
+        ["run", "--replay", run, "--monitor", "off", "--no-server", "--runs-dir", str(runs)],
+        ["monitor", run, "--signals-only", "--no-server", "--runs-dir", str(runs)],
+        ["score", run, "--runs-dir", str(runs)],
+        ["label", run, "1", "real", "--runs-dir", str(runs)],
+        ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(data)],
+    ]
+    for args in writing:
+        capsys.readouterr()
+        # as the `aims` command calls it: CliRunner goes past the app's own error handling
+        with pytest.raises(SystemExit) as end:
+            app(args)
+        assert end.value.code == 1, args
+        out = capsys.readouterr()
+        assert out.out == "", args
+        assert out.err.splitlines() == [
+            f"error: {runs} is the runs folder of a control plane. Only the control plane"
+            " writes there; use another folder"
+        ], args
+    assert (runs / run / "events.jsonl").read_bytes() == log
+    assert not (runs / run / "labels.jsonl").exists()
+    # a command that only reads runs takes it
+    for args in (["verify", run], ["rates"], ["spend"], ["report", run, "--json"]):
+        r = CliRunner().invoke(app, [*args, "--runs-dir", str(runs)])
+        assert r.exit_code == 0, (args, r.output)
+
+
 class Refusing(BaseHTTPRequestHandler):
     """Answers every request with its class's status and a problem body."""
 

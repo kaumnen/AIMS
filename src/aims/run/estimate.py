@@ -446,7 +446,7 @@ async def load_history(runs_dir: Path) -> History:
     """The history of the runs under `runs_dir`; empty, and nothing made, when it is missing."""
     if not await asyncio.to_thread(runs_dir.is_dir):
         return History()
-    async with await LocalEventStore.open(runs_dir) as store:
+    async with await LocalEventStore.open(runs_dir, reads=True) as store:
         return await history(store)
 
 

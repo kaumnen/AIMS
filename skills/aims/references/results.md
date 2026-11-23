@@ -126,3 +126,5 @@ In a fork of several agents, an agent takes its first step after the cut only on
 ## The UI
 
 `aims ui` serves the app at http://localhost:8484 with a local runner and opens a sign-in link. Runs made by `aims run` on the same machine ship there. `aims push <runs folder>` ships runs recorded elsewhere. `aims open` prints a new sign-in link.
+
+Only the control plane writes the `runs` folder of its data dir. A command that writes runs exits with an error there. A command that only reads runs works there.

@@ -38,6 +38,7 @@ The last command prints a sign-in link for http://localhost:8484. AIMS ships no 
 - `init`, `server` and `caddy` run with a read-only root filesystem, no capabilities and `no-new-privileges`. Caddy keeps `NET_BIND_SERVICE`, which its binary needs. They write only to their volumes and a 64 MiB `/tmp`.
 - The `server` volume holds the config the UI saves and the server's large temp files. The project's `aims.toml` is `/data/aims.toml` there.
 - One `aims ui` uses a data dir at a time. A second one on the same data dir exits with an error that names the first.
+- Only the control plane writes the `runs` folder of its data dir. A command that writes runs, such as `aims run` or `aims runner`, exits with an error there. A command that only reads runs, such as `aims report`, works there.
 
 > [!NOTE]
 > Compose gives the runner 3 minutes to stop. It seals its runs as cancelled, then removes its sandboxes, tracer and sampler. After 3 minutes Docker sends SIGKILL. Anything not yet removed keeps running until the next AIMS start on that host. `docker ps --filter label=aims.managed=1` lists it.
