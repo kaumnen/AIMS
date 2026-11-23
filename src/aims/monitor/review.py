@@ -221,17 +221,20 @@ class Reviewer:
 
     async def _records(self, calls: Sequence[Event]) -> str:
         lines = []
+        marker = self.texts["review_chars_cut"]
         for e in calls:
             call = ToolCall.model_validate(e.data)
             arguments = call.arguments
-            if not isinstance(arguments, str):
-                data = await self.store.get_blob(self.source, arguments.sha256, arguments.size)
-                arguments = data.decode(errors="replace")
-            record = {
-                "frame": frame(self.key, e.seq),
-                "tool": call.name,
-                "arguments": _cap(arguments, self.texts["review_chars_cut"]),
-            }
+            if isinstance(arguments, str):
+                shown = _cap(arguments, marker)
+            else:
+                # each end holds ARGUMENTS_CAP characters of four bytes at most
+                span = 4 * ARGUMENTS_CAP + 4
+                ends = await self.store.get_ends(
+                    self.source, arguments.sha256, span, span, arguments.size
+                )
+                shown = _cut(ends.head, ends.tail, ends.chars, marker)
+            record = {"frame": frame(self.key, e.seq), "tool": call.name, "arguments": shown}
             lines.append(escape(record))
         return "\n".join(lines)
 
@@ -245,7 +248,13 @@ def _sampled(reply: Reply, marker: str) -> str:
 def _cap(text: str, marker: str) -> str:
     """`text` cut to its first and last ARGUMENTS_CAP / 2 characters. `marker` stands in for
     the characters left out, its `{chars}` their count."""
-    if len(text) <= ARGUMENTS_CAP:
-        return text
+    return _cut(text, text, len(text), marker)
+
+
+def _cut(head: str, tail: str, chars: int, marker: str) -> str:
+    """`_cap` of a text of `chars` characters that starts with `head` and ends with `tail`,
+    each at least ARGUMENTS_CAP characters long unless it is the whole text."""
+    if chars <= ARGUMENTS_CAP:
+        return head
     half = ARGUMENTS_CAP // 2
-    return f"{text[:half]}{marker.format(chars=len(text) - ARGUMENTS_CAP)}{text[-half:]}"
+    return f"{head[:half]}{marker.format(chars=chars - ARGUMENTS_CAP)}{tail[-half:]}"

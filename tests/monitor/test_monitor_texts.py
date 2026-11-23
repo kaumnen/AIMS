@@ -26,7 +26,7 @@ from aims.monitor.channels import evaluate_schema
 from aims.monitor.config import JudgeConfig, MonitorConfig, ReviewConfig
 from aims.monitor.judge import Judge, Rollout, clip
 from aims.monitor.render import glossary
-from aims.monitor.review import ARGUMENTS_CAP, Reviewer
+from aims.monitor.review import ARGUMENTS_CAP, Reviewer, _cap
 from aims.monitor.setup import identity
 from aims.monitor.sweep import schemas, system
 from aims.monitor.texts import MonitorTexts, added, defaults, resolve
@@ -320,7 +320,33 @@ async def test_the_review_cut_comes_from_its_texts(store: LocalEventStore) -> No
     assert "<10 gone>" in record["arguments"]
 
 
-# The glossary
+async def test_the_review_reads_blob_arguments_at_their_ends(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = await Run.open(store)
+    long = "".join(f"arg {i} é€\n" for i in range(20_000))
+    short = "é" * ARGUMENTS_CAP
+    events = []
+    for n, text in enumerate([long, short]):
+        ref = await store.put_blob(run.run_id, text.encode())
+        events += await run.add(ToolCall(call_id=f"c{n}", name="bash", arguments=ref))
+
+    async def whole(*args: Any, **kwargs: Any) -> bytes:
+        raise AssertionError("the whole blob was read")
+
+    monkeypatch.setattr(store, "get_blob", whole)
+    given = texts()
+    reviewer = Reviewer(
+        config=ReviewConfig(),
+        texts=given,
+        client=cast("Any", None),
+        store=store,
+        source=run.run_id,
+        key=b"k" * 32,
+    )
+    records = [json.loads(x) for x in (await reviewer._records(events)).split("\n")]
+    marker = given["review_chars_cut"]
+    assert [r["arguments"] for r in records] == [_cap(long, marker), short]
 
 
 def test_the_glossary_at_its_defaults_leaves_the_identity_as_it_was() -> None:

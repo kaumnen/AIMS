@@ -61,7 +61,7 @@ from aims.monitor.signals import verifier as verifier_signals
 from aims.monitor.signals.base import Base, Hit, SignalError, SignalSetup, registry
 from aims.monitor.signals.content import _READER, HACKS, HackPattern, MonitorManipulation
 from aims.monitor.signals.engine import OVERFLOW, SignalEngine, check_signals, signal_versions
-from aims.monitor.state import TEXT_CAP, State, _object
+from aims.monitor.state import MORE_BYTES, TEXT_CAP, State, _object
 from aims.sandbox.base import TAIL, Capture
 from aims.scenario import Scenario
 from aims.scenario.load import load
@@ -3643,6 +3643,47 @@ async def test_snapshot_changes_past_the_inline_ones_are_read(store: LocalEventS
             duration_ms=1,
         )
     )
+    assert [f.key for f in b.of("startup_hook_write")] == ["/work/x.pth"]
+
+
+async def test_only_the_first_more_bytes_of_snapshot_changes_are_read(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = await bench(store)
+    ex = await b.bash("x")
+    first, last = (
+        json.dumps(change(path).model_dump(mode="json")).encode()
+        for path in ("/work/x.pth", "/work/y.pth")
+    )
+    more = await store.put_blob(b.run_id, b"\n".join([first, b" " * MORE_BYTES, last]))
+    read: list[str] = []
+    real = store.get_blob
+
+    async def counted(run_id: str, sha256: str, size: int | None = None) -> bytes:
+        read.append(sha256)
+        return await real(run_id, sha256, size)
+
+    monkeypatch.setattr(store, "get_blob", counted)
+    await b.emit(
+        FsSnapshot(
+            exec_id=ex.id,
+            roots=["/work"],
+            base="b",
+            digest="d",
+            entries=1,
+            files=1,
+            bytes=1,
+            total=1,
+            changes=[],
+            more=more,
+            hashed_bytes=0,
+            unhashed=0,
+            content_skipped=0,
+            truncated=False,
+            duration_ms=1,
+        )
+    )
+    assert more.sha256 not in read
     assert [f.key for f in b.of("startup_hook_write")] == ["/work/x.pth"]
 
 
