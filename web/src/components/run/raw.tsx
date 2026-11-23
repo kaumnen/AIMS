@@ -24,6 +24,8 @@ export interface RawSearch {
 
 const ANY = "any";
 const ROW = 24;
+// rows drawn past each end of the view
+const OVERSCAN = 20;
 const clock = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
@@ -208,7 +210,7 @@ function EventList({
     count: events.length,
     getScrollElement: () => scroller.current,
     estimateSize: () => ROW,
-    overscan: 20,
+    overscan: OVERSCAN,
     getItemKey: (i) => events[i]?.seq ?? i,
   });
   const items = v.getVirtualItems();
@@ -245,8 +247,12 @@ function EventList({
       align: jump.to === "end" ? "end" : "start",
     });
   }, [jump, events.length, v]);
+  // `last` lags a scrollTop the list just set until its scroll event; the view's own bottom, with
+  // the rows drawn past it, does not.
   useEffect(() => {
-    if (last >= events.length - 40) onNearEnd();
+    const el = scroller.current;
+    const bottom = (el?.scrollTop ?? 0) + (el?.clientHeight ?? 0) + OVERSCAN * ROW;
+    if (last >= events.length - 40 && bottom > (events.length - 40) * ROW) onNearEnd();
   }, [last, events.length, onNearEnd]);
   // A key move shows the row it lands on; rows read in above leave the view where it is.
   const moved = useRef<{ from: number | undefined } | null>(null);

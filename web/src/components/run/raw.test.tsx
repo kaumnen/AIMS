@@ -175,3 +175,27 @@ test("a read on at the page cap that finds no match lets one far page go at most
   expect(rows()).toBe(9800);
   tail.stop();
 });
+
+test("a read on at the page cap moves the reader up and reads on no further", async () => {
+  log = range(0, 11_999);
+  const qc = new QueryClient();
+  qc.setQueryData<InfiniteData<RawPage>>(rawEventsQuery(RUN, {}).queryKey, {
+    pages: Array.from({ length: 50 }, (_, p) => ({
+      items: log.slice(p * 200, p * 200 + 200),
+      older: p === 0 ? null : p * 200,
+      newer: p * 200 + 199,
+    })),
+    pageParams: Array.from({ length: 50 }, (_, p) => (p === 0 ? null : { after: p * 200 - 1 })),
+  });
+  const list = await show(qc);
+  const box = list.parentElement as HTMLElement;
+  // event 9930 at the top, 70 rows from the end
+  box.scrollTop = 9930 * ROW;
+  fireEvent.scroll(box);
+  // the first page went above and the reader's rows moved up with it, 270 rows from the end;
+  // a browser tells the list so with a scroll event on the next frame
+  await waitFor(() => expect(box.scrollTop).toBe(9730 * ROW));
+  expect(reads).toEqual(["after=9999"]);
+  await rest(box);
+  expect(reads).toEqual(["after=9999"]);
+});
