@@ -330,8 +330,7 @@ def verify(
         raise typer.Exit(EXIT_FAILED) from None
     problems = [
         *([result.error] if result.error else []),
-        *(f"missing blob {sha}" for sha in result.missing_blobs),
-        *(f"blob {sha} does not match its hash" for sha in result.bad_blobs),
+        *result.blob_problems(),
     ]
     for problem in problems:
         _echo(f"error: {problem}", err=True)

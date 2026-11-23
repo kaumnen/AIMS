@@ -89,9 +89,11 @@ def stored_size(path: Path) -> int:
     return path.stat().st_size
 
 
-def holds_blob(path: Path) -> bool:
-    """Whether the file at `path` holds the blob it is named by. Reads it a chunk at a time."""
+def holds_blob(path: Path) -> int | None:
+    """The size of the blob the file at `path` is named by, None when the file does not hold
+    it. Reads it a chunk at a time."""
     raw = hashlib.sha256()
+    size = 0
     with path.open("rb") as f:
         framed = f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC
         f.seek(0)
@@ -101,11 +103,28 @@ def holds_blob(path: Path) -> bool:
             with contextlib.suppress(zstd.ZstdError):
                 for out in _decoded(chunks):
                     decoded.update(out)
+                    size += len(out)
                 if decoded.hexdigest() == path.name:
-                    return True
+                    return size
         for _ in chunks:
             pass
-    return raw.hexdigest() == path.name
+    return path.stat().st_size if raw.hexdigest() == path.name else None
+
+
+def _passes(path: Path, size: int) -> bool:
+    """Whether the file at `path` decodes to more than `size` bytes, or holds more as is when it
+    does not decode. Decodes no more than one byte past `size`."""
+    with path.open("rb") as f:
+        if f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC:
+            f.seek(0)
+            total = 0
+            with contextlib.suppress(zstd.ZstdError):
+                for out in _decoded(_chunks(f)):
+                    total += len(out)
+                    if total > size:
+                        return True
+                return False
+    return path.stat().st_size > size
 
 
 def read_blob(path: Path, size: int | None = None) -> bytes | None:
@@ -232,24 +251,35 @@ class BlobStore:
 
     def get(self, sha256: str, size: int | None = None) -> bytes:
         """The blob's bytes. With `size`, the most its reference says it holds."""
+        path = self.path(sha256)
         try:
-            data = read_blob(self.path(sha256), size)
+            data = read_blob(path, size)
         except FileNotFoundError:
             raise BlobError(f"missing blob {sha256}") from None
         if data is None:
-            raise BlobError(f"blob {sha256} does not match its hash")
+            raise self._unread(path, size)
         return data
 
     def part(self, sha256: str, start: int | None, length: int, size: int | None = None) -> Part:
         """`length` bytes of the blob from `start`, its last ones when `start` is None. The
         whole blob is checked against its hash; only the part is kept."""
+        path = self.path(sha256)
         try:
-            part = read_part(self.path(sha256), start, length, size)
+            part = read_part(path, start, length, size)
         except FileNotFoundError:
             raise BlobError(f"missing blob {sha256}") from None
         if part is None:
-            raise BlobError(f"blob {sha256} does not match its hash")
+            raise self._unread(path, size)
         return part
+
+    @staticmethod
+    def _unread(path: Path, size: int | None) -> BlobError:
+        """Why the blob at `path` did not read through a reference stating `size`."""
+        if type(size) is int and size >= 0 and _passes(path, size):
+            return BlobError(
+                f"blob {path.name} holds more than the {size} bytes its reference states"
+            )
+        return BlobError(f"blob {path.name} does not match its hash")
 
 
 class BlobWriter:

@@ -5,7 +5,7 @@
 
 ## Runs
 
-- A run is a folder with `events.jsonl` and `blobs/`. Each event holds the hash of the event before it. `aims verify <run>` checks the chain and every blob. In a folder of runs with an index, it also checks that the index holds the run as the log does.
+- A run is a folder with `events.jsonl` and `blobs/`. Each event holds the hash of the event before it. `aims verify <run>` checks the chain and every blob. Each blob must have the size its references state. In a folder of runs with an index, it also checks that the index holds the run as the log does.
 - Commands that read a folder of runs keep their index of it in that folder, in `index.sqlite`. A folder they cannot write stops them with an error. Use a copy you can write.
 - A run never changes after it is sealed. Monitor runs and scores are new runs that point at it.
 - `--series <name> --runs 5` makes five runs in a row, each going on from the one before.

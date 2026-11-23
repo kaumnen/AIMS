@@ -18194,6 +18194,13 @@
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "wrong_sizes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Wrong Sizes",
+            "type": "array"
           }
         },
         "required": [
@@ -18204,7 +18211,8 @@
           "finished",
           "error",
           "missing_blobs",
-          "bad_blobs"
+          "bad_blobs",
+          "wrong_sizes"
         ],
         "title": "VerificationOut",
         "type": "object"

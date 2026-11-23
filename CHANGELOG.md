@@ -73,6 +73,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- Verifying a run checks the size each blob reference states. `wrong_sizes` lists the references whose blob holds a different size. A read past a stated size says the blob holds more than its reference states.
 - A run report holds at most 64 KiB of each text and 1 MiB in all. A cut text says how many bytes it left out, in the JSON, the Markdown and the UI. A large answer made the report as large as the answer. One blob behind many references was read once for each.
 - The control plane loads a fork's origin without the tool outputs only a replay uses. It read each of them whole, once per reference.
 - A runner decodes a job's inputs only up to the size their references state.

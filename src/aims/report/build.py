@@ -154,8 +154,7 @@ async def build(
     writing = finished is None and verification.torn
     problems = [
         *([verification.error] if verification.error and not writing else []),
-        *(f"missing blob {sha}" for sha in verification.missing_blobs),
-        *(f"blob {sha} does not match its hash" for sha in verification.bad_blobs),
+        *verification.blob_problems(),
     ]
     verify_error = "; ".join(problems) or None
     reviews = await store.runs(origin=run_id, kind="monitor", limit=PAGE)

@@ -294,9 +294,14 @@ async def test_an_imported_blob_past_the_size_its_reference_states_is_not_read(
     assert (await post_tar(cp, run_tar(local.root / imported))).status_code == 201
     async with cp.client(cp.operator) as c:
         r = await c.get(url(imported))
+        v = (await c.get(f"/api/runs/{imported}/verification")).json()
     assert r.status_code == 200, r.text
-    [answer] = RunReport.model_validate(r.json()).appendix.answers
-    assert answer.text == f"(blob {ref.sha256} does not match its hash)"
+    report = RunReport.model_validate(r.json())
+    [answer] = report.appendix.answers
+    assert answer.text == f"(blob {ref.sha256} holds more than the 10 bytes its reference states)"
+    assert (v["ok"], v["bad_blobs"], v["wrong_sizes"]) == (False, [], [ref.sha256])
+    [warning] = [w for w in report.warnings if w.kind == "verify_failed"]
+    assert warning.detail == f"blob {ref.sha256} has a reference that states another size"
 
 
 async def test_a_report_holds_a_head_of_each_long_text_and_counts_the_rest(

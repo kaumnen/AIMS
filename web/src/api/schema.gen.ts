@@ -8828,6 +8828,8 @@ export interface components {
             ok: boolean;
             /** Run Id */
             run_id: string;
+            /** Wrong Sizes */
+            wrong_sizes: string[];
         };
         /**
          * Warning

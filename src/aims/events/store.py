@@ -47,7 +47,7 @@ from aims.events.log import (
     tail_only,
 )
 from aims.events.payloads import LogTruncated, RunFinished, RunStarted
-from aims.events.schema import BlobRef, Content, Draft, Event, blob_refs, now
+from aims.events.schema import BlobRef, Content, Draft, Event, blob_refs, blob_sizes, now
 from aims.text import scrub
 
 log = logging.getLogger("aims.events")
@@ -134,10 +134,25 @@ class Verification:
     missing_blobs: tuple[str, ...] = ()
     bad_blobs: tuple[str, ...] = ()
     torn: bool = False
+    wrong_sizes: tuple[str, ...] = ()
+    """Blobs a reference names with a size other than their own."""
 
     @property
     def ok(self) -> bool:
-        return self.error is None and not self.missing_blobs and not self.bad_blobs
+        return (
+            self.error is None
+            and not self.missing_blobs
+            and not self.bad_blobs
+            and not self.wrong_sizes
+        )
+
+    def blob_problems(self) -> list[str]:
+        """What is wrong with the run's blobs, in words."""
+        return [
+            *(f"missing blob {sha}" for sha in self.missing_blobs),
+            *(f"blob {sha} does not match its hash" for sha in self.bad_blobs),
+            *(f"blob {sha} has a reference that states another size" for sha in self.wrong_sizes),
+        ]
 
 
 class EventStore(Protocol):
@@ -876,7 +891,8 @@ class LocalEventStore:
             except BaseException:
                 file.close()
                 raise
-            sink = _Sink(file, head, refs - set(self._blobs(run_id).missing(sorted(refs))))
+            held = set(refs) - set(self._blobs(run_id).missing(sorted(refs)))
+            sink = _Sink(file, head, held)
             self._sinks[run_id] = sink
             self._ingested.add(run_id)
             return sink
@@ -1817,7 +1833,7 @@ def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
     try:
         head, refs, chain_error = scan(run_dir / LOG, run_id)
     except FileNotFoundError:
-        head, refs, chain_error = Head(), set(), None
+        head, refs, chain_error = Head(), {}, None
         error: str | None = f"no {LOG} in {where or run_dir}"
     else:
         error = None if chain_error is None else str(chain_error)
@@ -1830,12 +1846,15 @@ def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
         error = "log is empty"
     missing: list[str] = []
     bad: list[str] = []
-    for sha256 in sorted(refs):
+    wrong: list[str] = []
+    for sha256, stated in sorted(refs.items()):
         path = run_dir / BLOBS / sha256
         if not path.is_file():
             missing.append(sha256)
-        elif not holds_blob(path):
+        elif (size := holds_blob(path)) is None:
             bad.append(sha256)
+        elif stated != {size}:
+            wrong.append(sha256)
     return Verification(
         run_id=run_id,
         events=head.seq + 1,
@@ -1845,16 +1864,20 @@ def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
         missing_blobs=tuple(missing),
         bad_blobs=tuple(bad),
         torn=torn,
+        wrong_sizes=tuple(wrong),
     )
 
 
-def scan(path: Path, run_id: str) -> tuple[Head, set[str], ChainError | None]:
-    """Verify a whole log. Returns the last good head, the blobs referenced and the first error."""
+def scan(path: Path, run_id: str) -> tuple[Head, dict[str, set[int | None]], ChainError | None]:
+    """Verify a whole log. Returns the last good head, the blobs referenced with the sizes their
+    references state, and the first error."""
     head = Head()
-    refs: set[str] = set()
+    refs: dict[str, set[int | None]] = {}
     try:
         for event, after in read_events(path, run_id, Head()):
-            refs.update(blob_refs(event["data"]))
+            for sha256, size in blob_sizes(event["data"]):
+                # a size that is no count is never a blob's
+                refs.setdefault(sha256, set()).add(size if type(size) is int else None)
             head = after
     except ChainError as e:
         return head, refs, e

@@ -108,14 +108,20 @@ def stated_size(value: Mapping[str, Any]) -> int:
 
 
 def blob_refs(value: Any) -> Iterator[str]:
+    for sha256, _ in blob_sizes(value):
+        yield sha256
+
+
+def blob_sizes(value: Any) -> Iterator[tuple[str, Any]]:
+    """The sha256 and the stated size of each blob reference in `value`."""
     if is_blob_ref(value):
-        yield value["sha256"]
+        yield value["sha256"], value["size"]
     elif isinstance(value, Mapping):
         for item in value.values():
-            yield from blob_refs(item)
+            yield from blob_sizes(item)
     elif isinstance(value, list):
         for item in value:
-            yield from blob_refs(item)
+            yield from blob_sizes(item)
 
 
 def text_of(value: Any) -> str:

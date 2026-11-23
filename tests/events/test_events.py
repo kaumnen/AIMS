@@ -1341,7 +1341,7 @@ async def test_a_blob_read_decodes_no_more_than_its_reference_states(
     big = bytes(64 * MIB)
     sha = hashlib.sha256(b"x" + big).hexdigest()
     blobs.path(sha).write_bytes(zstd.compress(b"x") + zstd.compress(big))
-    with pytest.raises(BlobError, match="does not match its hash"):
+    with pytest.raises(BlobError, match="holds more than the 10 bytes its reference states"):
         await store.get_blob(run_id, sha, size=10)
     assert peak_of(lambda: read_blob(blobs.path(sha), 10)) < MIB
     held = await store.get_blob(run_id, sha, size=1 + len(big))
@@ -1389,7 +1389,7 @@ def test_a_part_of_a_blob_is_read_whole_and_kept_alone(tmp_path: Path) -> None:
     assert blobs.part(ref.sha256, None, 0).data == b""
     assert peak_of(lambda: blobs.part(ref.sha256, 5, 100)) < 4 * MIB
     assert peak_of(lambda: blobs.part(ref.sha256, None, 100)) < 4 * MIB
-    with pytest.raises(BlobError, match="does not match its hash"):
+    with pytest.raises(BlobError, match=f"holds more than the {len(data) - 1} bytes"):
         blobs.part(ref.sha256, 0, 10, size=len(data) - 1)
     assert blobs.part(ref.sha256, 0, 3, size=len(data)).data == data[:3]
 
@@ -1407,6 +1407,50 @@ def test_a_part_of_a_blob_is_read_whole_and_kept_alone(tmp_path: Path) -> None:
         blobs.part(sha, 0, 10)
     with pytest.raises(BlobError, match="missing blob"):
         blobs.part("f" * 64, 0, 10)
+
+
+async def test_verify_checks_the_size_each_reference_states(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    blobs = store.blobs(run_id)
+    exact = await store.put_blob(run_id, b"exact")
+    short = await store.put_blob(run_id, b"y" * 20_000)
+    # stored as two frames, and a zstd frame stored as it came
+    many = b"m" * 300_000
+    two = hashlib.sha256(many).hexdigest()
+    blobs.path(two).write_bytes(zstd.compress(many[:100_000]) + zstd.compress(many[100_000:]))
+    frame = zstd.compress(b"hello")
+    raw = hashlib.sha256(frame).hexdigest()
+    blobs.path(raw).write_bytes(frame)
+    refs = [
+        exact,
+        BlobRef(sha256=two, size=len(many)),
+        BlobRef(sha256=raw, size=len(frame)),
+        short,
+    ]
+    await store.append(
+        run_id,
+        [Draft(ToolCall(call_id=f"c{i}", name="shell", arguments=r)) for i, r in enumerate(refs)],
+    )
+    assert verify_run(store.root / run_id).ok
+    for stated in (10, 10 * 1024**3):
+        await store.append(
+            run_id,
+            [
+                Draft(
+                    ToolCall(
+                        call_id="w",
+                        name="shell",
+                        arguments=BlobRef(sha256=short.sha256, size=stated),
+                    )
+                )
+            ],
+        )
+        v = verify_run(store.root / run_id)
+        assert (v.ok, v.bad_blobs, v.wrong_sizes) == (False, (), (short.sha256,))
+        assert v.blob_problems() == [
+            f"blob {short.sha256} has a reference that states another size"
+        ]
+        assert (await store.verify(run_id)).wrong_sizes == (short.sha256,)
 
 
 async def test_temp_files_a_killed_write_left_go_once_no_write_can_own_them(

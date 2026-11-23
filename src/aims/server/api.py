@@ -1799,6 +1799,7 @@ class VerificationOut(Out):
     error: str | None
     missing_blobs: list[str]
     bad_blobs: list[str]
+    wrong_sizes: list[str]
 
 
 @router.get("/runs/{run_id}/verification", tags=["events"], responses=responses(404, 503))
@@ -1817,6 +1818,7 @@ async def verify_run(run_id: str, principal: Viewer, state: State) -> Verificati
         error=v.error,
         missing_blobs=list(v.missing_blobs),
         bad_blobs=list(v.bad_blobs),
+        wrong_sizes=list(v.wrong_sizes),
     )
 
 

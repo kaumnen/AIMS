@@ -161,8 +161,7 @@ async def check_run(
     result = verified or await asyncio.to_thread(verify_run, run_dir)
     problems = [
         *([result.error] if result.error else []),
-        *(f"missing blob {sha}" for sha in result.missing_blobs),
-        *(f"blob {sha} does not match its hash" for sha in result.bad_blobs),
+        *result.blob_problems(),
     ]
     if problems:
         raise CheckError(f"run {run_id}: {'; '.join(problems)}")
