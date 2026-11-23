@@ -73,7 +73,7 @@ from aims.models import (
 from aims.models.listprice import Listing, PriceLists, priced
 from aims.models.purse import PLANNED_OUTPUT, Purse
 from aims.monitor.offline import origin_agents
-from aims.monitor.render import cut, escape, frame, tokens
+from aims.monitor.render import blob_text, cut, escape, frame, tokens
 from aims.monitor.setup import extractor_for
 from aims.monitor.sweep import verify
 from aims.monitor.texts import MonitorTexts, resolve
@@ -887,8 +887,7 @@ async def _text(store: LocalEventStore, run_id: str, value: Any) -> str:
         return value
     if isinstance(value, dict) and isinstance(value.get("sha256"), str):
         try:
-            data = await store.get_blob(run_id, value["sha256"], stated_size(value))
-            return data.decode(errors="replace")
+            return await blob_text(store, run_id, value["sha256"], stated_size(value))
         except KeyError, OSError, ValueError:
             return ""
     return str(value)

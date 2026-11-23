@@ -80,6 +80,8 @@ from aims.monitor.judge import (
     JudgeResult,
     Reader,
     Rollout,
+    clip,
+    clip_end,
     dumps,
     flag_numbers,
 )
@@ -536,6 +538,25 @@ async def test_a_blob_page_holds_only_its_window(store: LocalEventStore) -> None
         tracemalloc.stop()
     assert (out["text"], out["size"], out["next_offset"]) == (data[-20:].decode(), len(data), None)
     assert peak < 8 * 1024 * 1024
+
+
+async def test_a_long_blob_shows_the_text_a_whole_read_would(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    text = "".join(f"line {i} é€\n" for i in range(600_000))
+    ref = await store.put_blob(run.id, text.encode())
+    reader = Reader(store, run.id)
+    value = ref.model_dump()
+    tracemalloc.start()
+    try:
+        head = await reader.text(run.id, value, 2000)
+        end = await reader.text(run.id, value, 3000, end=True)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert head == clip(text, 2000)
+    assert end == clip_end(text, 3000)
+    assert peak < 8 * 1024 * 1024
+    assert reader._blobs == {}
 
 
 async def test_a_blob_of_control_bytes_pages_under_the_cap(store: LocalEventStore) -> None:

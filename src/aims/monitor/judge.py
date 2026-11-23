@@ -160,18 +160,28 @@ def cut_row(e: Event, cut: str = TOO_LONG) -> dict[str, Any]:
 def clip(text: str, limit: int, marker: str = CHARS_CUT) -> str:
     """`text` cut to about `limit` characters, keeping its head and tail. `marker` stands in
     for the characters left out, its `{chars}` their count."""
-    if len(text) <= limit:
-        return text
-    head = limit * 2 // 3
-    tail = limit - head
-    return f"{text[:head]}{marker.format(chars=len(text) - head - tail)}{text[-tail:]}"
+    return _clip(text, text, len(text), limit, marker)
 
 
 def clip_end(text: str, limit: int, marker: str = CHARS_CUT) -> str:
     """`text` cut to its last `limit` characters."""
-    if len(text) <= limit:
-        return text
-    return f"{marker.format(chars=len(text) - limit)}{text[-limit:]}"
+    return _clip_end(text, len(text), limit, marker)
+
+
+def _clip(head: str, tail: str, chars: int, limit: int, marker: str) -> str:
+    """`clip` of a text of `chars` characters that starts with `head` and ends with `tail`,
+    each at least `limit` characters long unless it is the whole text."""
+    if chars <= limit:
+        return head
+    first = limit * 2 // 3
+    last = limit - first
+    return f"{head[:first]}{marker.format(chars=chars - first - last)}{tail[-last:]}"
+
+
+def _clip_end(tail: str, chars: int, limit: int, marker: str) -> str:
+    if chars <= limit:
+        return tail
+    return f"{marker.format(chars=chars - limit)}{tail[-limit:]}"
 
 
 # Tool arguments. None stands for a parameter left out.
@@ -557,11 +567,19 @@ class Reader:
         if isinstance(value, str):
             return cut(value, limit, self.chars_cut)
         if is_blob_ref(value):
+            sha256, size = value["sha256"], value["size"]
+            # past HEAD_BLOB only the two ends are read, enough characters for each
+            span = 4 * limit + 4
             try:
-                data = await self.blob(run_id, value["sha256"], value["size"])
+                if (run_id, sha256) in self._blobs or (type(size) is int and size <= HEAD_BLOB):
+                    data = await self.blob(run_id, sha256, size)
+                    return cut(data.decode("utf-8", "replace"), limit, self.chars_cut)
+                ends = await self.store.get_ends(run_id, sha256, span, span, size)
             except BlobError, KeyError:
-                return self.blob_missing.format(sha256=value["sha256"])
-            return cut(data.decode("utf-8", "replace"), limit, self.chars_cut)
+                return self.blob_missing.format(sha256=sha256)
+            if end:
+                return _clip_end(ends.tail, ends.chars, limit, self.chars_cut)
+            return _clip(ends.head, ends.tail, ends.chars, limit, self.chars_cut)
         return ""
 
     async def compact(

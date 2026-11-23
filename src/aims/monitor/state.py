@@ -292,11 +292,11 @@ class State:
             self._blobs.move_to_end(content.sha256)
             return cached[:limit]
         try:
-            data = await self.store.get_blob(self.run_id, content.sha256, content.size)
+            part = await self.store.get_part(self.run_id, content.sha256, 0, TEXT_CAP, content.size)
         except Exception as e:
             log.warning("monitor could not read blob %s: %s", content.sha256, e)
             return ""
-        text = data[:TEXT_CAP].decode(errors="replace")
+        text = part.data.decode(errors="replace")
         self._blobs[content.sha256] = text
         if len(self._blobs) > BLOB_CACHE:
             self._blobs.popitem(last=False)
@@ -315,14 +315,18 @@ class State:
         else:
             if content.size <= TEXT_CAP:
                 return ""
+            # the byte before the tail too, which tells whether it starts a line
             try:
-                data = await self.store.get_blob(self.run_id, content.sha256, content.size)
+                part = await self.store.get_part(
+                    self.run_id, content.sha256, None, limit + 1, content.size
+                )
             except Exception as e:
                 log.warning("monitor could not read blob %s: %s", content.sha256, e)
                 return ""
-            start = max(TEXT_CAP, len(data) - limit)
-            rest = data[start:].decode(errors="replace")
-            cut = data[start - 1 : start] != b"\n"
+            start = max(TEXT_CAP, part.size - limit)
+            at = start - part.start
+            rest = part.data[at:].decode(errors="replace")
+            cut = part.data[at - 1 : at] != b"\n"
         return rest.partition("\n")[2] if cut else rest
 
     async def output(

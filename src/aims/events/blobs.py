@@ -1,14 +1,15 @@
+import codecs
 import contextlib
 import hashlib
 import os
 import re
 import secrets
 import sys
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from compression import zstd
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Protocol
 
 from aims.events.disk import make_dir, sync_dir
 from aims.events.schema import BlobRef
@@ -197,45 +198,134 @@ class Part:
     size: int
 
 
-def read_part(path: Path, start: int | None, length: int, size: int | None = None) -> Part | None:
-    """`length` bytes of the blob at `path` from `start`, or its last `length` bytes when `start`
-    is None. None when the file does not hold the blob it is named by, or holds more than `size`
-    bytes. It reads the whole file to check it, a chunk at a time, and keeps only the part."""
+@dataclass(frozen=True, slots=True)
+class Ends:
+    """A blob read as UTF-8 text, kept at its two ends. `size` is the length of the whole text
+    written as UTF-8 again, a byte that does not decode counting as U+FFFD; `chars` is its
+    number of characters. `head` and `tail` are its first and last whole characters within the
+    bytes asked for; `head` is the whole text when `size` is within them."""
+
+    head: str
+    tail: str
+    size: int
+    chars: int
+
+
+class _Keeper(Protocol):
+    def take(self, data: bytes) -> None: ...
+
+    def end(self) -> None: ...
+
+
+class _Window:
+    """Keeps `length` bytes from `start`, or the last `length` when `start` is None."""
+
+    def __init__(self, start: int | None, length: int) -> None:
+        self.start = start
+        self.length = length
+        self.kept = bytearray()
+        self.total = 0
+
+    def take(self, data: bytes) -> None:
+        if self.start is None:
+            if self.length:
+                self.kept += data[-self.length :]
+                del self.kept[: max(0, len(self.kept) - self.length)]
+        elif self.total + len(data) > self.start and len(self.kept) < self.length:
+            at = max(0, self.start - self.total)
+            self.kept += data[at : at + self.length - len(self.kept)]
+        self.total += len(data)
+
+    def end(self) -> None:
+        pass
+
+
+class _Text:
+    """Keeps the first `head` and last `tail` bytes of a blob's text, written as UTF-8 again,
+    and counts the whole of it."""
+
+    def __init__(self, head: int, tail: int) -> None:
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.head_max = head
+        self.tail_max = tail
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.size = 0
+        self.chars = 0
+
+    def take(self, data: bytes, final: bool = False) -> None:
+        text = self.decoder.decode(data, final)
+        # decoded with replace, so it holds no lone surrogate and encodes as is
+        data = text.encode()
+        self.chars += len(text)
+        self.size += len(data)
+        if len(self.head) < self.head_max:
+            self.head += data[: self.head_max - len(self.head)]
+        if self.tail_max:
+            self.tail += data[-self.tail_max :]
+            del self.tail[: max(0, len(self.tail) - self.tail_max)]
+
+    def end(self) -> None:
+        self.take(b"", final=True)
+
+
+def _scan[K: _Keeper](path: Path, size: int | None, keeper: Callable[[], K]) -> K | None:
+    """Feed the blob at `path` to a new keeper a chunk at a time, read as zstd frames and else
+    as is. The keeper once the whole blob went by; None when the file does not hold the blob it
+    is named by, or holds more than `size` bytes."""
     if size is not None and not (type(size) is int and size >= 0):
         return None
     with path.open("rb") as f:
         if f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC:
             f.seek(0)
             with contextlib.suppress(zstd.ZstdError):
-                part = _part(_decoded(_chunks(f)), start, length, size, path.name)
-                if part is not None:
-                    return part
+                kept = _feed(_decoded(_chunks(f)), keeper(), size, path.name)
+                if kept is not None:
+                    return kept
         f.seek(0)
-        return _part(_chunks(f), start, length, size, path.name)
+        return _feed(_chunks(f), keeper(), size, path.name)
 
 
-def _part(
-    chunks: Iterable[bytes], start: int | None, length: int, limit: int | None, name: str
-) -> Part | None:
+def _feed[K: _Keeper](chunks: Iterable[bytes], kept: K, limit: int | None, name: str) -> K | None:
     seen = hashlib.sha256()
-    kept = bytearray()
     total = 0
     for data in chunks:
         seen.update(data)
-        if start is None:
-            if length:
-                kept += data[-length:]
-                del kept[: max(0, len(kept) - length)]
-        elif total + len(data) > start and len(kept) < length:
-            at = max(0, start - total)
-            kept += data[at : at + length - len(kept)]
         total += len(data)
         if limit is not None and total > limit:
             return None
+        kept.take(data)
     if seen.hexdigest() != name:
         return None
+    kept.end()
+    return kept
+
+
+def read_part(path: Path, start: int | None, length: int, size: int | None = None) -> Part | None:
+    """`length` bytes of the blob at `path` from `start`, or its last `length` bytes when `start`
+    is None. None when the file does not hold the blob it is named by, or holds more than `size`
+    bytes. It reads the whole file to check it, a chunk at a time, and keeps only the part."""
+    window = _scan(path, size, lambda: _Window(start, length))
+    if window is None:
+        return None
+    total, kept = window.total, window.kept
     at = total - len(kept) if start is None else min(start, total)
     return Part(bytes(kept), at, total)
+
+
+def read_ends(path: Path, head: int, tail: int, size: int | None = None) -> Ends | None:
+    """The blob at `path` read as UTF-8 text and kept at its two ends: its first `head` and last
+    `tail` bytes, as `Ends` tells. None as `read_part` gives it. It reads the whole file to
+    check it and to count the text, a chunk at a time."""
+    text = _scan(path, size, lambda: _Text(head, tail))
+    if text is None:
+        return None
+    return Ends(
+        bytes(text.head).decode(errors="ignore"),
+        bytes(text.tail).decode(errors="ignore"),
+        text.size,
+        text.chars,
+    )
 
 
 class BlobStore:
@@ -311,6 +401,18 @@ class BlobStore:
         if part is None:
             raise self._unread(path, size)
         return part
+
+    def ends(self, sha256: str, head: int, tail: int, size: int | None = None) -> Ends:
+        """The blob's text kept at its first `head` and last `tail` bytes; see `Ends`. The
+        whole blob is checked against its hash."""
+        path = self.path(sha256)
+        try:
+            ends = read_ends(path, head, tail, size)
+        except FileNotFoundError:
+            raise BlobError(f"missing blob {sha256}") from None
+        if ends is None:
+            raise self._unread(path, size)
+        return ends
 
     @staticmethod
     def _unread(path: Path, size: int | None) -> BlobError:

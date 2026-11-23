@@ -1376,6 +1376,23 @@ async def test_checking_and_sizing_a_blob_holds_none_of_it(store: LocalEventStor
     assert verify_run(store.root / run_id).bad_blobs == (sha,)
 
 
+def test_the_ends_of_a_blob_read_as_text_match_the_whole_text(tmp_path: Path) -> None:
+    blobs = BlobStore(tmp_path)
+    data = ("éé€a\n" * 300_000).encode() + b"\xff\xfe end"
+    ref = blobs.put(data)
+    text = data.decode(errors="replace")
+    whole = text.encode()
+    ends = blobs.ends(ref.sha256, 1001, 999)
+    assert (ends.size, ends.chars) == (len(whole), len(text))
+    assert ends.head == whole[:1001].decode(errors="ignore")
+    assert ends.tail == whole[-999:].decode(errors="ignore")
+    assert ends.tail.endswith("�� end")
+    assert blobs.ends(ref.sha256, len(whole), 0).head == text
+    assert peak_of(lambda: blobs.ends(ref.sha256, 100, 100)) < 8 * MIB
+    with pytest.raises(BlobError, match="holds more than the 10 bytes"):
+        blobs.ends(ref.sha256, 10, 10, size=10)
+
+
 def test_a_part_of_a_blob_is_read_whole_and_kept_alone(tmp_path: Path) -> None:
     blobs = BlobStore(tmp_path)
     data = bytes(range(256)) * (256 * 1024)

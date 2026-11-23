@@ -132,15 +132,45 @@ def _safe(ch: str) -> str:
 
 def cut(text: str, limit: int) -> str | dict[str, Any]:
     """`text` whole within `limit` bytes, else its head and tail of half the limit each. A
-    lone surrogate is written `\\ud800` first."""
+    lone surrogate is written `\\ud800` first. The bytes a `Capped` text left out count as cut."""
+    left = text.left if isinstance(text, Capped) else 0
     text = scrub(text)
     data = text.encode()
-    if len(data) <= limit:
+    if len(data) <= limit and not left:
         return text
     head = data[: limit // 2].decode(errors="ignore")
     tail = data[-(limit // 2) :].decode(errors="ignore")
-    gone = len(data) - len(head.encode()) - len(tail.encode())
+    gone = len(data) - len(head.encode()) - len(tail.encode()) + left
     return {"head": head, "tail": tail, "cut_bytes": gone}
+
+
+class Capped(str):
+    """A blob's text held at its two ends only; `left` counts the bytes between them. Any cut
+    of it to half of TEXT_READ or less shows what a cut of the whole text would."""
+
+    left: int
+
+    def __new__(cls, text: str, left: int) -> Capped:
+        out = super().__new__(cls, text)
+        out.left = left
+        return out
+
+
+TEXT_READ = 1024 * 1024
+"""The most bytes of a blob's text the renders hold: the whole text within it, else its first
+and last half of it. Every cut they make is far smaller."""
+
+
+async def blob_text(store: EventStore, run_id: str, sha256: str, size: int | None) -> str:
+    """The text of a blob, whole within TEXT_READ bytes, else a `Capped` of its two ends. The
+    read checks the whole blob and holds no more. Raises BlobError, KeyError or OSError."""
+    half = TEXT_READ // 2
+    ends = await store.get_ends(run_id, sha256, TEXT_READ, half, size)
+    if ends.size <= TEXT_READ:
+        return ends.head
+    head = ends.head.encode()[:half].decode(errors="ignore")
+    held = len(head.encode()) + len(ends.tail.encode())
+    return Capped(head + ends.tail, ends.size - held)
 
 
 def strings(value: Any) -> Iterable[str]:
@@ -826,11 +856,11 @@ class Trajectory:
                 if len(self._blobs) >= 64:
                     self._blobs.clear()
                 try:
-                    data = await self.store.get_blob(self.run_id, sha, stated_size(value))
+                    text = await blob_text(self.store, self.run_id, sha, stated_size(value))
                 except BlobError, KeyError, OSError:
                     log.warning("trajectory of %s: blob %s does not read", self.agent_id, sha)
                     return f"(blob {sha} of {value.get('size')} bytes could not be read)"
-                self._blobs[sha] = data.decode(errors="replace")
+                self._blobs[sha] = text
             return self._blobs[sha]
         return str(value)
 

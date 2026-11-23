@@ -5,6 +5,7 @@ import random
 import re
 import shutil
 import time
+import tracemalloc
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -2539,6 +2540,27 @@ async def test_the_tail_of_a_long_output_starts_at_a_line(store: LocalEventStore
     assert await state.tail(await b.content(head + "a\n"), 1) == ""
     assert await state.tail(await b.content(head), 100) == ""
     assert await state.tail("short\n", 100) == ""
+
+
+async def test_a_long_output_is_read_no_further_than_its_head_and_tail(
+    store: LocalEventStore,
+) -> None:
+    b = await bench(store)
+    state = State(run_id=b.run_id, store=store)
+    text = "".join(f"row {i}\n" for i in range(2_000_000))
+    ref = await b.content(text)
+    tracemalloc.start()
+    try:
+        head = await state.text(ref)
+        tail = await state.tail(ref, 1000)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    data = text.encode()
+    assert head == data[:TEXT_CAP].decode()
+    start = len(data) - 1000
+    assert tail == data[start:].decode().partition("\n")[2]
+    assert peak < 3 * TEXT_CAP + 8 * MIB
 
 
 OUTSIDE = "a file outside /work, /tmp and /home/agent"

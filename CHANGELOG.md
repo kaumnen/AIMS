@@ -76,6 +76,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- The monitor reads only the head and tail of a large blob it shows. Its state, judge, renders, channel checks and scoring decoded each blob whole, so a 512 MiB text took up to 1.5 GiB. Each now holds at most 1 MiB of it. The outputs are as before.
 - The board tools' texts show in `aims prompts show`, `GET /api/prompts`, the settings page and a scenario's Prompts tab, under the names the scenario gives its board tools. A config file's board texts are checked when it loads. A board text in the config no longer fails the runs of a scenario without a board.
 - A blob download gives the blob's own bytes. A blob kept as the zstd frame it arrived as came back decoded, or empty when the frame was cut. A damaged blob file gives 404. A blob that arrives as plain bytes is stored as a zstd frame.
 - Verifying a run checks the size each blob reference states. `wrong_sizes` lists the references whose blob holds a different size. A read past a stated size says the blob holds more than its reference states.

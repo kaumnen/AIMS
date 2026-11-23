@@ -39,6 +39,7 @@ from aims.monitor.render import (
     ARGUMENT_DEPTH,
     Rendered,
     _capped,
+    blob_text,
     cut,
     escape,
     frame,
@@ -424,11 +425,11 @@ class ChannelLog:
                 if len(self._blobs) >= 64:
                     self._blobs.clear()
                 try:
-                    data = await self.store.get_blob(self.run_id, sha, stated_size(value))
+                    text = await blob_text(self.store, self.run_id, sha, stated_size(value))
                 except BlobError, KeyError, OSError:
                     log.warning("channel log: blob %s does not read", sha)
                     return f"(blob {sha} of {value.get('size')} bytes could not be read)"
-                self._blobs[sha] = data.decode(errors="replace")
+                self._blobs[sha] = text
             return self._blobs[sha]
         return str(value)
 

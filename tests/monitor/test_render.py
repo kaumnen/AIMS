@@ -3,6 +3,7 @@ import hmac
 import itertools
 import json
 import shutil
+import tracemalloc
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,22 @@ from aims.events import (
     ToolResult,
 )
 from aims.monitor import sweep_texts
-from aims.monitor.render import Rendered, Trajectory, cut, escape, frame, glossary, tokens
+from aims.monitor.render import (
+    OUTPUT_BYTES,
+    REASONING_BYTES,
+    SHORT_BYTES,
+    TEXT_BYTES,
+    TEXT_READ,
+    Capped,
+    Rendered,
+    Trajectory,
+    blob_text,
+    cut,
+    escape,
+    frame,
+    glossary,
+    tokens,
+)
 from aims.monitor.texts import MonitorTexts
 
 pytestmark = pytest.mark.anyio
@@ -230,6 +246,25 @@ async def test_frame_ids_are_a_keyed_hmac_of_the_seq() -> None:
     assert len(expected) == 12
     assert frame(b"other" * 8, 42) != expected
     assert len({frame(KEY, s) for s in range(1000)}) == 1000
+
+
+async def test_a_long_blob_is_held_at_its_ends_and_cuts_as_its_whole_text(run: Run) -> None:
+    text = "".join(f"row {i} é\n" for i in range(1_500_000))
+    ref = await run.store.put_blob(run.run_id, text.encode())
+    tracemalloc.start()
+    try:
+        held = await run.trajectory._text(ref.model_dump())
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert isinstance(held, Capped)
+    assert len(held.encode()) <= TEXT_READ
+    assert run.trajectory._blobs[ref.sha256] is held
+    for limit in (SHORT_BYTES, OUTPUT_BYTES, TEXT_BYTES, REASONING_BYTES):
+        assert cut(held, limit) == cut(text, limit)
+    assert peak < 4 * TEXT_READ + 4 * 1024 * 1024
+    short = await run.store.put_blob(run.run_id, "short é".encode())
+    assert await blob_text(run.store, run.run_id, short.sha256, short.size) == "short é"
 
 
 async def test_a_small_run_renders_exactly(run: Run) -> None:
