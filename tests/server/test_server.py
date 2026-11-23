@@ -58,7 +58,8 @@ from aims.events import (
 from aims.events.blobs import ZSTD_MAGIC, decode, decoded
 from aims.events.chain import MAX_LINE
 from aims.events.index import Index
-from aims.models import DeltaBus
+from aims.events.schema import blob_refs
+from aims.models import DeltaBus, Profile
 from aims.models.keys import KeysError, parse
 from aims.node import shipper as shipper_module
 from aims.node.client import FEED, ApiError, ControlClient
@@ -473,6 +474,52 @@ async def test_a_mapping_the_sandbox_shaped_as_a_blob_reference_does_not_stop_sh
     await local.append(run_id, [Draft(payload)])
     await local.append(run_id, [call(1), call(2)])
     await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    client = ControlClient(cp.url, cp.runner, runner="pusher")
+    try:
+        await client.hello(FakeRunner(cp, "pusher").hello_body())
+        shipper = await ship(local, client, run_id)
+    finally:
+        await client.aclose()
+    assert (shipper.done, shipper.refused) == (True, None)
+    copy = cp.state.store.root / run_id / "events.jsonl"
+    assert copy.read_bytes() == (local.root / run_id / "events.jsonl").read_bytes()
+    assert (await cp.state.store.verify(run_id)).ok
+
+
+async def test_a_profile_table_shaped_as_a_blob_reference_does_not_stop_shipping(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """A profile's `extra` table and its `headers` are what a person wrote in aims.toml.
+    run.started records the profile wherever the run uses it. Shaped as a blob reference,
+    either once stopped the run's shipping for good. A real reference in the same event still
+    needs its blob."""
+    extra: dict[str, Any] = {"vendor": {"sha256": "ab" * 32, "size": 3}}
+    profile = Profile.model_validate(
+        {
+            "name": "p",
+            "backend": "chat",
+            "base_url": "http://model.invalid/v1",
+            "model": "m",
+            "weights": "w",
+            "reasoning": "full",
+            "extra": extra,
+            "headers": {"sha256": "cd" * 32, "size": "5"},
+        }
+    ).snapshot()
+    data = b"the scenario"
+    real = BlobRef(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+    config: dict[str, Any] = {
+        "scenario": {"file": real.model_dump()},
+        "agents": {"a1": {"profile": profile, "schedule": [[None, profile]]}},
+        "monitor": {"sweeps": {"s": profile}, "review": None, "judge": profile},
+        "classifier": profile,
+    }
+    started = STARTED.model_copy(update={"config": config})
+    run_id = await local.create_run(started, blobs=[data])
+    [line] = (local.root / run_id / "events.jsonl").read_bytes().splitlines()
+    first = json.loads(line)
+    assert list(blob_refs(first["type"], first["data"])) == [real.sha256]
+    await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
     client = ControlClient(cp.url, cp.runner, runner="pusher")
     try:
         await client.hello(FakeRunner(cp, "pusher").hello_body())

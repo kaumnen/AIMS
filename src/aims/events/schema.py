@@ -142,10 +142,17 @@ def blob_refs(kind: object, data: Any) -> Iterator[str]:
         yield sha256
 
 
+# The keys of a profile as `Profile.snapshot` records it, in the config of run.started. Its
+# `extra` table and its `headers` are what the person wrote in aims.toml. Either may be shaped
+# as a blob reference.
+PROFILE_KEYS = frozenset({"name", "backend", "model", "weights", "extra"})
+PROFILE_WRITTEN = frozenset({"extra", "headers"})
+
+
 def blob_sizes(kind: object, data: Any) -> Iterator[tuple[str, Any]]:
     """The sha256 and the stated size of each blob reference in `data`, the data of an event of
-    type `kind`. Its Opaque fields hold none. A sha256 or a size of a hand-made log may be any
-    JSON value."""
+    type `kind`. Its Opaque fields hold none, nor do the `extra` table and `headers` of a
+    profile. A sha256 or a size of a hand-made log may be any JSON value."""
     skip = opaque_fields(kind)
     if skip and isinstance(data, Mapping) and not is_blob_ref(data):
         for key, value in data.items():
@@ -159,8 +166,10 @@ def _refs(value: Any) -> Iterator[tuple[str, Any]]:
     if is_blob_ref(value):
         yield value["sha256"], value["size"]
     elif isinstance(value, Mapping):
-        for item in value.values():
-            yield from _refs(item)
+        profile = "extra" in value and value.keys() >= PROFILE_KEYS
+        for key, item in value.items():
+            if not (profile and key in PROFILE_WRITTEN):
+                yield from _refs(item)
     elif isinstance(value, list):
         for item in value:
             yield from _refs(item)
