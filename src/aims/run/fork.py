@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from aims.agent import ChannelVersions, RecordedOutput, ReplayPlan, Turnstile
 from aims.events import (
     MAX_INT,
@@ -23,7 +25,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
-from aims.events.schema import stated_size
+from aims.events.schema import is_blob_ref
 from aims.models import ModelClient, ModelsConfig, Profile, ProfileError, Recording
 from aims.prompts import Prompts
 from aims.run import truth
@@ -203,10 +205,17 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         raise RunError(f"run {run_id} is not a scenario run (no scenario or agents in run.started)")
     blobs: dict[str, bytes] = {}
     for name in ("file", "files", "verifier", "context"):
-        ref = snapshot.get(name)
-        if isinstance(ref, dict):
-            sha = str(ref["sha256"])
-            blobs[sha] = await _blob(store, run_id, sha, stated_size(ref))
+        value = snapshot.get(name)
+        if value is None:
+            continue
+        # only a blob reference states the size its read stops at
+        if not is_blob_ref(value):
+            raise RunError(f"run {run_id} recorded its scenario {name} as no blob reference")
+        try:
+            ref = BlobRef.model_validate(value)
+        except ValidationError:
+            raise RunError(f"run {run_id} recorded a bad blob reference for {name}") from None
+        blobs[ref.sha256] = await _blob(store, run_id, ref.sha256, ref.size)
     try:
         bundle = from_snapshot(snapshot, blobs)
     except ScenarioError as e:

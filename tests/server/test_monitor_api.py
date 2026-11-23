@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import json
 import tomllib
+import tracemalloc
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -8,9 +10,18 @@ from typing import Any
 import httpx2
 import pytest
 from cp import CP, control_plane
-from test_server import MODEL_KEYS, FakeRunner, ship, until
+from pydantic import JsonValue
+from test_server import MODEL_KEYS, FakeRunner, post_tar, run_tar, ship, until
 
-from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
+from aims.events import (
+    AgentFinished,
+    BlobRef,
+    Draft,
+    LocalEventStore,
+    RunFinished,
+    RunStarted,
+    ToolCall,
+)
 from aims.events.payloads import FlagReview, MonitorFlag, MonitorVerdict
 from aims.monitor.texts import defaults
 from aims.node.shipper import Shipper
@@ -23,6 +34,7 @@ from aims.wire import CommandMessage, MonitorJob, OfferMessage, RunnerHello
 pytestmark = pytest.mark.anyio
 
 IDENTITY = "a" * 64
+MIB = 1024 * 1024
 
 
 class MonitorRunner(FakeRunner):
@@ -465,6 +477,35 @@ async def test_a_review_has_an_estimate_a_cost_guard_and_counts_as_listed(
         finally:
             await mon.close()
     await seal(local, running, task)
+
+
+@pytest.mark.parametrize("snap", ["loose", "short"])
+async def test_a_scenario_input_is_read_only_through_its_blob_reference(
+    cp: CP, local: LocalEventStore, snap: str
+) -> None:
+    data = b"a" * (64 * MIB)
+    sha = hashlib.sha256(data).hexdigest()
+    # a reference without its size, or one that states too few bytes
+    ref: dict[str, JsonValue] = {"sha256": sha} if snap == "loose" else {"sha256": sha, "size": 10}
+    config: dict[str, JsonValue] = {"scenario": {"context": ref}, "agents": {"a": {}}}
+    run_id = await local.create_run(
+        RunStarted(scenario="control", oversight="observe", agents=["a"], config=config)
+    )
+    await local.put_blob(run_id, data)
+    # an exact reference elsewhere in the log brings the blob in with the import
+    short = BlobRef(sha256=sha, size=10)
+    drafts = [Draft(AgentFinished(reason="submitted", answer=short), "a")]
+    await local.append(run_id, [*drafts, Draft(RunFinished(status="completed"))])
+    assert (await post_tar(cp, run_tar(local.root / run_id))).status_code == 201
+    async with cp.client(cp.operator) as c:
+        tracemalloc.start()
+        try:
+            r = await c.get(f"/api/runs/{run_id}/monitor/estimate")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+    assert r.status_code == 422, r.text
+    assert peak < 8 * MIB
 
 
 async def test_a_job_that_does_not_load_ends_instead_of_failing_the_claim(

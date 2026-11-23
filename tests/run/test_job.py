@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 from scripted import profile
 
 from aims.models import ProfileError, load_models
@@ -39,3 +40,15 @@ def test_a_config_file_role_of_the_monitor_needs_structured_output(
         load_models(path)
     path.write_text(path.read_text().replace(f'{role} = "plain"', 'agent = "plain"'))
     assert load_models(path).role("agent").name == "plain"
+
+
+def test_a_job_holds_only_the_inputs_its_scenario_names_by_blob_reference() -> None:
+    a, b, c = "a" * 64, "b" * 64, "c" * 64
+    scenario: dict[str, JsonValue] = {
+        "file": {"sha256": a, "size": 3},
+        "files": {"sha256": b},
+        "verifier": {"sha256": c, "size": 1, "more": True},
+        "context": None,
+    }
+    job = Job(run_id="r", scenario=scenario, folder="d" * 64)
+    assert job.blobs() == [a, "d" * 64]

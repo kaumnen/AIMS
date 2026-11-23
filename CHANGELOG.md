@@ -73,6 +73,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- A fork takes a recorded scenario input only through an exact blob reference with its size. A loose reference read its blob whole.
 - A UI live stream whose client drops is released at once. It kept its place in the stream count and its feed of live model output until Python's garbage collector ran.
 - A runner whose stream drops gives back the jobs offered to it at once. A drop during a send kept the stream open until Python's garbage collector ran. Until then the runner showed as connected, so each job offered to it waited 10 s. A drop could also keep a job in the runner's offers for good, so a runner with one slot got no more jobs until the server restarted. A stream opened before the runner's hello gets a 409.
 - `aims ui` that cannot listen on its host and port says why in one line and exits 1. It printed a long traceback and exited 3, the code of a killed run. It now opens its port before it touches its data dir. So a second `aims ui` that fails on the port leaves the `server.json` and the sign-in token of the one running there alone. With `--host localhost --port 0` every address listens on one port, so the link in `server.json` always answers.

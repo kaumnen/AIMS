@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from aims.events import AuditLevel, EventStore, Oversight, Series
+from aims.events.schema import is_blob_ref
 from aims.models import ModelsConfig, Profile, ProfileError, UnsetRole
 from aims.models.profiles import Role
 from aims.monitor.config import MonitorConfigError, Preset
@@ -123,8 +124,8 @@ class Job(_Strict):
         out: list[str] = []
         for name in INPUTS:
             ref = self.scenario.get(name)
-            if isinstance(ref, dict) and isinstance(ref.get("sha256"), str):
-                out.append(str(ref["sha256"]))
+            if isinstance(ref, dict) and is_blob_ref(ref) and isinstance(sha := ref["sha256"], str):
+                out.append(sha)
         if self.folder is not None:
             out.append(self.folder)
         return out
