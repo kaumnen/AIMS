@@ -398,6 +398,19 @@ def test_a_glossary_entry_for_an_unknown_type_is_refused() -> None:
         resolve(Prompts(monitor={"glossary": {"no.such": "x"}}))
 
 
+def test_the_glossary_holds_every_type_a_sweep_may_see_and_only_those() -> None:
+    table = glossary_texts.defaults()
+    assert [k for k in table if k.startswith("monitor.")] == []
+    assert table["run.finished"] == ""
+    given = resolve(Prompts(monitor={"glossary": {"run.finished": "The run ended."}}))
+    assert given.gloss("run.finished") == "The run ended."
+    assert identity(MonitorConfig(), resolve(Prompts()), {}, {}) == identity(
+        MonitorConfig(), MonitorTexts(dict(texts().texts), dict(texts().categories)), {}, {}
+    )
+    with pytest.raises(TextError, match=r"unknown record type 'monitor\.flag'"):
+        resolve(Prompts(monitor={"glossary": {"monitor.flag": "x"}}))
+
+
 # The guard
 
 GUARDED = [

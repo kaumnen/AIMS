@@ -72,7 +72,8 @@ def default(name: str) -> str:
 
 
 def defaults() -> dict[str, str]:
-    """The default text of every record type a sweep may be shown, by type."""
-    names = {n for n in payload_types() if not n.startswith(SERVICE_PREFIX)} | set(OVERRIDES)
-    out = {name: default(name) for name in sorted(names)}
-    return {name: text for name, text in out.items() if text}
+    """The default text of every record type a sweep may be shown, by type, empty for a type a
+    sweep is told nothing of. The monitor's own records and service records are never shown."""
+    hidden = ("monitor.", SERVICE_PREFIX)
+    names = {n for n in payload_types() if not n.startswith(hidden)} | set(OVERRIDES)
+    return {name: default(name) for name in sorted(names)}
