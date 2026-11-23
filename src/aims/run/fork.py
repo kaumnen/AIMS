@@ -30,7 +30,7 @@ from aims.models import ModelClient, ModelsConfig, Profile, ProfileError, Record
 from aims.prompts import Prompts
 from aims.run import truth
 from aims.run.runner import Bench, Fork, RunError, Texts, resolve_texts
-from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot
+from aims.scenario import AgentConfig, Bundle, Scenario, ScenarioError, from_snapshot
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.stored import STORED
@@ -610,6 +610,44 @@ def _replayed(origin: Origin, agent_id: str, step: int) -> dict[tuple[int, str],
     return {(n, c): seq for n, seqs in enumerate(calls, 1) for c, seq in seqs.items()}
 
 
+def _holds(origin: Origin, fork: Fork, replayed: Mapping[str, list[int]]) -> dict[str, list[int]]:
+    """The origin seqs of the replayed actions each agent's first step after the cut waits
+    for: those of the other agents, up to the first action of an agent that starts only once
+    this one is live. The turnstile takes the actions in order, so none from that one on can
+    run before this agent goes live."""
+    agents = {a.id: a for a in _agents(origin)}
+    out: dict[str, list[int]] = {}
+    for agent in agents:
+        others = [other for other in replayed if other != agent]
+        later = {other for other in others if _starts_after(agents, fork, other, agent)}
+        bound = min((seq for other in later for seq in replayed[other]), default=None)
+        out[agent] = [
+            seq
+            for other in others
+            if other not in later
+            for seq in replayed[other]
+            if bound is None or seq < bound
+        ]
+    return out
+
+
+def _starts_after(agents: Mapping[str, AgentConfig], fork: Fork, agent: str, live: str) -> bool:
+    """Whether `agent` starts only once agent `live` has finished or taken a step the fork does
+    not replay, itself or through the agents it waits on to start."""
+    seen: set[str] = set()
+    while agent not in seen and (config := agents.get(agent)) is not None:
+        seen.add(agent)
+        start = config.start
+        if start is None or start.agent is None:
+            return False
+        if start.agent == live:
+            return start.on == "finished" or (
+                start.on == "step" and (start.step or 0) > fork.at(live)
+            )
+        agent = start.agent
+    return False
+
+
 def check_fork(origin: Origin, step: int) -> None:
     """Raises RunError unless every agent of `origin` took `step` steps and can replay them."""
     for agent in origin.bundle.scenario.agents:
@@ -658,9 +696,10 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
             if a.script is not None
         }
         turnstile = None
+        replayed = {a: [*orders[a].values(), *actions.get(a, [])] for a in orders}
         if fork.cut is not None:
-            seqs = [s for order in orders.values() for s in order.values()]
-            turnstile = Turnstile([*seqs, *(s for a in actions.values() for s in a)])
+            turnstile = Turnstile(s for seqs in replayed.values() for s in seqs)
+        holds = _holds(origin, fork, replayed)
         ran = budgets.apply(origin.bundle.scenario, origin.budget)
         caps = {a.id: a.budget for a in ran.agents}
         out: dict[str, ReplayPlan] = {}
@@ -680,6 +719,7 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
                 turnstile=turnstile,
                 order=order,
                 versions={k: v for k, v in versions.items() if k in order},
+                after=holds.get(agent.id, []) if turnstile is not None else [],
                 keep=fork.keep_others and agent.id != fork.agent,
                 actions=actions.get(agent.id, []),
                 budget=caps[agent.id],

@@ -22,6 +22,12 @@ class Turnstile:
         async with self._changed:
             await self._changed.wait_for(lambda: seq not in self._left or self._head() == seq)
 
+    async def cleared(self, seqs: Iterable[int]) -> None:
+        """Wait until every action of `seqs` was taken or given up."""
+        wanted = set(seqs)
+        async with self._changed:
+            await self._changed.wait_for(lambda: not wanted & self._left)
+
     async def done(self, seq: int) -> None:
         await self.drop([seq])
 

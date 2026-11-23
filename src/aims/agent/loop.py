@@ -431,7 +431,9 @@ class ReplayPlan:
 
     A fork of several agents runs the replayed tool calls of every agent in the origin's
     order: each waits at `turnstile` for its seq in `order`, and what it met of the channels is
-    checked against `versions`. With `keep`, the agent goes on with recorded answers after
+    checked against `versions`. The agent's first step after `fork_at` waits until the other
+    agents' replayed actions in `after` were taken or given up, so the run's caps count every
+    replayed step before a live one. With `keep`, the agent goes on with recorded answers after
     `fork_at` until a request of its own is not in the recording, then goes live. `actions`
     are the origin seqs of a scripted agent's steps. `budget` and `limits` are the caps the
     origin ran under, which hold while its steps replay so the replayed requests match; the
@@ -453,6 +455,7 @@ class ReplayPlan:
     turnstile: Turnstile | None = None
     order: dict[tuple[int, str], int] = field(default_factory=dict)
     versions: dict[tuple[int, str], ChannelVersions] = field(default_factory=dict)
+    after: list[int] = field(default_factory=list)
     keep: bool = False
     actions: list[int] = field(default_factory=list)
     budget: Budget | None = None
@@ -663,6 +666,7 @@ class Agent:
         nudges = 0
         live = False
         while True:
+            await self._await_replays()
             await self._take_inputs()
             if (hit := self._over_budget()) is not None:
                 raise _End(*hit)
@@ -700,6 +704,16 @@ class Agent:
                     return outcome.answer
             self._open = None
             self._warn_budget()
+
+    async def _await_replays(self) -> None:
+        """Before the agent's first step after its fork step, wait for the others' replayed
+        actions it holds for, counted as waiting on them."""
+        r = self.replay
+        if r is None or r.turnstile is None or not r.after or self._replaying():
+            return
+        seqs, r.after = r.after, []
+        with self.run_budget.waiting(self.id):
+            await r.turnstile.cleared(seqs)
 
     async def _take_inputs(self) -> None:
         if self.replay is not None:

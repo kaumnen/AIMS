@@ -2,22 +2,28 @@
 replayed calls in the origin's order, the board rebuilt by its posts, agents live after the
 cut or kept on their recorded answers, channel divergence, and folder sources in a fork."""
 
+import asyncio
 import itertools
 import json
 import os
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from scripted import Script, call, models, profile
+from test_agent import FakeSandbox, echo
+from test_fork_whole import PAIR
 
-from aims.agent import ChannelVersions, Turnstile
-from aims.events import Event, LocalEventStore, RunStarted
+from aims.agent import Agent, ChannelVersions, RunBudget, Turnstile, Verdict
+from aims.events import AgentStep, Draft, Event, LocalEventStore, RunFinished, RunStarted
+from aims.models import ModelClient
 from aims.monitor.render import Trajectory
 from aims.monitor.texts import resolve
-from aims.prompts import Prompts
+from aims.prompts import AgentTexts, Prompts
+from aims.run.estimate import _ceiling, step_usd
 from aims.run.fork import (
     CutAt,
     cut_at,
@@ -28,9 +34,12 @@ from aims.run.fork import (
     preview,
 )
 from aims.run.job import monitor_for
-from aims.run.runner import Bench, Fork, Options, RunError, Runner
-from aims.sandbox import DockerBackend
-from aims.scenario import load
+from aims.run.runner import Bench, Fork, Options, RunError, Runner, resolve_texts
+from aims.sandbox import AuditedSandbox, DockerBackend
+from aims.sandbox.audit import ExecResult
+from aims.scenario import AgentConfig, Budget, Limits, SandboxConfig, load, parse
+from aims.scenario.load import Bundle
+from aims.tools import load_tools
 
 pytestmark = pytest.mark.anyio
 
@@ -211,6 +220,228 @@ async def test_the_turnstile_lets_actions_through_in_order() -> None:
     await gate.drop([1, 2])
     await asyncio.wait_for(late, 1)
     await asyncio.wait_for(gate.wait(99), 1)
+
+
+# Live steps after the cut.
+
+P = profile(context_tokens=1000, max_output_tokens=100)
+
+
+async def recorded_pair(store: LocalEventStore, text: str) -> str:
+    """A run of the scenario `text` as `aims run` starts it, each agent on profile P."""
+    bundle = Bundle(scenario=parse(text), text=text.encode())
+    p = P.snapshot()
+    agents: dict[str, Any] = {
+        a.id: {
+            "profile": p,
+            "schedule": [[None, p]],
+            "texts": resolve_texts(Prompts(), a).snapshot(),
+        }
+        for a in bundle.scenario.agents
+    }
+    started = RunStarted(
+        scenario="t",
+        oversight="observe",
+        agents=list(agents),
+        config={"scenario": bundle.snapshot(), "agents": agents},
+    )
+    return await store.create_run(started, blobs=bundle.blobs())
+
+
+def pair_agent(
+    store: LocalEventStore,
+    run_id: str,
+    config: AgentConfig,
+    play: Script,
+    budget: RunBudget,
+    *,
+    gate: Any = None,
+    replay: Any = None,
+    sandbox: FakeSandbox | None = None,
+) -> Agent:
+    return Agent(
+        config=config,
+        sandbox_config=SandboxConfig(),
+        instruction=f"You are {config.id}.",
+        texts=AgentTexts(),
+        profile=P,
+        client=ModelClient(store, run_id, models(P), transport=play.transport(), env={}),
+        sandbox=cast(AuditedSandbox, sandbox or FakeSandbox(echo)),
+        store=store,
+        run_id=run_id,
+        tools=load_tools(config.tool_names),
+        run_budget=budget,
+        gate=gate,
+        replay=replay,
+    )
+
+
+class Order:
+    """A gate that sets an event at some points and waits for one at others."""
+
+    def __init__(self, sets: dict[Any, asyncio.Event], waits: dict[Any, asyncio.Event]) -> None:
+        self.sets, self.waits = sets, waits
+
+    async def check(self, point: Any) -> Verdict:
+        key = (point.kind, point.step)
+        if key in self.sets:
+            self.sets[key].set()
+        if key in self.waits:
+            await self.waits[key].wait()
+        return Verdict()
+
+    async def held(self, point: Any) -> Verdict:
+        return Verdict()
+
+
+class Held(FakeSandbox):
+    """Holds its first command until `go` is set, as a slow command would."""
+
+    def __init__(self, go: asyncio.Event) -> None:
+        super().__init__(echo)
+        self.go = go
+
+    async def exec(self, command: str, **kw: Any) -> ExecResult:
+        if not self.commands:
+            await self.go.wait()
+        return await super().exec(command, **kw)
+
+
+class Watched(Turnstile):
+    """Sets `go` when an agent waits at its first step after the cut."""
+
+    def __init__(self, seqs: Iterable[int], go: asyncio.Event) -> None:
+        super().__init__(seqs)
+        self.go = go
+
+    async def cleared(self, seqs: Iterable[int]) -> None:
+        self.go.set()
+        await super().cleared(seqs)
+
+
+async def test_an_agent_goes_live_once_the_others_replayed_their_steps(
+    store: LocalEventStore,
+) -> None:
+    """In the origin a takes 1 step, then b takes 3, then both go on. A fork cut at b:3 under a
+    run cap of 6 steps replays b's first command slowly. a's first live step waits for b's
+    replayed steps, so the run's live steps stay within the count of the estimate."""
+    origin_id = await recorded_pair(store, PAIR)
+    a1, b3 = asyncio.Event(), asyncio.Event()
+    a_play = Script(*[call("bash", command=f"echo a{i}") for i in range(1, 5)])
+    b_play = Script(*[call("bash", command=f"echo b{i}") for i in range(1, 5)])
+    b_play.calls = itertools.count(100)  # call ids unique across the two agents
+    run_budget = RunBudget(Limits())
+    a_gate = Order({("after_tool", 1): a1}, {("before_model", 1): b3})
+    b_gate = Order({("after_tool", 3): b3}, {("before_model", 0): a1})
+    a = pair_agent(store, origin_id, AgentConfig(id="a"), a_play, run_budget, gate=a_gate)
+    b = pair_agent(store, origin_id, AgentConfig(id="b"), b_play, run_budget, gate=b_gate)
+    await asyncio.gather(a.run(), b.run())
+    await store.append(origin_id, [Draft(RunFinished(status="completed"))])
+
+    origin = await load_origin(store, origin_id)
+    found = cut_at(origin, "b:3")
+    assert isinstance(found, CutAt)
+    assert found.steps == {"a": 1, "b": 3}
+    fork = Fork(origin_id, min(found.steps.values()), steps=dict(found.steps), cut=found.seq)
+    limits = Limits(steps=6)
+    plan = SimpleNamespace(
+        scenario=SimpleNamespace(agents=[AgentConfig(id="a"), AgentConfig(id="b")], limits=limits),
+        profiles={"a": P, "b": P},
+        done=dict(found.steps),
+    )
+    ceiling, _ = _ceiling(cast(Any, plan))
+    step = step_usd(P)
+    assert ceiling is not None
+    assert step is not None
+    counted = round(ceiling / (step * P.retries.attempts))
+    assert counted == 3
+
+    fork_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    plans = await planner(Bench(store, cast(Any, None), models(P)), origin, fork)(fork_id)
+    go = asyncio.Event()
+    watched = Watched([s for p in plans.values() for s in p.order.values()], go)
+    for p in plans.values():
+        p.turnstile = watched
+    budget = RunBudget(limits)
+    live_a = Script(*[call("bash", command="live") for _ in range(20)])
+    live_b = Script(call("submit", answer="b"))
+    fa = pair_agent(store, fork_id, AgentConfig(id="a"), live_a, budget, replay=plans["a"])
+    fb = pair_agent(
+        store, fork_id, AgentConfig(id="b"), live_b, budget, replay=plans["b"], sandbox=Held(go)
+    )
+
+    async def run_a() -> Any:
+        try:
+            return await fa.run()
+        finally:
+            go.set()
+
+    async with asyncio.timeout(10):
+        await asyncio.gather(run_a(), fb.run())
+    assert len(live_a.requests) + len(live_b.requests) <= counted
+    events = await store.events(fork_id, limit=10_000)
+    steps = [
+        (e.agent_id, AgentStep.model_validate(e.data).source, e.seq)
+        for e in events
+        if e.type == "agent.step"
+    ]
+    assert [source for agent, source, _ in steps if agent == "b"][:3] == ["replay"] * 3
+    replayed = [e.seq for e in events if e.type == "tool.result" and e.data.get("replayed")]
+    first_live = min(seq for _, source, seq in steps if source == "live")
+    assert max(replayed) < first_live
+
+
+async def test_an_agent_does_not_wait_for_one_that_starts_once_it_finished(
+    store: LocalEventStore,
+) -> None:
+    """b starts once a has finished, and c took its step after b's. In a fork that replays the
+    first step of each, a goes live without waiting for b or for c, whose step waits for b's at
+    the turnstile. b then starts and replays its step, then c replays its own."""
+    text = PAIR.replace(
+        "  - id: b\n", "  - id: b\n    start: {agent: a, on: finished}\n  - id: c\n"
+    )
+    origin_id = await recorded_pair(store, text)
+    run_budget = RunBudget(Limits())
+    for n, agent_id in enumerate("abc"):
+        play = Script(call("bash", command=f"{agent_id}1"))
+        play.calls = itertools.count(100 * n)  # call ids unique across the agents
+        one = AgentConfig(id=agent_id, budget=Budget(steps=1))
+        await pair_agent(store, origin_id, one, play, run_budget).run()
+    await store.append(origin_id, [Draft(RunFinished(status="completed"))])
+
+    origin = await load_origin(store, origin_id)
+    found = cut_at(origin, "c:1")
+    assert isinstance(found, CutAt)
+    assert found.steps == {"a": 1, "b": 1, "c": 1}
+    fork = Fork(origin_id, 1, steps=dict(found.steps), cut=found.seq)
+    fork_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    plans = await planner(Bench(store, cast(Any, None), models(P)), origin, fork)(fork_id)
+    seqs = {agent_id: list(plan.order.values()) for agent_id, plan in plans.items()}
+    assert plans["a"].after == []
+    assert plans["b"].after == seqs["a"] + seqs["c"]
+    assert plans["c"].after == seqs["a"] + seqs["b"]
+
+    budget = RunBudget(Limits())
+    three = AgentConfig(id="a", budget=Budget(steps=3))
+    live_a = Script(call("bash", command="live"), call("bash", command="live"))
+    live_b, live_c = Script(call("submit", answer="b")), Script(call("submit", answer="c"))
+    fa = pair_agent(store, fork_id, three, live_a, budget, replay=plans["a"])
+    fb = pair_agent(store, fork_id, AgentConfig(id="b"), live_b, budget, replay=plans["b"])
+    fc = pair_agent(store, fork_id, AgentConfig(id="c"), live_c, budget, replay=plans["c"])
+
+    async def b_after_a(a: asyncio.Task[Any]) -> Any:
+        await a
+        return await fb.run()
+
+    async with asyncio.timeout(10):
+        a_run = asyncio.create_task(fa.run())
+        ended = await asyncio.gather(a_run, b_after_a(a_run), fc.run())
+    assert [(f.reason, f.steps) for f in ended] == [
+        ("budget_steps", 3),
+        ("submitted", 2),
+        ("submitted", 2),
+    ]
+    assert len(live_a.requests) == 2
 
 
 @pytest.mark.docker
