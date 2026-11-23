@@ -925,6 +925,30 @@ test("prompts list every text with where it comes from and save into the project
   });
 });
 
+test("a glossary text saves under its record type as one key", async () => {
+  renderAt("/settings/prompts");
+  const glossary = within(await screen.findByRole("region", { name: "Monitor glossary" }));
+  expect(within(textRow("exec.started")).getByText("built in")).toBeTruthy();
+  fireEvent.click(glossary.getByRole("button", { name: "Edit exec.started" }));
+  const box = await screen.findByRole("textbox", { name: "Text of exec.started" });
+  expect((box as HTMLTextAreaElement).value).toBe("A command the agent ran.");
+  fireEvent.change(box, { target: { value: "A command run in the sandbox." } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  const row = within(textRow("exec.started"));
+  expect(await row.findByText("A command run in the sandbox.")).toBeTruthy();
+  expect(await row.findByText("this project")).toBeTruthy();
+  const sent = calls("PATCH", "/api/config/project")[0];
+  expect(await sent?.json()).toEqual({
+    set: [
+      {
+        key: ["prompts", "monitor", "glossary", "exec.started"],
+        value: "A command run in the sandbox.",
+      },
+    ],
+    unset: [],
+  });
+});
+
 test("on this machine an edit starts from its own text and can drop it", async () => {
   renderAt("/settings/prompts");
   fireEvent.click(await screen.findByRole("button", { name: "This machine" }));
