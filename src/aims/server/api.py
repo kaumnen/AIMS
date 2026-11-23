@@ -92,6 +92,7 @@ from aims.run.fork import (
     replayable_steps,
 )
 from aims.run.job import (
+    INPUT_LIMIT,
     AddOutcome,
     Job,
     JobAdd,
@@ -977,6 +978,20 @@ def _check_runner(
             )
 
 
+async def _folder(path: Path, title: str, code: str) -> bytes:
+    """The folder of the scenario at `path` as the tar a runner loads it from. Refused as
+    `title` when it does not read, or when it is over INPUT_LIMIT, the most a runner takes."""
+    try:
+        folder = await asyncio.to_thread(folder_tar, path / "scenario.yaml")
+    except OSError as e:
+        raise ProblemException(422, title, str(e), code=code) from None
+    if len(folder) > INPUT_LIMIT:
+        size = f"the scenario folder is {len(folder)} bytes as a tar"
+        detail = f"{size}, over the {INPUT_LIMIT} bytes a runner takes"
+        raise ProblemException(422, title, detail, code=code)
+    return folder
+
+
 async def _queue(
     state: ServerState,
     token: str | None,
@@ -1098,10 +1113,7 @@ async def start_runs(
         raise ProblemException(422, "Monitor cannot run", str(e), code="monitor") from None
     agents = [agent_profile(settings.models, a, body.profile) for a in bundle.scenario.agents]
     monitor = _monitor(settings, bundle.scenario, agents, body.monitor, body.budget)
-    try:
-        folder = await asyncio.to_thread(folder_tar, path / "scenario.yaml")
-    except OSError as e:
-        raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
+    folder = await _folder(path, "Scenario cannot run", "scenario")
     try:
         jobs = scenario_jobs(
             bundle,
@@ -2781,10 +2793,7 @@ async def start_selftest(
             code="selftest",
             errors=[ProblemError(msg=p) for p in problems],
         )
-    try:
-        folder = await asyncio.to_thread(folder_tar, path / "scenario.yaml")
-    except OSError as e:
-        raise ProblemException(422, "Self-test cannot run", str(e), code="selftest") from None
+    folder = await _folder(path, "Self-test cannot run", "selftest")
     try:
         job = selftest_job(
             bundle,

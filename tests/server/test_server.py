@@ -2053,6 +2053,32 @@ async def test_the_built_in_scenarios_are_read_only_and_duplicate_to_edit(cp: CP
         assert copy.read_bytes() == (root / "cache-keys/scenario.yaml").read_bytes()
 
 
+async def test_a_scenario_whose_folder_is_over_what_a_runner_takes_is_refused(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runner takes no scenario input over INPUT_LIMIT, the folder's tar among them, so the
+    control plane makes no job it would refuse."""
+    monkeypatch.setattr(api, "INPUT_LIMIT", 64 * 1024, raising=False)
+    src = Path(__file__).parents[2] / "src/aims/scenarios/cache-keys"
+    shutil.copytree(src, cp.project.parent / "scenarios/cache-keys")
+    for name in ("control", "cache-keys"):
+        (cp.project.parent / "scenarios" / name / "data.bin").write_bytes(bytes(128 * 1024))
+
+    def over(detail: str) -> bool:
+        said = ("the scenario folder is ", " bytes as a tar, over the 65536 bytes a runner takes")
+        return detail.startswith(said[0]) and detail.endswith(said[1])
+
+    async with cp.client(cp.operator) as c:
+        body = {"scenario": {"source": "project", "name": "control"}, "monitor": "signals"}
+        r = await c.post("/api/runs", json=body)
+        assert (r.status_code, r.json()["code"]) == (422, "scenario"), r.text
+        assert over(r.json()["detail"])
+        r = await c.post("/api/scenarios/project/cache-keys/selftest", json={})
+        assert (r.status_code, r.json()["code"]) == (422, "selftest"), r.text
+        assert over(r.json()["detail"])
+    assert await cp.state.db.jobs() == []
+
+
 async def test_a_selftest_is_queued_for_a_runner_that_runs_it(cp: CP) -> None:
     src = Path(__file__).parents[2] / "src/aims/scenarios/cache-keys"
     shutil.copytree(src, cp.project.parent / "scenarios/cache-keys")
