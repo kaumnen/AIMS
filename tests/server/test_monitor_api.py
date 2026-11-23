@@ -21,6 +21,7 @@ from aims.events import (
     RunFinished,
     RunStarted,
     ToolCall,
+    ToolResult,
 )
 from aims.events.payloads import FlagReview, MonitorFlag, MonitorVerdict
 from aims.monitor.texts import defaults
@@ -477,6 +478,27 @@ async def test_a_review_has_an_estimate_a_cost_guard_and_counts_as_listed(
         finally:
             await mon.close()
     await seal(local, running, task)
+
+
+@pytest.mark.usefixtures("profiles")
+async def test_an_estimate_reads_no_tool_output_of_the_run(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    first, blobs = started(cp)
+    run_id = await local.create_run(first, blobs=blobs)
+    ref = await local.put_blob(run_id, b"o" * (64 * MIB))
+    drafts = [Draft(ToolResult(call_id=f"c{i}", output=ref), "a") for i in range(8)]
+    await local.append(run_id, [*drafts, Draft(RunFinished(status="completed"))])
+    await ship(local, fake.client, run_id)
+    async with cp.client(cp.operator) as c:
+        tracemalloc.start()
+        try:
+            r = await c.get(f"/api/runs/{run_id}/monitor/estimate")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+    assert r.status_code == 200, r.text
+    assert peak < 8 * MIB
 
 
 @pytest.mark.parametrize("snap", ["loose", "short"])

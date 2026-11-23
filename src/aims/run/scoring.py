@@ -994,7 +994,7 @@ async def score_with(
     why = checks_off
     if candidates:
         try:
-            origin = await load_origin(held, run, full=False)
+            origin = await load_origin(held, run, full=False, replay=False)
         except RunError as e:
             raise ScoreError(str(e)) from None
         classifier = classifier_for(
@@ -1044,7 +1044,7 @@ async def estimate_sealed(
     profile = off = None
     if awareness or answer:
         try:
-            origin = await load_origin(store, run, full=False)
+            origin = await load_origin(store, run, full=False, replay=False)
         except RunError as e:
             raise ScoreError(str(e)) from None
         names = classifier_candidates(settings)
@@ -1081,7 +1081,7 @@ async def priced_score(
     if not (awareness or answer):
         return settings, Listing()
     try:
-        origin = await load_origin(store, run, full=False)
+        origin = await load_origin(store, run, full=False, replay=False)
     except RunError as e:
         raise ScoreError(str(e)) from None
     profile = extractor_for(settings.models, classifier_candidates(settings), origin_agents(origin))

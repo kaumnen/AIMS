@@ -190,7 +190,12 @@ async def replayable_steps(store: EventStore, run_id: str, agents: Iterable[str]
     return out
 
 
-async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> Origin:
+async def load_origin(
+    store: EventStore, run_id: str, *, full: bool = True, replay: bool = True
+) -> Origin:
+    """The recorded run `run_id` as a fork or a review reads it. `full` also reads its truth.
+    `replay` also reads what a fork replays: the tool outputs, injected texts and restored
+    channels, from their blobs. Without it those stay empty and only the steps are counted."""
     info = await store.run(run_id)
     if info is None:
         raise RunError(f"unknown run {run_id}")
@@ -265,6 +270,8 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
             payload = event.payload()
             if event.type == "agent.step":
                 steps[agent] += 1
+            elif not replay:
+                continue
             elif isinstance(payload, ToolResult):
                 text = await _text(store, run_id, payload.output)
                 # a step's tool results come after its agent.step and before the next
@@ -279,7 +286,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
     origin.running = info.status == "running"
     await _order(store, run_id, origin)
     for c in started.channels:
-        if c.restored is not None:
+        if replay and c.restored is not None:
             origin.restored[c.name] = await _blob(store, run_id, c.restored.sha256, c.restored.size)
     return origin
 

@@ -1188,7 +1188,7 @@ async def fork_point(state: ServerState, run_id: str, body: StartFork) -> ForkPo
     if body.keep_others and (body.at is None or ":" not in body.at):
         raise ProblemException(422, "Invalid request", "keep_others needs at agent:N")
     try:
-        origin = await load_origin(state.store, run_id)
+        origin = await load_origin(state.store, run_id, replay=False)
         if body.at is None and len(origin.bundle.scenario.agents) > 1:
             raise RunError("a run of several agents forks at agent:N or @seq")
         if body.budget is not None:

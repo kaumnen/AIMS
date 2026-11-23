@@ -255,7 +255,7 @@ async def score_job(
             answer=body.answer,
             lists=state.prices,
         )
-        origin = await load_origin(state.store, run_id, full=False)
+        origin = await load_origin(state.store, run_id, full=False, replay=False)
         classifier = off = None
         if body.awareness or body.answer:
             names = classifier_candidates(settings)

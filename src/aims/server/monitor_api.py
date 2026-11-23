@@ -197,7 +197,7 @@ async def monitor_run(
     head = (await _sealed(state, run_id, body)).hash
     settings = state.config.settings()
     try:
-        origin = await load_origin(state.store, run_id, full=False)
+        origin = await load_origin(state.store, run_id, full=False, replay=False)
         # the list prices go on the profiles before the jobs are made, confirmed or not, so the
         # runner gets them and never reads the map
         settings, listing = await review_prices(origin, settings, body, state.prices)
@@ -272,7 +272,7 @@ async def estimate_monitor(
     await _sealed(state, run_id, body)
     settings = state.config.settings()
     try:
-        origin = await load_origin(state.store, run_id, full=False)
+        origin = await load_origin(state.store, run_id, full=False, replay=False)
         settings, listing = await review_prices(origin, settings, body, state.prices)
         return await estimate_review(
             state.store,
