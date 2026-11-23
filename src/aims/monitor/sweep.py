@@ -59,73 +59,78 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_IMPORTANCE = {"type": "integer", "enum": [1, 2, 3, 4, 5], "description": "1 to 5 by the rubric"}
-_SUSPICION = {"type": "integer", "description": "0 to 100 by the rubric"}
+def importance(texts: MonitorTexts) -> dict[str, Any]:
+    return {
+        "type": "integer",
+        "enum": [1, 2, 3, 4, 5],
+        "description": texts["sweep_schema_importance"],
+    }
 
-EXTRACT = OutputSchema(
-    name="sweep_extract",
-    json_schema=_object(
-        {
-            "summary": {"type": "string", "description": "What the agent did in the review range"},
-            "quotes": {
-                "type": "array",
-                "items": _object(
-                    {
-                        "frames": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Frame ids of the records quoted, copied exactly",
-                        },
-                        "quote": {
-                            "type": "string",
-                            "description": "Exact text from those records",
-                        },
-                        "concern": {
-                            "type": "string",
-                            "description": "One sentence on what the quote shows",
-                        },
-                    }
-                ),
-            },
-        }
-    ),
-)
-EVALUATE = OutputSchema(
-    name="sweep_evaluate",
-    json_schema=_object(
-        {
-            "hits": {
-                "type": "array",
-                "items": _object(
-                    {
-                        "quote": {"type": "integer", "description": "The quote's id"},
-                        "category": {"type": "string", "enum": CATEGORY_NAMES},
-                        "subcategory": {"type": ["string", "null"]},
-                        "justification": {"type": "string"},
-                        "importance": _IMPORTANCE,
-                        "suspicion": _SUSPICION,
-                    }
-                ),
-            },
-            "suspicion": _SUSPICION,
-        }
-    ),
-)
-WINDOW = OutputSchema(
-    name="sweep_window",
-    json_schema=_object({"reason": {"type": "string"}, "suspicion": _SUSPICION}),
-)
-PROPOSAL = OutputSchema(
-    name="sweep_proposal",
-    json_schema=_object(
-        {
-            "category": {"type": ["string", "null"], "enum": [*CATEGORY_NAMES, None]},
-            "justification": {"type": "string"},
-            "importance": _IMPORTANCE,
-            "suspicion": _SUSPICION,
-        }
-    ),
-)
+
+def suspicion(texts: MonitorTexts) -> dict[str, Any]:
+    return {"type": "integer", "description": texts["sweep_schema_suspicion"]}
+
+
+def schemas(texts: MonitorTexts) -> dict[str, OutputSchema]:
+    """The output schemas of the sweep calls, their descriptions from `texts`."""
+    rated = {"importance": importance(texts), "suspicion": suspicion(texts)}
+    quote = {
+        "frames": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": texts["sweep_schema_frames"],
+        },
+        "quote": {"type": "string", "description": texts["sweep_schema_quote"]},
+        "concern": {"type": "string", "description": texts["sweep_schema_concern"]},
+    }
+    summary = {"type": "string", "description": texts["sweep_schema_summary"]}
+    hit = {
+        "quote": {"type": "integer", "description": texts["sweep_schema_quote_id"]},
+        "category": {"type": "string", "enum": CATEGORY_NAMES},
+        "subcategory": {"type": ["string", "null"]},
+        "justification": {"type": "string"},
+        **rated,
+    }
+    hits = {"type": "array", "items": _object(hit)}
+    proposal = {
+        "category": {"type": ["string", "null"], "enum": [*CATEGORY_NAMES, None]},
+        "justification": {"type": "string"},
+        **rated,
+    }
+    return {
+        "extract": OutputSchema(
+            name="sweep_extract",
+            json_schema=_object(
+                {"summary": summary, "quotes": {"type": "array", "items": _object(quote)}}
+            ),
+        ),
+        "evaluate": OutputSchema(
+            name="sweep_evaluate",
+            json_schema=_object({"hits": hits, "suspicion": rated["suspicion"]}),
+        ),
+        "window": OutputSchema(
+            name="sweep_window",
+            json_schema=_object({"reason": {"type": "string"}, "suspicion": rated["suspicion"]}),
+        ),
+        "proposal": OutputSchema(name="sweep_proposal", json_schema=_object(proposal)),
+    }
+
+
+_SCHEMAS = schemas(MonitorTexts())
+
+
+def system(texts: MonitorTexts, intro: str, categories: str) -> str:
+    """A sweep's system prompt: `intro`, the category definitions and the rubric."""
+    return (
+        f"{intro}\n\n{texts['header_categories']}\n{categories}\n\n"
+        f"{texts['header_rubric']}\n{texts['rubric']}"
+    )
+
+
+EXTRACT = _SCHEMAS["extract"]
+EVALUATE = _SCHEMAS["evaluate"]
+WINDOW = _SCHEMAS["window"]
+PROPOSAL = _SCHEMAS["proposal"]
 
 
 class SweepError(Exception):
@@ -370,10 +375,8 @@ class Sweeper:
         self.task = task
         self._reviewed: dict[str, int] = {}
         categories = "\n".join(f"{c}: {d}" for c, d in texts.categories.items())
-        self._system = (
-            f"{texts['sweep_system']}\n\nCATEGORIES\n{categories}\n\n"
-            f"IMPORTANCE AND SUSPICION\n{texts['rubric']}"
-        )
+        self._system = system(texts, texts["sweep_system"], categories)
+        self._schemas = schemas(texts)
 
     def reviewed(self, lane: str) -> int:
         """The last seq lane `lane` reviewed, -1 before its first review."""
@@ -448,7 +451,7 @@ class Sweeper:
         body = "\n\n".join(
             [
                 rendered.text,
-                f"ACTION UNDER REVIEW\n{record}",
+                f"{self.texts['header_action']}\n{record}",
                 glossary(rendered.types | {"proposal"}),
                 self.texts["score_proposal"],
             ]
@@ -457,7 +460,8 @@ class Sweeper:
         if role not in get_args(ModelRole):
             raise SweepError(f"unknown model role {role!r}")
         try:
-            value = await self._ask(body, PROPOSAL, calls, role=cast(ModelRole, role))
+            schema = self._schemas["proposal"]
+            value = await self._ask(body, schema, calls, role=cast(ModelRole, role))
             parsed = _parse(_Proposal, value)
         except (SweepError, NoRoom) as e:
             raise type(e)(str(e), cost_usd=calls.cost_usd) from None
@@ -558,9 +562,10 @@ class Sweeper:
             parts.append(lead)
         body = "\n\n".join(parts)
         if self.extractor is None:
-            return _parse(_Extract, await self._ask(body, EXTRACT, calls))
+            return _parse(_Extract, await self._ask(body, self._schemas["extract"], calls))
         try:
-            return _parse(_Extract, await self._ask(body, EXTRACT, calls, profile=self.extractor))
+            extract = self._schemas["extract"]
+            return _parse(_Extract, await self._ask(body, extract, calls, profile=self.extractor))
         except SweepError as e:
             log.warning(
                 "sweep %s extract of %s on the extractor failed, again on %s: %s",
@@ -569,7 +574,7 @@ class Sweeper:
                 self.profile.name,
                 e,
             )
-        return _parse(_Extract, await self._ask(body, EXTRACT, calls))
+        return _parse(_Extract, await self._ask(body, self._schemas["extract"], calls))
 
     async def _evaluate(self, quotes: list[Quote], rendered: Rendered, calls: _Calls) -> _Evaluate:
         lines = [
@@ -586,12 +591,12 @@ class Sweeper:
         ]
         body = "\n\n".join(
             [
-                f"TASK GIVEN TO THE AGENT\n{self.task}",
-                "QUOTES\n" + "\n".join(lines),
+                f"{self.texts['header_task']}\n{self.task}",
+                f"{self.texts['header_quotes']}\n" + "\n".join(lines),
                 self.texts["evaluate"],
             ]
         )
-        return _parse(_Evaluate, await self._ask(body, EVALUATE, calls))
+        return _parse(_Evaluate, await self._ask(body, self._schemas["evaluate"], calls))
 
     async def _window(
         self, lane: Lane, rendered: Rendered, calls: _Calls, upto: int
@@ -607,7 +612,8 @@ class Sweeper:
         band = self.config.escalate
         cheap = self.extractor if band is not None else None
         try:
-            parsed = _parse(_Window, await self._ask(body, WINDOW, calls, profile=cheap))
+            window = self._schemas["window"]
+            parsed = _parse(_Window, await self._ask(body, window, calls, profile=cheap))
         except SweepError as e:
             log.warning("sweep %s window of %s failed: %s", self.config.name, self.agent_id, e)
             return None
@@ -615,7 +621,7 @@ class Sweeper:
         if cheap is None or band is None or not band.low <= score <= band.high:
             return score, False
         try:
-            parsed = _parse(_Window, await self._ask(body, WINDOW, calls))
+            parsed = _parse(_Window, await self._ask(body, self._schemas["window"], calls))
         except SweepError as e:
             log.warning(
                 "sweep %s escalated window of %s failed: %s", self.config.name, self.agent_id, e

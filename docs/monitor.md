@@ -122,3 +122,7 @@ Set these under `monitor.policy` in the scenario or in the `[monitor.policy]` ta
 | `monitor_manipulation` | Addresses or tries to influence whoever watches or grades it. |
 
 `aims prompts show` prints the full definitions the monitor gets.
+
+## Texts
+
+`[prompts.monitor]` sets any text the monitor's models read. `[prompts.monitor.categories]` sets the definition of a category. The `header_*` texts mark the parts of a prompt, such as `header_quotes`. Some default texts name a header. A renamed header needs those texts changed too.

@@ -47,10 +47,7 @@ from aims.monitor.render import (
     tokens,
 )
 from aims.monitor.sweep import (
-    _IMPORTANCE,
-    _SUSPICION,
     CATEGORY_NAMES,
-    EXTRACT,
     QUOTE_CHARS,
     NoRoom,
     SweepError,
@@ -63,6 +60,10 @@ from aims.monitor.sweep import (
     _parse,
     ask,
     check,
+    importance,
+    schemas,
+    suspicion,
+    system,
 )
 from aims.monitor.texts import MonitorTexts
 from aims.scenario import Scenario
@@ -271,13 +272,22 @@ class ChannelLog:
         seq `after` in the review range, and the agent of each record shown."""
         upto = self.seen if upto is None else upto
         items = [i for i in self._items if i.seq <= upto]
-        head = ["CHANNEL RECORDS OF THE RUN"]
+        head = [texts["header_channel_records"]]
         for c in self.channels:
-            where = f" at {self._folders[c.name]}" if c.name in self._folders else ""
-            head.append(
-                f"CHANNEL {c.name}: {c.kind}{where}, members {', '.join(self.members[c.name])}"
-            )
-        blocks = [await self._block(n, item, upto, next_calls) for n, item in enumerate(items, 1)]
+            members = ", ".join(self.members[c.name])
+            if c.name in self._folders:
+                head.append(
+                    texts["header_channel_folder"].format(
+                        name=c.name, kind=c.kind, path=self._folders[c.name], members=members
+                    )
+                )
+            else:
+                head.append(
+                    texts["header_channel"].format(name=c.name, kind=c.kind, members=members)
+                )
+        blocks = [
+            await self._block(n, item, upto, next_calls, texts) for n, item in enumerate(items, 1)
+        ]
         fresh = [b for b, i in zip(blocks, items, strict=True) if i.last(upto) > after]
         old = [b for b, i in zip(blocks, items, strict=True) if i.last(upto) <= after]
         shorts = {id(b): await self._short(i, b, upto) for b, i in zip(blocks, items, strict=True)}
@@ -300,7 +310,7 @@ class ChannelLog:
             dropped += 1
         lines = list(head)
         if dropped:
-            lines.append(f"{dropped} older items not shown")
+            lines.append(texts["header_items_dropped"].format(count=dropped))
         out = _Lines(self.key, "")
         for b in old:
             out.lines += shown(b).lines
@@ -313,7 +323,7 @@ class ChannelLog:
             out.lines += b.lines
             _merge(out, b)
         lines += out.lines
-        lines.append("END OF CHANNEL RECORDS")
+        lines.append(texts["header_channel_records_end"])
         text = "\n".join(lines)
         rendered = Rendered(
             text=text,
@@ -329,11 +339,14 @@ class ChannelLog:
         )
         return rendered, out.agents
 
-    async def _block(self, n: int, item: _Item, upto: int, next_calls: int) -> _Lines:
+    async def _block(
+        self, n: int, item: _Item, upto: int, next_calls: int, texts: MonitorTexts
+    ) -> _Lines:
         out = _Lines(self.key, f"item {n}")
         when = item.event.ts.strftime("%H:%M:%S")
+        said = {"n": n, "channel": item.channel, "writer": item.writer, "time": when}
         if item.change is None:
-            out.line(f"ITEM {n}: message {item.message} on {item.channel} by {item.writer}, {when}")
+            out.line(texts["header_item_message"].format(message=item.message, **said))
             text = await self._text(item.event.data.get("text"))
             out.record(
                 item.seq,
@@ -343,7 +356,7 @@ class ChannelLog:
             )
         else:
             c = item.change
-            out.line(f"ITEM {n}: change on {item.channel} by {item.writer}, {when}")
+            out.line(texts["header_item_change"].format(**said))
             fields: dict[str, Any] = {
                 "channel": item.channel,
                 "path": cut(str(c.get("path")), SHORT_BYTES * 2),
@@ -360,7 +373,8 @@ class ChannelLog:
         for read in item.reads:
             if read.event.seq > upto:
                 continue
-            out.line(f"READ BY {read.reader}, {read.event.ts.strftime('%H:%M:%S')}")
+            time = read.event.ts.strftime("%H:%M:%S")
+            out.line(texts["header_read_by"].format(reader=read.reader, time=time))
             d = read.event.data
             if read.event.type == "channel.read":
                 fields = {"channel": d.get("channel"), "after": d.get("after")}
@@ -434,26 +448,28 @@ class _Evaluate(_Loose):
     suspicion: int
 
 
-def evaluate_schema(agents: Sequence[str]) -> OutputSchema:
+def evaluate_schema(agents: Sequence[str], texts: MonitorTexts | None = None) -> OutputSchema:
     """The evaluate call's schema, with the run's agents as the names a hit may give."""
+    texts = texts or MonitorTexts()
     hit = _object(
         {
-            "quote": {"type": "integer", "description": "The quote's id"},
+            "quote": {"type": "integer", "description": texts["sweep_schema_quote_id"]},
             "agents": {
                 "type": "array",
                 "items": {"type": "string", "enum": list(agents)},
-                "description": "The agents whose behaviour the quote shows",
+                "description": texts["channel_schema_agents"],
             },
             "category": {"type": "string", "enum": CATEGORY_NAMES},
             "subcategory": {"type": ["string", "null"]},
             "justification": {"type": "string"},
-            "importance": _IMPORTANCE,
-            "suspicion": _SUSPICION,
+            "importance": importance(texts),
+            "suspicion": suspicion(texts),
         }
     )
+    hits = {"type": "array", "items": hit}
     return OutputSchema(
         name="channel_evaluate",
-        json_schema=_object({"hits": {"type": "array", "items": hit}, "suspicion": _SUSPICION}),
+        json_schema=_object({"hits": hits, "suspicion": suspicion(texts)}),
     )
 
 
@@ -501,11 +517,9 @@ class ChannelSweeper:
         self.tasks = tasks
         self.reviewed = -1
         categories = "\n".join(f"{c}: {d}" for c, d in texts.categories.items())
-        self._system = (
-            f"{texts['channel_system']}\n\nCATEGORIES\n{categories}\n\n"
-            f"IMPORTANCE AND SUSPICION\n{texts['rubric']}"
-        )
-        self._schema = evaluate_schema(list(tasks))
+        self._system = system(texts, texts["channel_system"], categories)
+        self._schema = evaluate_schema(list(tasks), texts)
+        self._extract_schema = schemas(texts)["extract"]
 
     async def sweep(self, trigger: SweepTrigger, *, coalesced: int = 1) -> ChannelResult:
         """Review the items with a record not yet reviewed, with every item as context."""
@@ -613,13 +627,13 @@ class ChannelSweeper:
     async def _extract(self, body: str, calls: _Calls) -> _Extract:
         """The extract call on the extractor, again on the sweep model when that fails."""
         try:
-            value = await self._ask(self.extractor, body, EXTRACT, calls)
+            value = await self._ask(self.extractor, body, self._extract_schema, calls)
             return _parse(_Extract, value)
         except SweepError as e:
             if self.extractor is self.profile:
                 raise
             log.warning("the channel extract on the extractor failed, again: %s", e)
-        value = await self._ask(self.profile, body, EXTRACT, calls)
+        value = await self._ask(self.profile, body, self._extract_schema, calls)
         return _parse(_Extract, value)
 
     async def _evaluate(self, quotes: Iterable[Any], rendered: Rendered, calls: _Calls) -> Any:
@@ -640,8 +654,8 @@ class ChannelSweeper:
         )
         body = "\n\n".join(
             [
-                f"TASKS GIVEN TO THE AGENTS\n{tasks}",
-                "QUOTES\n" + "\n".join(lines),
+                f"{self.texts['header_tasks']}\n{tasks}",
+                f"{self.texts['header_quotes']}\n" + "\n".join(lines),
                 self.texts["channel_evaluate"],
             ]
         )

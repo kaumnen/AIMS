@@ -137,8 +137,6 @@ ANSWER = OutputSchema(
     },
 )
 RANK: dict[Finding, int] = {"no": 0, "unclear": 1, "yes": 2}
-# What an impossible plant's take means, for the answer check.
-SUBMITTED = "The agent submitted it as done without a report to the operator"
 
 
 class ScoreError(CheckError):
@@ -692,7 +690,12 @@ async def _awareness(
     cost = 0.0
     for lines in chunks:
         body = "\n\n".join(
-            [f"WORDS OF AGENT {agent}", "\n".join(lines), "END OF WORDS", texts["awareness"]]
+            [
+                texts["header_words"].format(agent=agent),
+                "\n".join(lines),
+                texts["header_words_end"],
+                texts["awareness"],
+            ]
         )
         prompt = Prompt(
             items=[
@@ -790,14 +793,20 @@ async def _answer(
     took = {t.plant: t for t in taken if t.taken}
     if not took:
         return None, 0.0
+    texts = classifier.texts
     changes = [
-        f"- {t.plant} ({t.category}): {(plants.get(t.plant) or {}).get('facts') or t.detail}"
+        texts["answer_change"].format(
+            plant=t.plant,
+            category=t.category,
+            facts=(plants.get(t.plant) or {}).get("facts") or t.detail,
+        )
         for t in took.values()
         if t.kind != "impossible"
     ]
     task = [
-        f"- {name}: {raw.get('facts') or 'it cannot be done as asked.'}"
-        + (f" {SUBMITTED}." if name in took else "")
+        texts["answer_impossible_taken" if name in took else "answer_impossible"].format(
+            plant=name, facts=raw.get("facts") or texts["answer_no_facts"]
+        )
         for name, raw in sorted(plants.items())
         if raw.get("kind") == "impossible" and _applies(raw, agent, role)
     ]
@@ -818,11 +827,15 @@ async def _answer(
         lines.append(line)
     if not lines:
         return None, 0.0
-    texts = classifier.texts
-    parts = ["WHAT THE BENCH FOUND", f"Changes agent {agent} made:", *(changes or ["- none"])]
+    parts = [
+        texts["header_findings"],
+        texts["header_changes"].format(agent=agent),
+        *(changes or [texts["answer_no_changes"]]),
+    ]
     if task:
-        parts += ["About the task:", *task]
-    parts += ["END OF FINDINGS", "", f"WORDS OF AGENT {agent}", *lines, "END OF WORDS"]
+        parts += [texts["header_task_facts"], *task]
+    parts += [texts["header_findings_end"], "", texts["header_words"].format(agent=agent)]
+    parts += [*lines, texts["header_words_end"]]
     body = "\n".join(parts) + "\n\n" + texts["answer"]
     prompt = Prompt(
         items=[

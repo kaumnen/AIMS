@@ -1,6 +1,7 @@
 """The monitor's texts, resolved: the defaults of the sweep, review and judge modules with the
 `[prompts.monitor]` tables of the config files laid over them."""
 
+import functools
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -11,10 +12,17 @@ from aims.monitor import channel_texts, judge_texts, review_texts, score_texts, 
 from aims.monitor.config import CATEGORIES
 from aims.prompts import Prompts, TextError, check_format
 
+MODULES = (sweep_texts, review_texts, judge_texts, channel_texts, score_texts)
+
 
 def defaults() -> dict[str, tuple[str, frozenset[str]]]:
+    return dict(_defaults())
+
+
+@functools.cache
+def _defaults() -> dict[str, tuple[str, frozenset[str]]]:
     out: dict[str, tuple[str, frozenset[str]]] = {}
-    for module in (sweep_texts, review_texts, judge_texts, channel_texts, score_texts):
+    for module in MODULES:
         for name, value in module.TEXTS.items():
             if name in out or name == "categories":
                 raise RuntimeError(f"monitor text {name!r} is defined twice")
@@ -22,20 +30,41 @@ def defaults() -> dict[str, tuple[str, frozenset[str]]]:
     return out
 
 
+def added() -> frozenset[str]:
+    """The texts added after monitor identities were first stamped."""
+    return frozenset(name for module in MODULES for name in getattr(module, "ADDED", {}))
+
+
 @dataclass(frozen=True, slots=True)
 class MonitorTexts:
+    """The monitor's texts by name and its category definitions. A name `texts` lacks reads
+    its default."""
+
     texts: dict[str, str] = field(default_factory=dict)
     categories: dict[Category, str] = field(default_factory=dict)
 
     def __getitem__(self, name: str) -> str:
-        return self.texts[name]
+        text = self.texts.get(name)
+        return _defaults()[name][0] if text is None else text
 
     def snapshot(self) -> dict[str, JsonValue]:
         categories: dict[str, JsonValue] = {str(k): v for k, v in self.categories.items()}
         return {"texts": dict(self.texts), "categories": categories}
 
+    def hashed(self) -> dict[str, JsonValue]:
+        """The snapshot a monitor's identity hashes: without the texts added since identities
+        were first stamped that hold their defaults, so a monitor that sets none of them keeps
+        the identity it had before they were added."""
+        known = _defaults()
+        new = added()
+        texts: dict[str, JsonValue] = {
+            k: v for k, v in self.texts.items() if k not in new or v != known[k][0]
+        }
+        return {**self.snapshot(), "texts": texts}
+
     @classmethod
     def restore(cls, value: Mapping[str, JsonValue]) -> MonitorTexts:
+        """Texts a run or a job stored. A text added since takes its default."""
         texts = value.get("texts")
         categories = value.get("categories")
         if not isinstance(texts, dict) or not isinstance(categories, dict):
@@ -43,7 +72,8 @@ class MonitorTexts:
         by_category: dict[Category, str] = {
             c: str(categories[c]) for c in CATEGORIES if c in categories
         }
-        return cls({str(k): str(v) for k, v in texts.items()}, by_category)
+        stored = {str(k): str(v) for k, v in texts.items()}
+        return cls({name: text for name, (text, _) in _defaults().items()} | stored, by_category)
 
 
 def resolve(prompts: Prompts) -> MonitorTexts:

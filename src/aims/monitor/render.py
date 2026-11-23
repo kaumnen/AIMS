@@ -464,7 +464,8 @@ class Trajectory:
     already skipped, and keeps what concerns this agent. `mark` names seqs that a signal flagged:
     the render keeps them past every cap, and never collapses their step, without saying they
     were flagged. `key` is the run's secret HMAC key for frame ids; it never reaches the sandbox.
-    `run_id` is the run whose blobs the events refer to.
+    `run_id` is the run whose blobs the events refer to. The headers of a render come from the
+    texts it is given; the steps it keeps keep the headers they were made with.
     """
 
     def __init__(self, run_id: str, agent_id: str, store: EventStore, key: bytes) -> None:
@@ -472,6 +473,7 @@ class Trajectory:
         self.agent_id = agent_id
         self.store = store
         self.key = key
+        self.texts = MonitorTexts()
         self._steps: list[_Step] = [_Step(0)]
         self._last = -1
         self._responses: dict[str, Event] = {}
@@ -640,6 +642,7 @@ class Trajectory:
         shows. Steps with an event after seq `review_after` form the review range, named after
         the records; with none, the newest step does. Older steps collapse past
         `collapse_tokens`."""
+        self.texts = texts
         upto = self._last if upto is None else upto
         key = frozenset(parts)
         visible = self._visible(upto)
@@ -665,6 +668,7 @@ class Trajectory:
         upto: int | None = None,
     ) -> Rendered:
         """The preamble and the steps from `first_step` on, with nothing collapsed."""
+        self.texts = texts
         upto = self._last if upto is None else upto
         key = frozenset(parts)
         visible = [i for i in self._visible(upto) if i == 0 or self._steps[i].n >= first_step]
@@ -689,7 +693,7 @@ class Trajectory:
         first, last = self._steps[review].n, self._steps[visible[-1]].n
         if step_from is not None:
             first = min(step_from, last)
-        lines = [f"RUN RECORDS OF AGENT {self.agent_id}"]
+        lines = [texts["header_records"].format(agent=self.agent_id)]
         frames: dict[str, int] = {}
         sources: dict[int, str] = {}
         labels: dict[int, str] = {}
@@ -699,7 +703,7 @@ class Trajectory:
             if i in collapsed:
                 body = await self._short(i)
                 if not previous:
-                    lines.append("OLDER STEPS, ONE LINE EACH")
+                    lines.append(texts["header_older_steps"])
                 lines.append(body.text)
             else:
                 body = bodies[i]
@@ -710,7 +714,7 @@ class Trajectory:
             sources |= body.sources
             labels |= body.labels
             types |= body.types
-        lines.append("END OF RUN RECORDS")
+        lines.append(texts["header_records_end"])
         if marker is not None:
             lines.append(marker.format(step_from=first, step_to=last))
         text = "\n".join(lines)
@@ -795,10 +799,12 @@ class Trajectory:
     ) -> _Body:
         step = self._steps[index]
         out = _Out(self.key, upto, step.label)
+        texts = self.texts
         if step.head is None:
-            out.line("PREAMBLE")
+            out.line(texts["header_preamble"])
         else:
-            out.line(f"STEP {step.n} ({step.head.ts.strftime('%H:%M:%S')})")
+            time = step.head.ts.strftime("%H:%M:%S")
+            out.line(texts["header_step"].format(n=step.n, time=time))
             status = step.head.data.get("status")
             if status != "completed":
                 out.record(step.head, {"n": step.n, "status": status})
@@ -820,7 +826,7 @@ class Trajectory:
             sub = _Out(self.key, upto, step.label)
             await self._digest(sub, late, shown.get(-1, set()), parts)
             if sub.lines:
-                out.line("RECORDS OF PROCESSES LEFT RUNNING AFTER THEIR EXEC, OR OUTSIDE ANY EXEC")
+                out.line(texts["header_leftover"])
                 out.merge(sub)
         if step.n != 0:
             for e in step.notes:
@@ -929,7 +935,7 @@ class Trajectory:
                 hidden[group] += 1
         if hidden:
             counts = ", ".join(f"{group} {n}" for group, n in sorted(hidden.items()))
-            out.line(f"not shown: {counts}")
+            out.line(self.texts["header_not_shown"].format(counts=counts))
 
     async def _kernel(self, event: Event, parts: frozenset[str]) -> dict[str, Any]:
         d = event.data

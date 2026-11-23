@@ -142,11 +142,12 @@ def identity(
     signal versions, rules and AIMS version, and the `programs` of each agent's verifier when
     the verifier_hook signal is on and some verifier lists any. A monitor of a scenario that
     lists none keeps the hash it had before verifiers could list them. The same holds for the
-    `expects` of each agent's verifier and the verifier_anomaly signal."""
+    `expects` of each agent's verifier and the verifier_anomaly signal, and for the monitor
+    texts added since: each counts only when set to something other than its default."""
     value: dict[str, JsonValue] = {
         "aims": __version__,
         "config": config.model_dump(mode="json"),
-        "texts": texts.snapshot(),
+        "texts": texts.hashed(),
         "profiles": {
             k: None if p is None else {"model": p.model, "weights": p.weights, "effort": p.effort}
             for k, p in sorted(profiles.items())

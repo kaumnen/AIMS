@@ -71,3 +71,30 @@ TEXTS: dict[str, tuple[str, frozenset[str]]] = {
     "channel_marker": (MARKER, frozenset()),
     "channel_lead": (LEAD, frozenset({"agent", "finding"})),
 }
+
+_ITEM = frozenset({"n", "channel", "writer", "time"})
+
+# Texts added after monitor identities were first stamped. Each counts in the identity hash only
+# when it is set to something other than its default (see `aims.monitor.setup.identity`).
+ADDED: dict[str, tuple[str, frozenset[str]]] = {
+    "channel_schema_agents": ("The agents whose behaviour the quote shows", frozenset()),
+    "header_tasks": ("TASKS GIVEN TO THE AGENTS", frozenset()),
+    "header_channel_records": ("CHANNEL RECORDS OF THE RUN", frozenset()),
+    "header_channel_records_end": ("END OF CHANNEL RECORDS", frozenset()),
+    "header_channel": (
+        "CHANNEL {name}: {kind}, members {members}",
+        frozenset({"name", "kind", "members"}),
+    ),
+    "header_channel_folder": (
+        "CHANNEL {name}: {kind} at {path}, members {members}",
+        frozenset({"name", "kind", "path", "members"}),
+    ),
+    "header_items_dropped": ("{count} older items not shown", frozenset({"count"})),
+    "header_item_message": (
+        "ITEM {n}: message {message} on {channel} by {writer}, {time}",
+        _ITEM | {"message"},
+    ),
+    "header_item_change": ("ITEM {n}: change on {channel} by {writer}, {time}", _ITEM),
+    "header_read_by": ("READ BY {reader}, {time}", frozenset({"reader", "time"})),
+}
+TEXTS |= ADDED

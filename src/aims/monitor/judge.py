@@ -78,7 +78,8 @@ OUTPUT_CHARS = 16_000
 # The most characters one tool output holds as the judge reads it, escapes included. Rows past
 # OUTPUT_CHARS wait for the next page; a first row too long for this cap is shown cut.
 TOOL_CHARS = 20_000
-TOO_LONG = "too long to show"
+TOO_LONG = judge_texts.ADDED["judge_too_long"][0]
+CHARS_CUT = judge_texts.ADDED["judge_chars_cut"][0]
 BLOB_CUT = (
     "fewer bytes than asked, as their escapes would pass the output cap; read on from next_offset"
 )
@@ -154,25 +155,26 @@ def dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def cut_row(e: Event) -> dict[str, Any]:
+def cut_row(e: Event, cut: str = TOO_LONG) -> dict[str, Any]:
     """In place of an event too long for one tool output: its place, and that it is cut."""
-    return {"seq": e.seq, "type": e.type, "cut": TOO_LONG}
+    return {"seq": e.seq, "type": e.type, "cut": cut}
 
 
-def clip(text: str, limit: int) -> str:
-    """`text` cut to about `limit` characters, keeping its head and tail."""
+def clip(text: str, limit: int, marker: str = CHARS_CUT) -> str:
+    """`text` cut to about `limit` characters, keeping its head and tail. `marker` stands in
+    for the characters left out, its `{chars}` their count."""
     if len(text) <= limit:
         return text
     head = limit * 2 // 3
     tail = limit - head
-    return f"{text[:head]}[{len(text) - head - tail} chars cut]{text[-tail:]}"
+    return f"{text[:head]}{marker.format(chars=len(text) - head - tail)}{text[-tail:]}"
 
 
-def clip_end(text: str, limit: int) -> str:
+def clip_end(text: str, limit: int, marker: str = CHARS_CUT) -> str:
     """`text` cut to its last `limit` characters."""
     if len(text) <= limit:
         return text
-    return f"[{len(text) - limit} chars cut]{text[-limit:]}"
+    return f"{marker.format(chars=len(text) - limit)}{text[-limit:]}"
 
 
 # Tool arguments. None stands for a parameter left out.
@@ -294,7 +296,11 @@ _IMPORTANCE: dict[str, JsonValue] = {"type": "integer", "enum": [1, 2, 3, 4, 5]}
 _CATEGORY: dict[str, JsonValue] = {"type": "string", "enum": list(CATEGORIES)}
 
 
-def _verdict_schema() -> dict[str, JsonValue]:
+def _default(name: str) -> str:
+    return judge_texts.TEXTS[name][0]
+
+
+def _verdict_schema(text: Callable[[str], str] = _default) -> dict[str, JsonValue]:
     per_category = _obj(
         {
             "present": _FINDING,
@@ -305,7 +311,7 @@ def _verdict_schema() -> dict[str, JsonValue]:
     )
     review = _obj(
         {
-            "flag": {"type": "integer", "description": "The flag number."},
+            "flag": {"type": "integer", "description": text("judge_verdict_flag")},
             "status": {"type": "string", "enum": ["confirmed", "rejected", "unclear"]},
             "reason": {"type": "string"},
             "evidence": _SEQS,
@@ -325,33 +331,28 @@ def _verdict_schema() -> dict[str, JsonValue]:
         {
             "kind": {"type": "string", "enum": ["behaviour", "environment"]},
             "agent": _nullable({"type": "string"}),
-            "note": {"type": "string", "description": "One line on what you saw."},
+            "note": {"type": "string", "description": text("judge_verdict_note")},
             "evidence": _SEQS,
         }
     )
     categories: dict[str, JsonValue] = dict.fromkeys(CATEGORIES, per_category)
     return _obj(
         {
-            "categories": _obj(
-                categories,
-                "Every category: present, importance (null when present is no), the event"
-                " seqs it rests on, and why.",
-            ),
+            "categories": _obj(categories, text("judge_verdict_categories")),
             "flags": {
                 "type": "array",
                 "items": review,
-                "description": "One review per listed flag; empty when none were listed.",
+                "description": text("judge_verdict_flags"),
             },
             "findings": {
                 "type": "array",
                 "items": finding,
-                "description": "Misbehaviour that no listed flag covers.",
+                "description": text("judge_verdict_findings"),
             },
             "anomalies": {
                 "type": "array",
                 "items": anomaly,
-                "description": "Odd things that fit no category. Also signs that the scenario or"
-                " the sandbox is broken.",
+                "description": text("judge_verdict_anomalies"),
             },
             "claim_matched": _FINDING,
             "max_severity": {"type": "integer", "enum": [0, 1, 2, 3, 4, 5]},
@@ -360,71 +361,74 @@ def _verdict_schema() -> dict[str, JsonValue]:
     )
 
 
-VERDICT_SCHEMA = _verdict_schema()
-
 _SEQ = {"type": "integer", "minimum": 0}
-TOOL_PARAMETERS: dict[str, dict[str, JsonValue]] = {
-    "flags": {
-        "type": "object",
-        "properties": {
-            "offset": {**_SEQ, "description": "Index of the first flag to list, 0 by default."},
-            "category": {**_CATEGORY, "description": "Only flags of this category."},
-        },
-        "additionalProperties": False,
-    },
-    "events": {
-        "type": "object",
-        "properties": {
-            "from_seq": {**_SEQ, "description": "First seq, 0 by default."},
-            "to_seq": {**_SEQ, "description": "Last seq, inclusive."},
-            "types": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Event types to keep, such as tool.call or proc.exec.",
+
+
+def tool_parameters(text: Callable[[str], str] = _default) -> dict[str, dict[str, JsonValue]]:
+    """The parameters of each judge tool, their descriptions from `text`."""
+    return {
+        "flags": {
+            "type": "object",
+            "properties": {
+                "offset": {**_SEQ, "description": text("judge_param_flags_offset")},
+                "category": {**_CATEGORY, "description": text("judge_param_flags_category")},
             },
-            "agent": {"type": "string", "description": "Only events of this agent."},
+            "additionalProperties": False,
         },
-        "additionalProperties": False,
-    },
-    "search": {
-        "type": "object",
-        "properties": {
-            "text": {"type": "string", "minLength": 3},
-            "from_seq": {**_SEQ, "description": "Search from this seq on, 0 by default."},
+        "events": {
+            "type": "object",
+            "properties": {
+                "from_seq": {**_SEQ, "description": text("judge_param_events_from_seq")},
+                "to_seq": {**_SEQ, "description": text("judge_param_events_to_seq")},
+                "types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": text("judge_param_events_types"),
+                },
+                "agent": {"type": "string", "description": text("judge_param_events_agent")},
+            },
+            "additionalProperties": False,
         },
-        "required": ["text"],
-        "additionalProperties": False,
-    },
-    "blob": {
-        "type": "object",
-        "properties": {
-            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "offset": {**_SEQ, "description": "First byte, 0 by default."},
-            "length": {"type": "integer", "minimum": 1, "maximum": BLOB_MAX},
+        "search": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "minLength": 3},
+                "from_seq": {**_SEQ, "description": text("judge_param_search_from_seq")},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
         },
-        "required": ["sha256"],
-        "additionalProperties": False,
-    },
-    "proc_tree": {
-        "type": "object",
-        "properties": {"exec_id": {"type": "string"}},
-        "required": ["exec_id"],
-        "additionalProperties": False,
-    },
-    "file_history": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "Absolute path in the sandbox."},
-            "from_seq": {**_SEQ, "description": "History from this seq on, 0 by default."},
+        "blob": {
+            "type": "object",
+            "properties": {
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "offset": {**_SEQ, "description": text("judge_param_blob_offset")},
+                "length": {"type": "integer", "minimum": 1, "maximum": BLOB_MAX},
+            },
+            "required": ["sha256"],
+            "additionalProperties": False,
         },
-        "required": ["path"],
-        "additionalProperties": False,
-    },
-    "verdict": VERDICT_SCHEMA,
-}
-# What a forced call sends in place of the tool specs.
-VERDICT_FORMAT = OutputSchema(name="verdict", json_schema=VERDICT_SCHEMA)
-FORMAT_TOKENS = len(VERDICT_FORMAT.model_dump_json()) // CHARS_PER_TOKEN
+        "proc_tree": {
+            "type": "object",
+            "properties": {"exec_id": {"type": "string"}},
+            "required": ["exec_id"],
+            "additionalProperties": False,
+        },
+        "file_history": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": text("judge_param_file_history_path")},
+                "from_seq": {**_SEQ, "description": text("judge_param_file_history_from_seq")},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "verdict": _verdict_schema(text),
+    }
+
+
+TOOL_PARAMETERS = tool_parameters()
+VERDICT_SCHEMA = TOOL_PARAMETERS["verdict"]
 TOOL_ARGS: dict[str, type[_Args]] = {
     "flags": FlagsArgs,
     "events": EventsArgs,
@@ -453,9 +457,13 @@ def parse_verdict(text: str) -> tuple[VerdictArgs | None, str]:
 class Reader:
     """Read-only views of one run's chain, without the monitor's own events and model calls."""
 
-    def __init__(self, store: EventStore, source: str) -> None:
+    def __init__(self, store: EventStore, source: str, texts: MonitorTexts | None = None) -> None:
         self.store = store
         self.source = source
+        texts = texts or MonitorTexts()
+        self.chars_cut = texts["judge_chars_cut"]
+        self.blob_missing = texts["judge_blob_missing"]
+        self.too_long = texts["judge_too_long"]
         self.monitor_calls: set[str] = set()
         self.execs: dict[str, tuple[Event, ExecStarted]] = {}
         self.snapshots: list[tuple[Event, FsSnapshot]] | None = None
@@ -521,6 +529,9 @@ class Reader:
                 return out, None
         return out, cursor
 
+    def clip(self, text: str, limit: int) -> str:
+        return clip(text, limit, self.chars_cut)
+
     async def all(self, types: Sequence[str], *, visible: bool = True) -> list[Event]:
         events, _ = await self.page(types=types, limit=10**9, visible=visible, pages=10**6)
         return events
@@ -547,13 +558,13 @@ class Reader:
         `end` only its end."""
         cut = clip_end if end else clip
         if isinstance(value, str):
-            return cut(value, limit)
+            return cut(value, limit, self.chars_cut)
         if is_blob_ref(value):
             try:
                 data = await self.blob(run_id, value["sha256"], value["size"])
             except BlobError, KeyError:
-                return f"[blob {value['sha256']} is missing]"
-            return cut(data.decode("utf-8", "replace"), limit)
+                return self.blob_missing.format(sha256=value["sha256"])
+            return cut(data.decode("utf-8", "replace"), limit, self.chars_cut)
         return ""
 
     async def compact(
@@ -573,7 +584,7 @@ class Reader:
         blob shows as its hash and size with the head of its text, or the end of it under a
         key that names a tail, where the last lines say how a command ended."""
         if isinstance(value, str):
-            return clip(value, chars)
+            return self.clip(value, chars)
         if is_blob_ref(value):
             ref: dict[str, Any] = {"blob": value["sha256"], "size": value["size"]}
             if key not in NO_HEAD and value["size"] <= HEAD_BLOB:
@@ -833,7 +844,11 @@ class Judge:
         self.client = client
         self.store = store
         self.budget_usd = budget_usd
-        self.reader = Reader(store, source)
+        self.reader = Reader(store, source, texts)
+        self._parameters = tool_parameters(self._text)
+        # What a forced call sends in place of the tool specs.
+        self._format = OutputSchema(name="verdict", json_schema=self._parameters["verdict"])
+        self._format_tokens = len(self._format.model_dump_json()) // CHARS_PER_TOKEN
         self.flags: dict[int, Flag] = {}
         self._numbered: dict[int, int] = {}
         self.sweeps: list[Event] = []
@@ -1043,7 +1058,7 @@ class Judge:
             "importance": p.importance,
             "agent": f.agent,
             "evidence": p.evidence[:LIST_ITEMS],
-            "justification": clip(p.justification, chars),
+            "justification": self.reader.clip(p.justification, chars),
         }
         if len(p.evidence) > LIST_ITEMS:
             row["evidence_more"] = len(p.evidence) - LIST_ITEMS
@@ -1104,7 +1119,7 @@ class Judge:
                 "summary": summary,
             }
             if p.error is not None:
-                row["error"] = clip(p.error, NOTE_CHARS // 4)
+                row["error"] = self.reader.clip(p.error, NOTE_CHARS // 4)
             rows.append(row)
         return rows
 
@@ -1120,10 +1135,10 @@ class Judge:
         )
 
     def _specs(self, blind: bool) -> list[ToolSpec]:
-        names = [n for n in TOOL_PARAMETERS if not (blind and n == "flags")]
+        names = [n for n in self._parameters if not (blind and n == "flags")]
         return [
             ToolSpec(
-                name=n, description=self._text(f"judge_tool_{n}"), parameters=TOOL_PARAMETERS[n]
+                name=n, description=self._text(f"judge_tool_{n}"), parameters=self._parameters[n]
             )
             for n in names
         ]
@@ -1149,7 +1164,7 @@ class Judge:
         tries = 0
         # A forced call after an exploring call reads its tool results, the force message and
         # the schema the exploring call did not send.
-        explored = RESULT_TOKENS + self._tokens(self._force()) + FORMAT_TOKENS
+        explored = RESULT_TOKENS + self._tokens(self._force()) + self._format_tokens
         while True:
             left = r.left
             context = self._context(r, items, specs, forced=forced)
@@ -1182,7 +1197,7 @@ class Judge:
                 return
             if forced:
                 tries += 1
-                prompt = Prompt(items=items, output_schema=VERDICT_FORMAT)
+                prompt = Prompt(items=items, output_schema=self._format)
             else:
                 prompt = Prompt(items=items, tools=specs)
             limit = self.profile.max_output_tokens
@@ -1286,7 +1301,7 @@ class Judge:
         call sends the tool specs, or the verdict schema when `forced`. When the counted call
         sent the other one, this one is added; what the counted call sent stays in its count,
         which does not tell it apart."""
-        beside: list[ToolSpec | OutputSchema] = [VERDICT_FORMAT] if forced else list(specs)
+        beside: list[ToolSpec | OutputSchema] = [self._format] if forced else list(specs)
         if not r.context:
             added = [*items, *beside]
         elif r.schema == forced:
@@ -1343,7 +1358,8 @@ class Judge:
         return Message(role="user", content=self._text("judge_force"))
 
     def _refused(self, problems: str) -> str:
-        return self._text("judge_invalid").format(problems=clip(problems, PROBLEM_CHARS))
+        clipped = self.reader.clip(problems, PROBLEM_CHARS)
+        return self._text("judge_invalid").format(problems=clipped)
 
     def _refusal(self) -> int:
         """The most input tokens a refusal adds: its problems cut to PROBLEM_CHARS characters
@@ -1366,21 +1382,20 @@ class Judge:
             return out
         # The judge never reads it, so what it holds is no evidence.
         r.seen = before
-        error = (
-            f"the output had {len(out)} characters, more than the {TOOL_CHARS} one tool output"
-            " may hold; ask for less"
-        )
+        error = self._text("judge_error_too_long").format(chars=len(out), limit=TOOL_CHARS)
         return dumps({"error": error})
 
     async def _answer(self, r: Rollout, call: ToolRequest) -> str:
         model = TOOL_ARGS.get(call.name)
         if model is None or (r.blind and call.name == "flags"):
-            known = ", ".join(n for n in TOOL_PARAMETERS if not (r.blind and n == "flags"))
-            return dumps({"error": f"there is no tool named {call.name}; tools: {known}"})
+            known = ", ".join(n for n in self._parameters if not (r.blind and n == "flags"))
+            error = self._text("judge_error_unknown_tool").format(name=call.name, tools=known)
+            return dumps({"error": error})
         try:
             args = model.model_validate_json(call.arguments.strip() or "{}")
         except ValidationError as e:
-            return dumps({"error": f"invalid arguments: {problems(e)}"})
+            error = self._text("judge_error_arguments").format(problems=problems(e))
+            return dumps({"error": error})
         match args:
             case FlagsArgs():
                 return await self._flags(args)
@@ -1408,7 +1423,7 @@ class Judge:
             if not rows and size + n > TOOL_CHARS:
                 row = await self._flag_row(f, NOTE_CHARS // 8)
                 if size + len(dumps(row)) > TOOL_CHARS:
-                    row = {"flag": f.number, "cut": TOO_LONG}
+                    row = {"flag": f.number, "cut": self.reader.too_long}
                 n = len(dumps(row))
             elif rows and size + n > OUTPUT_CHARS:
                 break
@@ -1425,7 +1440,8 @@ class Judge:
         types = args.types or []
         unknown = [t for t in types if payload_type(t) is None or t.startswith(SERVICE_PREFIX)]
         if unknown:
-            return dumps({"error": f"unknown event types: {', '.join(unknown)}"})
+            error = self._text("judge_error_event_types").format(types=", ".join(unknown))
+            return dumps({"error": error})
         before = None if args.to_seq is None else args.to_seq + 1
         events, cursor = await self.reader.page(
             after=(args.from_seq or 0) - 1,
@@ -1444,7 +1460,7 @@ class Judge:
                 row = await self.reader.row(e, drop=self._drop(r, e), short=True)
                 n = len(dumps(row)) + 1
             if not rows and size + n > TOOL_CHARS:
-                row = cut_row(e)
+                row = cut_row(e, self.reader.too_long)
                 rows.append(row)
                 size += len(dumps(row)) + 1
                 continue
@@ -1492,7 +1508,7 @@ class Judge:
                 self.source, args.sha256, offset, args.length or BLOB_LENGTH
             )
         except BlobError, KeyError:
-            return dumps({"error": f"the run has no blob {args.sha256}"})
+            return dumps({"error": self._text("judge_error_no_blob").format(sha256=args.sha256)})
         chunk, size = part.data, part.size
 
         def page(n: int, cut: bool = False) -> str:
@@ -1530,7 +1546,7 @@ class Judge:
         exec_id = args.exec_id
         found = self.reader.execs.get(exec_id)
         if found is None:
-            return dumps({"error": f"no exec {exec_id} in the run"})
+            return dumps({"error": self._text("judge_error_no_exec").format(exec_id=exec_id)})
         started, d = found
 
         def mine(e: Event) -> bool:
@@ -1556,8 +1572,8 @@ class Judge:
                 "agent": started.agent_id,
                 "phase": d.phase,
                 "call_id": d.call_id,
-                "user": clip(d.user, TEXT_CHARS // 4),
-                "cwd": clip(d.cwd, min(chars, TEXT_CHARS)),
+                "user": self.reader.clip(d.user, TEXT_CHARS // 4),
+                "cwd": self.reader.clip(d.cwd, min(chars, TEXT_CHARS)),
                 "command": await self.reader.text(started.run_id, started.data["command"], chars),
             }
             if ended is not None:
@@ -1577,7 +1593,7 @@ class Judge:
                             "pid": x.pid,
                             "ppid": x.ppid,
                             "uid": x.uid,
-                            "command": clip(x.command, left_chars),
+                            "command": self.reader.clip(x.command, left_chars),
                         }
                         for x in ended.leftover[:left_items]
                     ]
@@ -1640,12 +1656,11 @@ class Judge:
             out["incomplete"] = True
         return dumps(out)
 
-    @staticmethod
-    def _exec_row(seq: int, p: ProcExec) -> dict[str, Any]:
+    def _exec_row(self, seq: int, p: ProcExec) -> dict[str, Any]:
         row: dict[str, Any] = {
             "seq": seq,
             "path": p.path,
-            "argv": [clip(a, TEXT_CHARS // 2) for a in p.argv[:ARGV_ITEMS]],
+            "argv": [self.reader.clip(a, TEXT_CHARS // 2) for a in p.argv[:ARGV_ITEMS]],
             "uid": p.uid,
         }
         if len(p.argv) > ARGV_ITEMS:
@@ -1746,7 +1761,7 @@ class Judge:
                 break
             for i, (row, n) in enumerate(zip(group, sizes, strict=True)):
                 if not out_rows and size + n > TOOL_CHARS:
-                    row = {"seq": seq, "type": row["type"], "cut": TOO_LONG}
+                    row = {"seq": seq, "type": row["type"], "cut": self.reader.too_long}
                     n = len(dumps(row)) + 1
                 elif len(out_rows) >= HISTORY_ROWS or (out_rows and size + n > OUTPUT_CHARS):
                     cut = {"seq": seq, "rows": len(group) - i}
@@ -1829,7 +1844,7 @@ class Judge:
         anomalies: list[Anomaly] = []
         for a in v.anomalies:
             evidence = cite(a.evidence)
-            note = clip(" ".join(a.note.split()), ANOMALY_CHARS)
+            note = self.reader.clip(" ".join(a.note.split()), ANOMALY_CHARS)
             if not evidence or not note:
                 continue
             agent = a.agent if a.agent in self.agents else None
@@ -1890,7 +1905,7 @@ class Judge:
             JudgeRollout(
                 blind=r.blind,
                 max_severity=r.judged.max_severity if r.judged else 0,
-                summary=clip(r.judged.summary, SUMMARY_CHARS) if r.judged else "",
+                summary=self.reader.clip(r.judged.summary, SUMMARY_CHARS) if r.judged else "",
                 tool_calls=r.tool_calls,
                 calls=r.calls,
                 cost_usd=round(r.cost, 10),
