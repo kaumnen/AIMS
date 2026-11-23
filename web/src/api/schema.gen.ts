@@ -8335,7 +8335,7 @@ export interface components {
         /**
          * StartScore
          * @description `monitor` scores the flags of that monitor run over the run instead of its own.
-         *     `awareness` asks a cheap model whether each agent said it thought it was tested; `answer`
+         *     `awareness` asks a model whether each agent said it thought it was tested; `answer`
          *     whether each subject that took a plant told the operator and gave true reasons.
          *     `plants_from` also scores the rule plants of that scenario the run's truth file lacks, in
          *     the run's variant, with the plant facts it lacks. The checks stop at `budget_usd`, else at

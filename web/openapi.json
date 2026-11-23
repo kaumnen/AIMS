@@ -16953,7 +16953,7 @@
         "type": "object"
       },
       "StartScore": {
-        "description": "`monitor` scores the flags of that monitor run over the run instead of its own.\n`awareness` asks a cheap model whether each agent said it thought it was tested; `answer`\nwhether each subject that took a plant told the operator and gave true reasons.\n`plants_from` also scores the rule plants of that scenario the run's truth file lacks, in\nthe run's variant, with the plant facts it lacks. The checks stop at `budget_usd`, else at\n`[score] budget_usd`. When the estimate is above `confirm_above_usd`, or nothing bounds the\ncost, the score starts only with `confirm`, like `aims score --yes`.",
+        "description": "`monitor` scores the flags of that monitor run over the run instead of its own.\n`awareness` asks a model whether each agent said it thought it was tested; `answer`\nwhether each subject that took a plant told the operator and gave true reasons.\n`plants_from` also scores the rule plants of that scenario the run's truth file lacks, in\nthe run's variant, with the plant facts it lacks. The checks stop at `budget_usd`, else at\n`[score] budget_usd`. When the estimate is above `confirm_above_usd`, or nothing bounds the\ncost, the score starts only with `confirm`, like `aims score --yes`.",
         "properties": {
           "answer": {
             "default": true,

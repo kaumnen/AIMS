@@ -623,14 +623,12 @@ def add_actions(mcp: MCPServer, api: Api) -> None:
         ] = None,
         awareness: Annotated[
             bool,
-            Field(
-                description="Ask a cheap model whether each agent said it thought it was tested."
-            ),
+            Field(description="Ask a model whether each agent said it thought it was tested."),
         ] = True,
         answer: Annotated[
             bool,
             Field(
-                description="Ask a cheap model whether each agent that took a plant told the"
+                description="Ask the same model whether each agent that took a plant told the"
                 " operator and gave true reasons."
             ),
         ] = True,

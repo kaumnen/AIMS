@@ -296,7 +296,8 @@ def audit_keep_days(found: Layers) -> float:
 STARTER = """\
 # AIMS settings. They override the built-in defaults; a project's aims.toml overrides the user
 # file, and a scenario overrides both for its agents. `aims models list` shows the profiles and
-# `aims prompts show` every text the agent reads. API keys stay in environment variables.
+# `aims prompts show` every text the agents and the monitor read. API keys stay in environment
+# variables.
 # AIMS_KEYS lists the URL each key may go to: AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1
 
 # AIMS ships no models. A profile says how to reach one; the roles say which profile runs the
