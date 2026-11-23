@@ -29,12 +29,14 @@ from aims.events import (
     verify_run,
 )
 from aims.events.blobs import (
+    MAX_FRAMES,
     ZSTD_MAGIC,
     BlobError,
     BlobStore,
     _frames,
     blob_bytes,
     compress_bound,
+    decode,
     decoded,
     framed,
     holds_blob,
@@ -859,3 +861,85 @@ async def test_a_blob_sent_again_goes_through_the_caps_and_heals_a_file_past_the
         out = await store.put_blob_stream(run_id, ref.sha256, chunks(HELLO), limit=limit)
         assert out == ref
         assert (holds_blob(path), path.read_bytes()) == (5, HELLO)
+
+
+def framed_parts(n: int) -> tuple[bytes, bytes]:
+    """A blob of `n` parts and a file of one zstd frame per part, within the compress bound."""
+    parts = [b"%05d" % i * 200 for i in range(n)]
+    return b"".join(parts), b"".join(zstd.compress(p) for p in parts)
+
+
+def test_a_file_of_more_than_max_frames_is_read_as_is(tmp_path: Path) -> None:
+    """Every store writes one frame. Up to MAX_FRAMES are still read as frames; past them a
+    file is read as is, as a file that does not decode is."""
+    for n, held in ((MAX_FRAMES, True), (MAX_FRAMES + 1, False)):
+        blob, raw = framed_parts(n)
+        assert len(raw) <= compress_bound(len(blob))
+        sha = hashlib.sha256(blob).hexdigest()
+        store = BlobStore(tmp_path / str(n))
+        store.root.mkdir()
+        path = store.path(sha)
+        path.write_bytes(raw)
+        expect = (blob, len(blob), True) if held else (None, None, None)
+        assert (read_blob(path), holds_blob(path), framed(path)) == expect
+        assert (blob_bytes(raw, sha), _frames(raw)) == (expect[0], expect[0])
+        assert (read_part(path, 0, 5) is not None) is held
+        assert decode(raw) == (blob if held else raw)
+        writer = BlobStore(tmp_path / f"copy{n}").writer(sha, limit=1 << 30)
+        for i in range(0, len(raw), 1000):
+            writer.write(raw[i : i + 1000])
+        if held:
+            assert writer.commit().size == len(blob)
+        else:
+            with pytest.raises(BlobError, match="do not match"):
+                writer.commit()
+
+
+def test_a_plain_blob_that_is_more_than_max_frames_of_zstd_still_reads_and_copies(
+    tmp_path: Path,
+) -> None:
+    """A store from before blobs were compressed holds each as is, and a blob may be a zstd
+    file of any number of frames."""
+    _, raw = framed_parts(MAX_FRAMES + 1)
+    sha = hashlib.sha256(raw).hexdigest()
+    store = BlobStore(tmp_path / "old")
+    store.root.mkdir()
+    path = store.path(sha)
+    path.write_bytes(raw)
+    assert (read_blob(path), holds_blob(path), framed(path)) == (raw, len(raw), False)
+    copy = BlobStore(tmp_path / "copy")
+    writer = copy.writer(sha, limit=1 << 30)
+    for i in range(0, len(raw), 1000):
+        writer.write(raw[i : i + 1000])
+    assert writer.commit().size == len(raw)
+    assert (copy.get(sha), framed(copy.path(sha))) == (raw, True)
+
+
+def test_a_file_of_many_tiny_frames_decodes_no_more_than_max_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each tiny frame cost about 2 µs to decode, so a runner could hold a store thread for
+    minutes with the empty frames its upload cap allows."""
+    monkeypatch.setattr(zstd, "ZstdDecompressor", Counted)
+    raw = HELLO + skippable(0) * (50 * MAX_FRAMES)
+    sha = hashlib.sha256(b"hello").hexdigest()
+    path = BlobStore(tmp_path).path(sha)
+    path.write_bytes(raw)
+
+    def write() -> None:
+        writer = BlobStore(tmp_path / "copy").writer(sha, limit=1 << 30)
+        for i in range(0, len(raw), 1 << 16):
+            writer.write(raw[i : i + (1 << 16)])
+        with pytest.raises(BlobError):
+            writer.commit()
+
+    for read in (
+        lambda: _frames(raw),
+        lambda: holds_blob(path),
+        lambda: read_part(path, 0, 5),
+        lambda: blob_bytes(raw, sha),
+        write,
+    ):
+        Counted.fed = 0
+        read()
+        assert Counted.fed <= len(HELLO) + 8 * MAX_FRAMES + (1 << 16)

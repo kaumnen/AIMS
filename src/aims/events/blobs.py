@@ -24,6 +24,11 @@ ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 CHUNK = 1024 * 1024
 # the name of the file a blob is written to before it is put in place
 TEMP = re.compile(r"\.[0-9a-f]{64}\.[0-9a-f]{8}")
+# The most zstd frames a blob file is read as. Past them it is read as is, as a file that does
+# not decode is. A frame costs about 2 µs to decode, so a file of tiny frames takes 8 ms of
+# decoding at most, and the rest of it is only hashed. Every store writes one frame; pzstd
+# writes one per 4 MiB or so, about 1000 at IMPORT_LIMIT.
+MAX_FRAMES = 4096
 
 
 def compress_bound(size: int) -> int:
@@ -39,14 +44,16 @@ def decode(raw: bytes) -> bytes:
 
 
 def _frames(raw: bytes, limit: int | None = None) -> bytes | None:
-    """What the zstd frames in `raw` decode to. None when they do not decode or would pass
-    `limit` bytes, of which no more than one past it are decoded."""
+    """What the zstd frames in `raw` decode to. None when they do not decode, are more than
+    MAX_FRAMES or would pass `limit` bytes, of which no more than one past it are decoded."""
     view = memoryview(raw)
     parts: list[bytes] = []
     size = 0
     at = 0
     try:
         while at < len(view):
+            if len(parts) >= MAX_FRAMES:
+                return None
             # Each frame is decoded on its own: a decoder copies the input after its frame.
             rest = view[at:]
             end = zstd.get_frame_size(rest)
@@ -81,7 +88,7 @@ class _Frames:
 
     def feed(self, data: bytes) -> Iterator[bytes]:
         """What `data` decodes to, after what was fed before. Raises ZstdError when it is not
-        zstd."""
+        zstd, or once it is more than MAX_FRAMES frames."""
         rest = memoryview(data)
         # whether the frame being decoded began in an earlier piece
         carried = self._frame is not None
@@ -93,6 +100,8 @@ class _Frames:
             elif not rest:
                 return
             elif frame is None:
+                if self.count >= MAX_FRAMES:
+                    raise zstd.ZstdError(f"more than {MAX_FRAMES} frames")
                 frame = self._frame = zstd.ZstdDecompressor()
                 carried = False
                 piece = rest
