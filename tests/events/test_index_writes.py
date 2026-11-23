@@ -5,6 +5,7 @@ import logging
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from pathlib import Path
@@ -594,6 +595,85 @@ async def test_the_events_past_a_lagging_index_are_read_from_the_log(
         await eventually(store, lambda: caught_up(store, run_id))
         assert await store.unindexed(run_id) == []
         assert [e.seq for e in await logged_events(store, run_id)] == [0, 1, 2, 3, 4, 5]
+
+
+class Lines:
+    """Counts the lines the store reads from logs, each after `wait` seconds. `seen` is set once
+    it read `seen_at` lines."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.count = 0
+        self.wait = 0.0
+        self.seen_at = 0
+        self.seen = threading.Event()
+        real = store_module.read_events
+
+        def read_events(*args: Any, **kw: Any) -> Any:
+            for item in real(*args, **kw):
+                self.count += 1
+                if self.count >= self.seen_at:
+                    self.seen.set()
+                if self.wait:
+                    time.sleep(self.wait)
+                yield item
+
+        monkeypatch.setattr(store_module, "read_events", read_events)
+
+
+async def far_behind(store: LocalEventStore, breaker: Breaker, n: int) -> str:
+    """A live run whose index holds its first event only, with `n` events past it in its log,
+    and no catch-up under way."""
+    run_id = await store.create_run(STARTED)
+    breaker.left = 10**6
+    for first in range(1, n + 1, 1000):
+        await store.append(run_id, [call(i) for i in range(first, min(first + 1000, n + 1))])
+    task = store._lags[run_id].task
+    assert task is not None
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    return run_id
+
+
+async def test_a_read_past_a_lagging_index_starts_near_what_it_asks_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await far_behind(store, breaker, 5000)
+        lines = Lines(monkeypatch)
+        read: list[tuple[int, int]] = []
+        for after in (4990, 4990, 4500, 4995, 0):
+            lines.count = 0
+            given = await store.unindexed(run_id, after=after)
+            assert [e.seq for e in given] == list(range(after + 1, 5001))[:1000]
+            read.append((len(given), lines.count))
+        assert read == [(10, 5000), (10, 10), (500, 1000), (5, 10), (1000, 1000)]
+        marks = store._lags[run_id].marks
+        marks[4990] = Head(seq=4990, hash="0" * 64, offset=marks[4990].offset)
+        given = await store.unindexed(run_id, after=4990)
+        assert [e.seq for e in given] == list(range(4991, 5001))
+        assert [e.seq for e in await logged_events(store, run_id, limit=1000)] == list(range(1000))
+
+
+async def test_a_cancelled_read_past_a_lagging_index_stops_reading_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await far_behind(store, breaker, 5000)
+        lines = Lines(monkeypatch)
+        lines.wait, lines.seen_at = 0.001, 10
+        try:
+            task = asyncio.create_task(store.unindexed(run_id, after=4990))
+            assert await asyncio.to_thread(lines.seen.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            at_cancel = lines.count
+            await asyncio.sleep(0.3)
+            assert lines.count <= at_cancel + 2
+        finally:
+            lines.wait = 0.0
 
 
 async def caught_up(store: LocalEventStore, run_id: str) -> bool:

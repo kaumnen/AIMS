@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
@@ -77,6 +78,8 @@ LABELS = "labels.jsonl"
 GRAVE = ".deleted."
 INLINE_LIMIT = 8 * 1024
 CHUNK = 1000
+# the marks the lag of a run keeps of where `unindexed` read its log
+MARKS = 256
 RETRY_S = 1.0
 RETRY_MAX_S = 300.0
 TEMP_AGE_S = 3600.0
@@ -320,13 +323,16 @@ class _Lag:
     """A run whose index stopped short of its log: its failed tries in a row, the wait before
     the next one, the loop time it is due and the task that makes it. `retake` says a writer
     or sink here found the index holding events of the run its log does not: a catch-up drops
-    the run's rows and indexes it again from its log, even once that handle closed."""
+    the run's rows and indexes it again from its log, even once that handle closed. `marks`
+    are heads in the synced part of the log past the index, by seq, that `unindexed` read
+    there: the next read starts at the last one before what it asks for."""
 
     tries: int = 1
     wait: float = 0.0
     due: float = 0.0
     task: asyncio.Task[None] | None = None
     retake: bool = False
+    marks: dict[int, Head] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -543,8 +549,13 @@ class LocalEventStore:
         `after` and before seq `before`, of `types` and of `agent_id` when given. A reader that
         must not miss the newest events of a run adds them to what `events` gives, as
         `logged_events` does. The read ends early at a line that does not follow the index
-        head, as while the run is indexed again."""
-        if run_id not in self._lags:
+        head, as while the run is indexed again.
+
+        The read starts at the last mark of the run's lag at or before `after` and past the
+        index head, so a run far behind is not read from its index head each time. A read
+        marks the line at `after`, its last line and every CHUNK lines. A cancel stops it."""
+        lag = self._lags.get(run_id)
+        if lag is None:
             return []
         try:
             start = await self.head(run_id) or Head()
@@ -555,29 +566,53 @@ class LocalEventStore:
             return []
         last = end.seq if before is None else min(end.seq, before - 1)
         kinds = frozenset(types)
+        stop = threading.Event()
 
-        def read() -> list[Event]:
+        def read(begin: Head) -> tuple[list[Event], dict[int, Head], bool]:
+            """The events after `begin`, the marks read on the way, and whether the line after
+            `begin` did not follow it."""
             out: list[Event] = []
-            if last <= max(after, start.seq) or limit < 1:
-                return out
-            events = read_events(self._log(run_id), run_id, start)
+            marks: dict[int, Head] = {}
+            if last <= max(after, begin.seq) or limit < 1:
+                return out, marks, False
+            events = read_events(self._log(run_id), run_id, begin)
+            n = 0
             try:
                 for body, head in events:
+                    n += 1
                     if (
                         head.seq > after
                         and (not kinds or body["type"] in kinds)
                         and (agent_id is None or body["agent_id"] == agent_id)
                     ):
                         out.append(Event.model_validate(body))
-                    if head.seq >= last or len(out) >= limit:
+                    done = head.seq >= last or len(out) >= limit
+                    if done or head.seq == after or n % CHUNK == 0:
+                        marks[head.seq] = head
+                    if done or stop.is_set():
                         break
             except OSError, ChainError:
-                pass
+                return out, marks, n == 0
             finally:
                 events.close()
-            return out
+            return out, marks, False
 
-        return await asyncio.to_thread(read)
+        near = [seq for seq in lag.marks if start.seq <= seq <= after]
+        begin = lag.marks[max(near)] if near else start
+        try:
+            out, marks, stale = await asyncio.to_thread(read, begin)
+            if stale and begin is not start:
+                lag.marks.clear()
+                out, marks, _ = await asyncio.to_thread(read, start)
+        finally:
+            stop.set()
+        if self._lags.get(run_id) is lag:
+            lag.marks.update(marks)
+            for seq in sorted(lag.marks):
+                if seq >= start.seq and len(lag.marks) <= MARKS:
+                    break
+                del lag.marks[seq]
+        return out
 
     def holds(self, run_id: str) -> bool:
         """Whether the run has a directory here. A run that was deleted has none, whichever
