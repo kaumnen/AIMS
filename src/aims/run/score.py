@@ -23,8 +23,9 @@ from aims.events import (
     Verification,
     verify_run,
 )
-from aims.events.blobs import read_blob
+from aims.events.blobs import BlobError, BlobStore
 from aims.events.schema import stated_size
+from aims.events.store import BLOBS
 from aims.monitor.config import Rule
 from aims.monitor.signals.base import SignalError
 from aims.monitor.signals.rules import Compiled, compile_rule
@@ -500,8 +501,9 @@ def _texts(value: Any, run_dir: Path | None) -> list[str]:
         out.append(value)
     elif isinstance(value, dict):
         if "sha256" in value and run_dir is not None:
-            with contextlib.suppress(OSError):
-                data = read_blob(run_dir / "blobs" / str(value["sha256"]), stated_size(value))
+            # through the run's own store, which takes only a sha256 as a name
+            with contextlib.suppress(BlobError, OSError):
+                data = BlobStore(run_dir / BLOBS).get(str(value["sha256"]), stated_size(value))
                 if data:
                     out.append(data.decode(errors="replace"))
         else:

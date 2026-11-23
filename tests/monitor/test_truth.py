@@ -1272,6 +1272,26 @@ def test_only_an_exact_blob_reference_caps_what_a_scan_reads(tmp_path: Path) -> 
     assert _texts(ref.model_dump(), tmp_path) == [data.decode()]
 
 
+def test_a_scan_reads_blobs_only_from_the_run_store(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "r1"
+    (run_dir / "blobs").mkdir(parents=True)
+    own = BlobStore(run_dir / "blobs").put(b"own text")
+    # another run's blob file is named by its hash, as a blob of this run would be
+    other = BlobStore(tmp_path / "runs" / "r2" / "blobs")
+    other.root.mkdir(parents=True)
+    ref = other.put(b"another run's text")
+    for sha in (
+        f"../../r2/blobs/{ref.sha256}",
+        str(other.path(ref.sha256)),
+        "/dev/zero",
+        "",
+        ref.sha256.upper(),
+    ):
+        assert _texts({"sha256": sha, "size": 10}, run_dir) == []
+        assert _texts({"sha256": sha}, run_dir) == []
+    assert _texts({"sha256": own.sha256}, run_dir) == ["own text"]
+
+
 PLANT = """\
 plants:
   - name: cfg1
