@@ -840,7 +840,7 @@ class LinkOptions(Options):
 class Link:
     """A flagged link: the event that made it, `symlink` or `link`, its target as given and
     resolved, why it is flagged and the path a read through it is logged under. `exec_id` is
-    the exec that made it there and `kept` says the same link was there before."""
+    the exec that made it there and `kept` says the same link was there before that exec."""
 
     seq: int
     op: str
@@ -901,7 +901,7 @@ class LinkRedirect(Base):
     keeps it at the old one until a snapshot finds it gone there."""
 
     name = "link_redirect"
-    version = "5"
+    version = "6"
     types = frozenset({"file.access", "fs.change", "fs.snapshot"})
     Opts = LinkOptions
 
@@ -1082,7 +1082,10 @@ class LinkRedirect(Base):
         link = self._link(event.seq, path, op, target)
         if link is not None:
             old = self.links.get((event.agent_id, path))
-            kept = old is not None and (old.op, old.resolved) == (op, link.resolved)
+            kept = False
+            if old is not None and (old.op, old.resolved) == (op, link.resolved):
+                # A link this exec asked for before was not there before the exec.
+                kept = old.kept if old.exec_id == exec_id else True
             link = replace(link, exec_id=exec_id, kept=kept)
         self._put(event.agent_id, path, link)
         if link is None:

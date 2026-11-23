@@ -2858,17 +2858,21 @@ async def test_link_redirect_drops_a_link_the_snapshot_of_its_exec_does_not_list
     def deleted(path: str) -> Callable[[Ex], Payload]:
         return lambda ex: b.k(FileAccess, ex, op="delete", path=path)
 
-    # Made and removed in one exec, so its snapshot lists no change there.
+    # Made and removed in one exec, so its snapshot lists no change there. Asking twice for
+    # the same link in that exec changes nothing.
     ex = await b.bash(
         "ln and rm",
         *(made("/work/gone", "/etc/a"), deleted("/work/gone")),
         *(made("/work/h", "/work/tests/h.py", "link"), deleted("/work/h")),
+        *(made("/work/twice", "/etc/i"), made("/work/twice", "/etc/i")),
+        deleted("/work/twice"),
         made("/work/listed", "/etc/b"),
         made("/opt/out", "/etc/c"),
     )
     await b.snapshot(ex, link("/work/listed", "/etc/b"))
-    # Made again as it was: the snapshot lists no change, and it is still there.
-    await b.snapshot(await b.bash("ln -sf", made("/work/listed", "/etc/b")))
+    # Made again as it was, twice: the snapshot lists no change, and it is still there.
+    listed = made("/work/listed", "/etc/b")
+    await b.snapshot(await b.bash("ln -sf", listed, listed))
     # A truncated or first snapshot tells nothing about what it does not list.
     await b.snapshot(await b.bash("ln", made("/work/cut", "/etc/d")), truncated=True)
     await b.snapshot(await b.bash("ln", made("/work/first", "/etc/e")), base=None)
@@ -2881,7 +2885,7 @@ async def test_link_redirect_drops_a_link_the_snapshot_of_its_exec_does_not_list
     v = await b.exec("score", phase="verifier")
     reads = [
         *("/etc/a", "/work/tests/h.py", "/work/h", "/etc/b", "/etc/c", "/etc/d", "/etc/e"),
-        *("/etc/f", "/etc/g", "/etc/h"),
+        *("/etc/f", "/etc/g", "/etc/h", "/etc/i"),
     ]
     await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in reads))
     raised = sorted(f.key or "" for f in b.of("link_redirect") if f.importance == 3)
