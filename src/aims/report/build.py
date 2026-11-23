@@ -324,10 +324,12 @@ def _of[T: Payload](events: Iterable[Event], cls: type[T]) -> list[tuple[Event, 
 
 
 class _Room:
-    """The bytes of blob text a report may still hold, of TEXTS_BYTES."""
+    """The bytes of blob text a report may still hold, of TEXTS_BYTES. `failed` keeps the error
+    of each blob that did not read, by its sha256 and stated size."""
 
     def __init__(self) -> None:
         self.left = TEXTS_BYTES
+        self.failed: dict[tuple[str, int], str] = {}
 
 
 async def _content(
@@ -339,13 +341,19 @@ async def _content(
         return "", 0
     if not isinstance(value, BlobRef):
         return value, 0
+    key = (value.sha256, value.size)
+    if key in room.failed:
+        return room.failed[key], 0
     take = min(TEXT_BYTES, room.left)
     if take == 0:
         return "", value.size
     try:
         part = await store.get_part(run_id, value.sha256, 0, take, value.size)
     except BlobError as e:
-        return f"({e})", 0
+        # a failed read takes the room a read would, as it reads the blob too
+        room.left -= min(take, value.size)
+        room.failed[key] = f"({e})"
+        return room.failed[key], 0
     # every byte read takes room, so each read of a blob shrinks it; a cut inside a
     # character holds back its first bytes, which then count as left out
     room.left -= len(part.data)

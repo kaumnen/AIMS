@@ -7,6 +7,7 @@ import itertools
 import json
 import re
 from collections.abc import AsyncIterator
+from compression import zstd
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -768,3 +769,28 @@ async def test_a_run_no_router_served_says_nothing_of_providers(store: LocalEven
     report = await build(store, run_id, now=AT)
     assert report.facts.served == []
     assert "was served by" not in render(report)
+
+
+async def test_a_blob_that_does_not_read_is_read_once_and_takes_room(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await store.create_run(RunStarted(scenario="s", oversight="observe", agents=["a"]))
+    ref = await store.put_blob(run_id, b"x" * 4096)
+    path = store.blob_path(run_id, ref.sha256)
+    path.chmod(0o644)
+    path.write_bytes(zstd.compress(b"y" * 4096))
+    reads = 0
+    real = store.get_part
+
+    async def counted(*args: Any, **kwargs: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(store, "get_part", counted)
+    room = build_module._Room()
+    outs = {await build_module._content(store, run_id, ref, room) for _ in range(20)}
+    assert reads == 1
+    ((text, cut),) = outs
+    assert (text.startswith(f"(blob {ref.sha256}"), cut) == (True, 0)
+    assert room.left == build_module.TEXTS_BYTES - 4096
