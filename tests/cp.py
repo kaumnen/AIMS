@@ -145,6 +145,8 @@ async def control_plane(tmp: Path, *, auth: bool = True) -> AsyncGenerator[CP]:
                 task,
             )
         finally:
+            # as `aims ui` stops: open streams end before the server and the db close
+            state.stopping.set()
             await stop(server, task)
     finally:
         await close_state(state)
