@@ -1531,6 +1531,21 @@ def test_json_lines_of_a_blob_are_read_a_line_at_a_time(tmp_path: Path) -> None:
         blobs.json_lines("f" * 64, MAX_LINE)
 
 
+def test_json_lines_over_the_cap_are_counted_in_one_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    blobs = BlobStore(tmp_path)
+    long = b"x" * (MAX_LINE + 1)
+    ref = blobs.put(b'{"a": 1}\n' + long + b"\n" + long + b'\n{"b": 2}\n')
+    plain = blobs.put(b'{"a": 1}\n' + b" " * MAX_LINE + b"\n")
+    with caplog.at_level(logging.WARNING, logger="aims.events"):
+        assert blobs.json_lines(ref.sha256, MAX_LINE) == [{"a": 1}, {"b": 2}]
+        assert blobs.json_lines(plain.sha256, MAX_LINE) == [{"a": 1}]
+    assert [r.getMessage() for r in caplog.records] == [
+        f"skipped 2 line(s) of blob {ref.sha256}: each is over {MAX_LINE} bytes"
+    ]
+
+
 async def test_verify_checks_the_size_each_reference_states(store: LocalEventStore) -> None:
     run_id = await store.create_run(STARTED)
     blobs = store.blobs(run_id)

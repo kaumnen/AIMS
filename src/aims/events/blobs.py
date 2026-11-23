@@ -2,6 +2,7 @@ import codecs
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -14,6 +15,8 @@ from typing import IO, Any, Protocol
 
 from aims.events.disk import make_dir, sync_dir
 from aims.events.schema import BlobRef, is_sha256
+
+log = logging.getLogger("aims.events")
 
 
 class BlobError(Exception):
@@ -326,7 +329,7 @@ class _Text:
 
 class _JsonLines:
     """Keeps the JSON object on each line of a blob, read a line at a time. Other lines are
-    skipped, as is a line over `cap` bytes, which is never held whole."""
+    skipped, as is a line over `cap` bytes, which is never held whole. `over` counts those."""
 
     def __init__(self, cap: int) -> None:
         self.cap = cap
@@ -334,6 +337,7 @@ class _JsonLines:
         self.line = bytearray()
         # whether the line being read passed the cap
         self.long = False
+        self.over = 0
 
     def take(self, data: bytes) -> None:
         start = 0
@@ -352,6 +356,7 @@ class _JsonLines:
         self.line += data
         if len(self.line) > self.cap:
             self.long = True
+            self.over += 1
             self.line.clear()
 
     def _close(self) -> None:
@@ -432,9 +437,16 @@ def read_ends(path: Path, head: int, tail: int, size: int | None = None) -> Ends
 
 def read_json_lines(path: Path, cap: int, size: int | None = None) -> list[dict[str, Any]] | None:
     """The JSON object on each line of the blob at `path`, read a line at a time; see
-    `_JsonLines`. None as `read_part` gives it."""
+    `_JsonLines`. A read that skips lines over `cap` logs one warning. None as `read_part`
+    gives it."""
     kept = _scan(path, size, lambda: _JsonLines(cap))
-    return None if kept is None else kept.items
+    if kept is None:
+        return None
+    if kept.over:
+        log.warning(
+            "skipped %d line(s) of blob %s: each is over %d bytes", kept.over, path.name, cap
+        )
+    return kept.items
 
 
 class BlobStore:
