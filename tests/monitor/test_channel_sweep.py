@@ -36,7 +36,15 @@ from aims.events import (
 from aims.events.schema import Payload
 from aims.models import ModelClient, ModelsConfig, Profile, Roles
 from aims.models.purse import Purse
-from aims.monitor.channels import ChannelLog, ChannelResult, ChannelSweeper, evaluate_schema
+from aims.monitor.channels import (
+    ARGUMENT_BYTES,
+    SHORT_BYTES,
+    ChannelLog,
+    ChannelResult,
+    ChannelSweeper,
+    _Lines,
+    evaluate_schema,
+)
 from aims.monitor.config import (
     JUDGE_RESERVE_USD,
     ChannelSweepConfig,
@@ -52,7 +60,7 @@ from aims.monitor.config import (
 )
 from aims.monitor.core import Monitor
 from aims.monitor.offline import offline_monitor
-from aims.monitor.render import Trajectory, frame
+from aims.monitor.render import Trajectory, cut, frame
 from aims.monitor.setup import ResolvedMonitor, planned_steps, resolve_monitor
 from aims.monitor.sweep import NO_ROOM, Sweeper, SweepResult
 from aims.monitor.texts import resolve
@@ -182,6 +190,34 @@ async def test_a_lone_surrogate_in_a_reader_s_call_renders_as_text(
     await f.call("b", "echo \ud800")
     rendered, _ = await f.log.render(TEXTS, max_tokens=60_000, next_calls=1)
     assert '"arguments":{"command":"echo \\\\ud800"}' in rendered.text
+
+
+async def test_blobs_held_at_their_ends_show_as_the_cut_of_their_whole_text(
+    store: LocalEventStore,
+) -> None:
+    f = await Feed.open(store)
+    # Past TEXT_READ the two ends of these arguments, joined, parse as JSON without `path`.
+    edit = json.dumps(
+        {
+            "command": "create",
+            "file_text": "A" * (600 * 1024),
+            "path": "/home/agent/.bashrc",
+            "new_str": "B" * (600 * 1024),
+        }
+    )
+    # one space between words, so the one line counts the same bytes as the whole text
+    message = "word\n" * 300_000
+    text = await store.content(f.run_id, message)
+    await f.add(ChannelMessage(channel="chat", id=1, text=text, bytes=len(message)), "a")
+    await f.read("b", 0, 1)
+    args = await store.content(f.run_id, edit)
+    await f.add(ToolCall(call_id="c1", name="edit", arguments=args), "b")
+    rendered, _ = await f.log.render(TEXTS, max_tokens=600_000, next_calls=1)
+    (call,) = [json.loads(x) for x in rendered.text.split("\n") if '"tool.call"' in x]
+    assert call["arguments"] == cut(edit, ARGUMENT_BYTES)
+    (item,) = f.log._items
+    short = await f.log._short(item, _Lines(KEY, "item 1"), f.log.seen)
+    assert json.loads(short.lines[0])["text"] == cut(" ".join(message.split()), SHORT_BYTES)
 
 
 async def test_a_folder_change_is_read_by_the_first_later_read_of_its_path(

@@ -173,6 +173,25 @@ async def blob_text(store: EventStore, run_id: str, sha256: str, size: int | Non
     return Capped(head + ends.tail, ends.size - held)
 
 
+def arguments(text: str) -> Any:
+    """Tool call arguments read as JSON, else the text as is. A `Capped` text stays text: its
+    two ends joined may parse as JSON the agent never sent."""
+    if isinstance(text, Capped):
+        return text
+    try:
+        parsed: Any = scrub(json.loads(text)) if text.strip() else {}
+    except ValueError, RecursionError:
+        return text
+    return text if deeper(parsed, ARGUMENT_DEPTH) else parsed
+
+
+def one_line(text: str) -> str:
+    """`text` with each run of whitespace made one space. A `Capped` text keeps its count of
+    the bytes left out."""
+    line = " ".join(text.split())
+    return Capped(line, text.left) if isinstance(text, Capped) else line
+
+
 def strings(value: Any) -> Iterable[str]:
     """Every string in `value`, depth first."""
     if isinstance(value, str):
@@ -829,7 +848,7 @@ class Trajectory:
         out = _Out(self.key, step.head.seq, step.label)
         calls: list[dict[str, Any]] = []
         for c in step.calls:
-            args = " ".join((await self._text(c.event.data.get("arguments"))).split())
+            args = one_line(await self._text(c.event.data.get("arguments")))
             entry: dict[str, Any] = {
                 "name": c.event.data.get("name"),
                 "arguments": cut(args, SHORT_BYTES),
@@ -865,13 +884,7 @@ class Trajectory:
         return str(value)
 
     async def _tool_call(self, out: _Out, event: Event) -> str | None:
-        text = await self._text(event.data.get("arguments"))
-        try:
-            parsed: Any = scrub(json.loads(text)) if text.strip() else {}
-        except ValueError, RecursionError:
-            parsed = text
-        if deeper(parsed, ARGUMENT_DEPTH):
-            parsed = text
+        parsed = arguments(await self._text(event.data.get("arguments")))
         command = parsed.get("command") if isinstance(parsed, dict) else None
         fields = {"name": event.data.get("name"), "arguments": _capped(parsed, ARGUMENT_BYTES)}
         out.record(event, fields)

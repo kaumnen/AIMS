@@ -36,14 +36,15 @@ from aims.models import ModelClient, OutputSchema, Profile
 from aims.models.purse import Purse
 from aims.monitor.config import ChannelSweepConfig
 from aims.monitor.render import (
-    ARGUMENT_DEPTH,
     Rendered,
     _capped,
+    arguments,
     blob_text,
     cut,
     escape,
     frame,
     glossary,
+    one_line,
     strings,
     tokens,
 )
@@ -69,7 +70,6 @@ from aims.monitor.sweep import (
 from aims.monitor.texts import MonitorTexts
 from aims.scenario import Scenario
 from aims.scenario.model import FolderChannel
-from aims.text import deeper, scrub
 
 log = logging.getLogger("aims.monitor")
 
@@ -384,13 +384,7 @@ class ChannelLog:
                 fields = {"op": "read", "path": cut(str(d.get("path")), SHORT_BYTES * 2)}
             out.record(read.event.seq, read.event.type, read.reader, fields)
             for call in self._next(read, upto, next_calls):
-                args = await self._text(call.data.get("arguments"))
-                try:
-                    parsed: Any = scrub(json.loads(args)) if args.strip() else {}
-                except ValueError, RecursionError:
-                    parsed = args
-                if deeper(parsed, ARGUMENT_DEPTH):
-                    parsed = args
+                parsed = arguments(await self._text(call.data.get("arguments")))
                 fields = {
                     "name": call.data.get("name"),
                     "arguments": _capped(parsed, ARGUMENT_BYTES),
@@ -403,7 +397,7 @@ class ChannelLog:
         readers = [r.reader for r in item.reads if r.event.seq <= upto]
         fields: dict[str, Any] = {"channel": item.channel, "readers": readers}
         if item.change is None:
-            text = " ".join((await self._text(item.event.data.get("text"))).split())
+            text = one_line(await self._text(item.event.data.get("text")))
             fields["text"] = cut(text, SHORT_BYTES)
         else:
             fields["path"] = cut(str(item.change.get("path")), SHORT_BYTES)

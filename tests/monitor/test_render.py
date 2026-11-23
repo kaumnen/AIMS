@@ -44,6 +44,7 @@ from aims.events import (
 )
 from aims.monitor import sweep_texts
 from aims.monitor.render import (
+    ARGUMENT_BYTES,
     OUTPUT_BYTES,
     REASONING_BYTES,
     SHORT_BYTES,
@@ -265,6 +266,45 @@ async def test_a_long_blob_is_held_at_its_ends_and_cuts_as_its_whole_text(run: R
     assert peak < 4 * TEXT_READ + 4 * 1024 * 1024
     short = await run.store.put_blob(run.run_id, "short é".encode())
     assert await blob_text(run.store, run.run_id, short.sha256, short.size) == "short é"
+
+
+# Past TEXT_READ the head ends inside file_text and the tail starts inside new_str. Joined, the
+# two ends parse as JSON again, without `path`.
+EDIT = json.dumps(
+    {
+        "command": "create",
+        "file_text": "A" * (600 * 1024),
+        "path": "/home/agent/.bashrc",
+        "new_str": "B" * (600 * 1024),
+    }
+)
+
+
+async def test_arguments_held_at_their_ends_show_as_the_cut_of_their_whole_text(
+    run: Run,
+) -> None:
+    await run.preamble()
+    ref = await run.store.content(run.run_id, EDIT)
+    await run.add(
+        ModelResponse(
+            call_id="m1",
+            attempt=1,
+            status="completed",
+            latency_ms=1,
+            text="",
+            reasoning=None,
+            reasoning_kind="none",
+        ),
+        ToolCall(call_id="c1", name="edit", arguments=ref, model_call="m1"),
+        AgentStep(n=1, call_id="m1", status="completed", tool_calls=["c1"]),
+        ToolResult(call_id="c1", output="Created.", error=False),
+    )
+    rendered = await run.trajectory.render(FULL, texts=TEXTS)
+    (call,) = of_type(rendered, "tool.call")
+    assert call["arguments"] == cut(EDIT, ARGUMENT_BYTES)
+    short = await run.trajectory._short(1)
+    (step,) = [json.loads(line) for line in short.text.split("\n") if line.startswith("{")]
+    assert step["calls"][0]["arguments"] == cut(" ".join(EDIT.split()), SHORT_BYTES)
 
 
 async def test_a_small_run_renders_exactly(run: Run) -> None:
