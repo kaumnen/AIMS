@@ -169,3 +169,16 @@ test("hover names the type and the docs of the field or its model", () => {
     "Prompts",
   );
 });
+
+test("a lone CR ends a line as CRLF and LF do", () => {
+  // as the editor gives a file that mixes line endings: a lone CR stays within its line
+  const typed = at("version: 1\r\noversight: observe\r\ntask:\r  inst^\n").place;
+  expect(typed.path).toEqual(["task"]);
+  expect(keyOptions(schema, typed).map((o) => o.label)).toEqual(["instruction", "setup"]);
+  const text = "version: 1\r\ntask:\r  instruction: x\n";
+  expect(hoverAt(schema, text, text.indexOf("instruction") + 3)?.title).toBe("instruction: string");
+  // just past the CR of a CRLF the cursor is still on its line, past its value
+  const crlf = "keep: true\r\n";
+  expect(placeAt(crlf, crlf.indexOf("\n"))).toBeNull();
+  expect(placeAt(`${crlf}ke`, crlf.length + 2)?.path).toEqual([]);
+});

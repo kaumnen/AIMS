@@ -19,11 +19,22 @@ interface Line {
 
 const KEY = /^(\s*)(-\s+)?([A-Za-z_][\w.-]*)\s*:(?:\s+(.*)|$)/;
 const DASH = /^(\s*)-(?:\s+(.*))?$/;
+// A line ends at CRLF, a lone CR or LF, as YAML reads it. In a text that mixes line endings the
+// editor keeps a lone CR within its line, so the text holds each as it came.
+const BREAK = /\r\n|\r|\n/;
+
+// The line `pos` is on, from 0, and where it starts. A CR just before `pos` that starts a CRLF
+// ends its line only with the LF.
+function lineOf(text: string, pos: number): { no: number; start: number } {
+  const at = text[pos - 1] === "\r" && text[pos] === "\n" ? pos - 1 : pos;
+  const lines = text.slice(0, at).split(BREAK);
+  return { no: lines.length - 1, start: at - (lines.at(-1)?.length ?? 0) };
+}
 
 function readLines(text: string): Line[] {
   const out: Line[] = [];
   let block: number | null = null;
-  for (const raw of text.split("\n")) {
+  for (const raw of text.split(BREAK)) {
     const indent = raw.length - raw.trimStart().length;
     const blank = raw.trim() === "" || raw.trimStart().startsWith("#");
     if (block !== null && (blank || indent > block)) {
@@ -89,8 +100,7 @@ export interface Place {
 // Where `pos` falls in `text`: the mappings above it and what is being typed.
 export function placeAt(text: string, pos: number): Place | null {
   const lines = readLines(text);
-  const lineNo = text.slice(0, pos).split("\n").length - 1;
-  const start = text.lastIndexOf("\n", pos - 1) + 1;
+  const { no: lineNo, start } = lineOf(text, pos);
   const before = text.slice(start, pos);
   const keyed = /^(\s*)(-\s+)?([A-Za-z_][\w.-]*)\s*:\s*(\S*)$/.exec(before);
   const typing = /^(\s*)(-\s+)?([\w.-]*)$/.exec(before);
@@ -328,9 +338,9 @@ export interface Hover {
 
 // What the key under `pos` is: its type and the docs of its field, or of the model holding it.
 export function hoverAt(root: Schema, text: string, pos: number): Hover | null {
-  const start = text.lastIndexOf("\n", pos - 1) + 1;
-  const end = text.indexOf("\n", pos);
-  const line = text.slice(start, end < 0 ? undefined : end);
+  const { start } = lineOf(text, pos);
+  const end = text.slice(pos).search(/[\r\n]/);
+  const line = text.slice(start, end < 0 ? undefined : pos + end);
   const m = KEY.exec(line);
   if (!m) return null;
   const keyFrom = start + (m[1]?.length ?? 0) + (m[2]?.length ?? 0);
