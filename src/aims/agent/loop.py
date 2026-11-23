@@ -123,11 +123,12 @@ class Totals:
         return self.cost_usd + self.unseen_usd + self.sized_usd
 
     def usage(self) -> ModelUsage:
+        """The token counts, each at most MAX_INT so the log can hold it."""
         return ModelUsage(
-            input_tokens=self.input_tokens,
-            cached_tokens=self.cached_tokens,
-            output_tokens=self.output_tokens,
-            reasoning_tokens=self.reasoning_tokens,
+            input_tokens=min(self.input_tokens, MAX_INT),
+            cached_tokens=min(self.cached_tokens, MAX_INT),
+            output_tokens=min(self.output_tokens, MAX_INT),
+            reasoning_tokens=min(self.reasoning_tokens, MAX_INT),
         )
 
 

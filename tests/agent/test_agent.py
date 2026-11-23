@@ -21,6 +21,7 @@ from aims.agent import (
     is_context_error,
 )
 from aims.events import (
+    MAX_INT,
     AgentCompacted,
     AgentFinished,
     AgentHeld,
@@ -476,6 +477,28 @@ async def test_the_tokens_of_a_billed_failed_attempt_count_as_its_cost_does(
     # the step keeps the answer's own usage; its total counts both attempts
     (step,) = await payloads(store, run_id, AgentStep)
     assert (step.usage.output_tokens, step.total.output_tokens) == (500, 1000)
+
+
+async def test_token_counts_past_what_the_log_holds_stop_at_its_bound(
+    store: LocalEventStore,
+) -> None:
+    """An endpoint may report absurd token counts. One past MAX_INT counts as none. The
+    agent's totals stop at MAX_INT, so the log takes every event."""
+
+    def used(given: int) -> dict[str, Any]:
+        return {"usage": {"prompt_tokens": given, "completion_tokens": 10}}
+
+    bash = call("bash", command="true")
+    huge = [bash | used(MAX_INT + 1), bash | used(MAX_INT), bash | used(MAX_INT)]
+    script = Script(*huge, call("submit", answer="done"))
+    # with no price, the counts cost nothing
+    agent, run_id = await make_agent(store, script, p=profile(price=None))
+    finished = await agent.run()
+    assert (finished.reason, finished.steps) == ("submitted", 4)
+    responses = await payloads(store, run_id, ModelResponse)
+    assert [r.usage.input_tokens for r in responses] == [None, MAX_INT, MAX_INT, 100]
+    assert finished.usage.input_tokens == MAX_INT
+    assert finished.usage.output_tokens == 40
 
 
 async def test_the_cost_cap_holds_a_call_s_billed_retries(store: LocalEventStore) -> None:

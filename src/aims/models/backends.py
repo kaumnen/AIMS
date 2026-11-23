@@ -4,7 +4,7 @@ from typing import Any, ClassVar, Literal, Protocol
 
 from pydantic import JsonValue
 
-from aims.events import ModelBackend, ModelParams, ModelStatus, ModelUsage, ReasoningKind
+from aims.events import MAX_INT, ModelBackend, ModelParams, ModelStatus, ModelUsage, ReasoningKind
 from aims.models.profiles import Profile
 from aims.models.types import Message, Prompt, ToolOutput, ToolRequest, Turn
 
@@ -88,7 +88,10 @@ def _sampling(profile: Profile) -> dict[str, JsonValue]:
 
 
 def _int(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+    """`value` when it is an int the log can hold, at most MAX_INT either way, else None."""
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) <= MAX_INT:
+        return value
+    return None
 
 
 def _reported_cost(usage: dict[str, Any]) -> float | None:
