@@ -147,12 +147,18 @@ def blob_refs(kind: object, data: Any) -> Iterator[str]:
 # as a blob reference.
 PROFILE_KEYS = frozenset({"name", "backend", "model", "weights", "extra"})
 PROFILE_WRITTEN = frozenset({"extra", "headers"})
+# The keys of a scenario as `Bundle.snapshot` records it there. `resolved` is the scenario as the
+# person wrote it, such as a plugin's options. The references to its inputs sit beside it.
+SCENARIO_KEYS = frozenset({"name", "digest", "file", "resolved"})
+SCENARIO_WRITTEN = frozenset({"resolved"})
+NOTHING: frozenset[str] = frozenset()
 
 
 def blob_sizes(kind: object, data: Any) -> Iterator[tuple[str, Any]]:
     """The sha256 and the stated size of each blob reference in `data`, the data of an event of
     type `kind`. Its Opaque fields hold none, nor do the `extra` table and `headers` of a
-    profile. A sha256 or a size of a hand-made log may be any JSON value."""
+    profile or the resolved scenario. A sha256 or a size of a hand-made log may be any JSON
+    value."""
     skip = opaque_fields(kind)
     if skip and isinstance(data, Mapping) and not is_blob_ref(data):
         for key, value in data.items():
@@ -166,13 +172,23 @@ def _refs(value: Any) -> Iterator[tuple[str, Any]]:
     if is_blob_ref(value):
         yield value["sha256"], value["size"]
     elif isinstance(value, Mapping):
-        profile = "extra" in value and value.keys() >= PROFILE_KEYS
+        written = _written(value)
         for key, item in value.items():
-            if not (profile and key in PROFILE_WRITTEN):
+            if key not in written:
                 yield from _refs(item)
     elif isinstance(value, list):
         for item in value:
             yield from _refs(item)
+
+
+def _written(value: Mapping[str, Any]) -> frozenset[str]:
+    """The keys of `value` that hold what a person wrote, when it is a profile or a scenario
+    AIMS recorded."""
+    if "extra" in value and value.keys() >= PROFILE_KEYS:
+        return PROFILE_WRITTEN
+    if "resolved" in value and value.keys() >= SCENARIO_KEYS:
+        return SCENARIO_WRITTEN
+    return NOTHING
 
 
 def text_of(value: Any, kind: object = None) -> str:

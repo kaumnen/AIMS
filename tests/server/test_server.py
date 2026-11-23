@@ -69,7 +69,8 @@ from aims.node.shipper import WARN_AFTER, Shipper
 from aims.prompts import Prompts
 from aims.run.job import Job
 from aims.run.runner import _reward, resolve_texts
-from aims.scenario import load
+from aims.scenario import Bundle, load
+from aims.scenario import parse as parse_scenario
 from aims.server import api, dispatch, edit_api, runner_api
 from aims.server import app as app_module
 from aims.server import db as sdb
@@ -519,6 +520,39 @@ async def test_a_profile_table_shaped_as_a_blob_reference_does_not_stop_shipping
     [line] = (local.root / run_id / "events.jsonl").read_bytes().splitlines()
     first = json.loads(line)
     assert list(blob_refs(first["type"], first["data"])) == [real.sha256]
+    await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+    client = ControlClient(cp.url, cp.runner, runner="pusher")
+    try:
+        await client.hello(FakeRunner(cp, "pusher").hello_body())
+        shipper = await ship(local, client, run_id)
+    finally:
+        await client.aclose()
+    assert (shipper.done, shipper.refused) == (True, None)
+    copy = cp.state.store.root / run_id / "events.jsonl"
+    assert copy.read_bytes() == (local.root / run_id / "events.jsonl").read_bytes()
+    assert (await cp.state.store.verify(run_id)).ok
+
+
+async def test_a_plugin_option_shaped_as_a_blob_reference_does_not_stop_shipping(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """run.started records the scenario as resolved from its file, which a person wrote, with
+    the references to its inputs beside it. A plugin channel's options shaped as a blob
+    reference once stopped the run's shipping for good."""
+    channel = '  - {name: radio, kind: walkie, options: {sha256: "' + "ef" * 32 + '", size: 2}}\n'
+    text = SCENARIO + "channels:\n" + channel
+    bundle = Bundle(parse_scenario(text), text.encode())
+    started = STARTED.model_copy(update={"config": {"scenario": bundle.snapshot()}})
+    run_id = await local.create_run(started, blobs=bundle.blobs())
+    [line] = (local.root / run_id / "events.jsonl").read_bytes().splitlines()
+    first = json.loads(line)
+    assert first["data"]["config"]["scenario"]["resolved"]["channels"][0]["options"] == {
+        "sha256": "ef" * 32,
+        "size": 2,
+    }
+    assert list(blob_refs(first["type"], first["data"])) == [
+        hashlib.sha256(text.encode()).hexdigest()
+    ]
     await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
     client = ControlClient(cp.url, cp.runner, runner="pusher")
     try:
