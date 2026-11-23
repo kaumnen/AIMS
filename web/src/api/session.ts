@@ -1,6 +1,6 @@
 import { hashKey, type QueryClient } from "@tanstack/react-query";
 
-import { reconnectLive } from "./channel";
+import { reconnectLive, sharedChannel } from "./channel";
 import { $api, client, type Problem, type Schemas } from "./client";
 
 type Whoami = Schemas["Whoami"];
@@ -65,13 +65,14 @@ export function watchSession(qc: QueryClient): () => void {
 }
 
 // `aims ui` opens /#code=...; the one-shot code leaves the URL first, then becomes the session
-// cookie.
+// cookie. The tabs' shared stream may hold another session, so it connects again.
 export async function handoff(): Promise<void> {
   const code = new URLSearchParams(location.hash.slice(1)).get("code");
   if (!code) return;
   history.replaceState(history.state, "", location.pathname + location.search);
   // a failed trade leaves the app signed out, which it shows
-  await client.POST("/api/session", { body: { code } }).catch(() => undefined);
+  const traded = await client.POST("/api/session", { body: { code } }).catch(() => undefined);
+  if (traded?.response.ok) sharedChannel()?.reconnect();
 }
 
 export function isProblem(e: unknown): e is Problem {
