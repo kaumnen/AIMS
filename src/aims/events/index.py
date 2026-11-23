@@ -49,7 +49,8 @@ from aims.text import encodable
 
 log = logging.getLogger("aims.events")
 
-VERSION = 13
+# 14: the search text of a blob-shaped mapping inside an opaque field, such as metrics
+VERSION = 14
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 # Events a remove deletes in one transaction: about 0.3 ms each with 8 KB of text.

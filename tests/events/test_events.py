@@ -1681,6 +1681,34 @@ async def test_a_self_test_case_keeps_its_name_through_a_reindex(tmp_path: Path)
         assert info.case == "exploit"
 
 
+async def test_an_index_of_the_search_text_before_blob_shaped_metrics_counted_is_rebuilt(
+    tmp_path: Path,
+) -> None:
+    """A mapping shaped as a blob reference inside an opaque field, such as a verifier's
+    metrics, counts in the search text. An index version 13 wrote left it out."""
+    root = tmp_path / "runs"
+    word = "zebracanary"
+    scored = TaskScored(reward=1.0, metrics={"note": {"sha256": word, "size": 1}})
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [Draft(scored), Draft(RunFinished(status="completed"))])
+        assert [e.seq for e in (await store.search(word))[0]] == [1]
+    # the row as an index of version 13 holds it
+    with contextlib.closing(sqlite3.connect(root / "index.sqlite")) as db:
+        row_id, text = db.execute("select id, text from events where seq = 1").fetchone()
+        db.execute(
+            "insert into events_fts (events_fts, rowid, text) values ('delete', ?, ?)",
+            (row_id, text),
+        )
+        old = text.replace(word, "")
+        db.execute("update events set text = ? where id = ?", (old, row_id))
+        db.execute("insert into events_fts (rowid, text) values (?, ?)", (row_id, old))
+        db.execute("pragma user_version = 13")
+        db.commit()
+    async with await LocalEventStore.open(root) as store:
+        assert [e.seq for e in (await store.search(word))[0]] == [1]
+
+
 # Integers past 2**53 - 1 are outside the canonical JSON number domain; seal refuses them
 # before anything is written.
 JSON = st.recursive(
