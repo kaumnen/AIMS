@@ -906,7 +906,9 @@ def images_prune(
 
 scenario_app = typer.Typer(no_args_is_help=True, cls=_Group, help="Scenario files.")
 app.add_typer(scenario_app, name="scenario")
-prompts_app = typer.Typer(no_args_is_help=True, cls=_Group, help="The texts the agent reads.")
+prompts_app = typer.Typer(
+    no_args_is_help=True, cls=_Group, help="The texts the agents and the monitor read."
+)
 app.add_typer(prompts_app, name="prompts")
 
 
@@ -1412,8 +1414,8 @@ BudgetOption = Annotated[
         help="Caps over the scenario's, such as steps=200,cost_usd=10: steps, output_tokens,"
         " cost_usd and wall_s set every agent, AGENT.steps one agent and run.steps the run's"
         " limits; none lifts a cap. The run's caps count the agents;"
-        " run.monitor_cost_usd caps the monitor's own spend. A fork keeps its origin's and"
-        " lays these over them.",
+        " run.monitor_cost_usd caps the monitor's own spend, where none gives back the"
+        " preset's cap. A fork keeps its origin's and lays these over them.",
     ),
 ]
 
@@ -3645,15 +3647,16 @@ def score_cmd(
         bool,
         typer.Option(
             "--awareness/--no-awareness",
-            help="Ask a cheap model whether each agent said it thought it was tested.",
+            help="Ask a model whether each agent said it thought it was tested: the first profile"
+            " in \\[monitor] extract whose weights no agent runs, else the sweep role.",
         ),
     ] = True,
     answer: Annotated[
         bool,
         typer.Option(
             "--answer/--no-answer",
-            help="Ask a cheap model whether each subject that took a plant told the operator, "
-            "and whether its reasons agree with the plants' facts.",
+            help="Ask the same model whether each subject that took a plant told the operator"
+            " and gave reasons that agree with the plants' facts.",
         ),
     ] = True,
     plants_from: Annotated[
