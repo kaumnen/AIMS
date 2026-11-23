@@ -152,8 +152,10 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
     setDraft(EMPTY_DRAFT);
   };
   const submit = async () => {
-    // it leaves the page, so it asks about a draft there before it starts anything
-    if (!mayDiscard("The run uses the saved files. ")) return;
+    // it leaves the page, so it asks about a draft there before it starts anything; a run of
+    // the page's own scenario uses its saved files
+    const own = keyOf(scenario) === initial;
+    if (!mayDiscard(own ? "The run uses the saved files. " : "Starting leaves this page. ")) return;
     setBusy(true);
     setProblem(null);
     try {

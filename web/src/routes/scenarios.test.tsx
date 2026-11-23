@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ScenarioDetail, ScenarioInfo } from "@/api/scenarios";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
+import { pick } from "@/test/pick";
 import { preloadRoutes } from "@/test/routes";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -177,7 +178,11 @@ beforeEach(() => {
     if (url.pathname === "/api/scenarios/check") {
       return Response.json({ ok: true, errors: [], warnings: [], notes: [] });
     }
-    if (/^\/api\/scenarios\/project\/cache-keys(-copy)?\/estimate$/.test(url.pathname))
+    if (
+      /^\/api\/scenarios\/(project\/cache-keys(-copy)?|builtin\/word-count)\/estimate$/.test(
+        url.pathname,
+      )
+    )
       return Response.json({
         lines: [
           "head",
@@ -519,6 +524,24 @@ test("Run under a draft asks before the run starts", async () => {
   await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${NEW_RUN}`));
   expect(sent("POST", "/api/runs")).toBe(1);
   expect(asked.questions).toEqual([question, question]);
+});
+
+test("Run of another scenario under a draft asks without naming the saved files", async () => {
+  startsRuns();
+  const asked = confirms(false);
+  renderAt("/scenarios/project/cache-keys?tab=files");
+  await draft();
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  const dialog = within(await screen.findByRole("dialog"));
+  await dialog.findByRole("combobox", { name: "Scenario" });
+  await pick(dialog, "Scenario", /word-count/);
+  fireEvent.click(await dialog.findByRole("button", { name: "Start run" }));
+  await waitFor(() =>
+    expect(asked.questions).toEqual([
+      "Starting leaves this page. Discard your changes to scenario.yaml?",
+    ]),
+  );
+  expect(sent("POST", "/api/runs")).toBe(0);
 });
 
 test("Self-test under a draft asks before it starts", async () => {
