@@ -1605,6 +1605,29 @@ def test_an_agent_is_projected_from_its_steps_and_bounded_by_its_caps() -> None:
 
 
 @pytest.mark.anyio
+async def test_the_projection_counts_a_failed_call_after_the_last_step(
+    store: LocalEventStore,
+) -> None:
+    """The agent's last call fails billed, so its cost is in the agent's end only."""
+    from scripted import Script, call
+    from scripted import profile as scripted_profile
+    from test_agent import make_agent
+
+    full = {"prompt_tokens": 1000, "completion_tokens": 500}
+    play = Script(
+        call("bash", command="true") | {"usage": full}, {"finish": "error", "usage": full}
+    )
+    p = scripted_profile(context_tokens=1000, max_output_tokens=500)  # $1 and $2 a million
+    agent, run_id = await make_agent(store, play, p=p)
+    finished = await agent.run()
+    assert (finished.reason, finished.cost_usd) == ("model_error", pytest.approx(0.004))
+    found = await projection(store, run_id, History())
+    assert found is not None
+    assert found.agents_spent_usd == pytest.approx(0.004)
+    assert found.spent_usd == pytest.approx(0.004)
+
+
+@pytest.mark.anyio
 async def test_the_live_view_shows_what_the_run_is_on_track_for(store: LocalEventStore) -> None:
     config = {
         "scenario": {"resolved": {"limits": {"cost_usd": 10.0}}},

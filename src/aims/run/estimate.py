@@ -1955,6 +1955,8 @@ async def projection(store: LocalEventStore, run_id: str, found: History) -> Pro
                     a["cost"] = _num(d.get("total_cost_usd"))
                 case "agent.finished":
                     a["done"] = True
+                    # what a failed call after the last step cost is in the agent's end only
+                    a["cost"] = _num(d.get("cost_usd"))
                 case "model.request" if d.get("role") is not None:
                     watching.add(_str(d.get("call_id")))
                 case "model.response" if d.get("call_id") in watching:
