@@ -128,7 +128,7 @@ function Models() {
               <th className="py-1 pr-4 font-normal">Profile</th>
               <th className="py-1 pr-4 font-normal max-sm:hidden">Model</th>
               <th className="py-1 pr-4 font-normal max-sm:hidden">Price per million tokens</th>
-              <th className="py-1 pr-4 font-normal max-md:hidden">Keys</th>
+              <th className="py-1 pr-4 font-normal max-lg:hidden">Keys</th>
               <th className="py-1 pr-4 font-normal whitespace-nowrap">Last check</th>
               {operator && (
                 <th className="py-1 font-normal">
@@ -263,7 +263,7 @@ function Row({
       <td className="py-1.5 pr-4 max-sm:hidden">
         <Price p={p} prices={prices} />
       </td>
-      <td className="py-1.5 pr-4 max-md:hidden">
+      <td className="py-1.5 pr-4 max-lg:hidden">
         {p.entry === null ? (
           <span className="text-muted-foreground">none needed</span>
         ) : (
@@ -291,10 +291,8 @@ function Row({
           </Link>
         )}
         {bad && (
-          // a narrow screen wraps it, or the table pushes the page wider than the screen
-          <span className="text-muted-foreground block max-w-md sm:truncate" title={bad}>
-            {bad}
-          </span>
+          // it wraps, or the table pushes the page wider than the screen
+          <span className="text-muted-foreground block max-w-md">{bad}</span>
         )}
       </td>
       {operator && (
