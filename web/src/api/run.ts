@@ -1,4 +1,5 @@
 import {
+  type InfiniteData,
   infiniteQueryOptions,
   keepPreviousData,
   type Query,
@@ -254,6 +255,20 @@ export function rawEventsQuery(runId: string, filters: RawFilters, anchor: RawAn
     maxPages: RAW_PAGES,
     staleTime: Infinity,
   });
+}
+
+// A raw list with its last page joined to the one before it when both fit in a page; undefined
+// when they do not. A search reads on whenever events of its types come, mostly to find no match:
+// kept as pages, those reads would fill the pages the list holds and push its matches out.
+export function joinLast<P>(
+  data: InfiniteData<RawPage, P> | undefined,
+): InfiniteData<RawPage, P> | undefined {
+  const [a, b] = data?.pages.slice(-2) ?? [];
+  if (!data || !a || !b || a.items.length + b.items.length > RAW_PAGE) return undefined;
+  return {
+    pages: [...data.pages.slice(0, -2), { ...a, items: [...a.items, ...b.items], newer: b.newer }],
+    pageParams: data.pageParams.slice(0, -1),
+  };
 }
 
 // Pages follow one another: each starts where the last one ended.

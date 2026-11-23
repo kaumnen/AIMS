@@ -1,9 +1,9 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Event } from "@/api/events";
-import { eventQuery, type RawAnchor, rawEventsQuery } from "@/api/run";
+import { eventQuery, joinLast, type RawAnchor, rawEventsQuery } from "@/api/run";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -49,12 +49,21 @@ export function RawEvents({
   const shown = `${search.group ?? ""}\n${search.q ?? ""}`;
   const [ended, setEnded] = useState<string | null>(null);
   const anchor: RawAnchor = ended === shown ? "end" : "start";
+  const raw = rawEventsQuery(runId, filters, anchor);
   const list = useInfiniteQuery({
-    ...rawEventsQuery(runId, filters, anchor),
+    ...raw,
     // the other end of the same list stays up until its first page arrives
     placeholderData: (data, query) =>
       JSON.stringify(query?.queryKey[3]) === JSON.stringify(filters) ? data : undefined,
   });
+  const qc = useQueryClient();
+  const { data } = list;
+  // A page read on that fits in the one before it joins it, once shown: a placeholder from the
+  // other end, or pages that changed since, are left alone. A read on joins them first too, as
+  // the list's own effects can read on before this one runs.
+  useEffect(() => {
+    qc.setQueryData(raw.queryKey, (now) => (now === data ? joinLast(now) : undefined));
+  }, [qc, raw.queryKey, data]);
   const events = list.data?.pages.flatMap((p) => p.items) ?? [];
   // A list with no rows has no end to scroll to: it reads on as soon as there is more, such as
   // a search with no match yet in a run that goes on.
@@ -144,7 +153,9 @@ export function RawEvents({
             }
             onKey={go}
             onNearEnd={() => {
-              if (list.hasNextPage && !list.isFetchingNextPage) void list.fetchNextPage();
+              if (!list.hasNextPage || list.isFetchingNextPage) return;
+              qc.setQueryData(raw.queryKey, joinLast);
+              void list.fetchNextPage();
             }}
             onNearStart={() => {
               if (list.hasPreviousPage && !list.isFetchingPreviousPage)

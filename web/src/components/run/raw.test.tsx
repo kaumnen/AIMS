@@ -4,6 +4,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { Event } from "@/api/events";
 import { rawEventsQuery, type RawPage } from "@/api/run";
+import { RunTail } from "@/api/tail";
+import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
 
 import { RawEvents } from "./raw";
@@ -24,6 +26,8 @@ const range = (from: number, to: number) =>
 // from `before` when only it is given.
 beforeEach(() => {
   reads = [];
+  FakeEventSource.all = [];
+  vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const q = new URL(request.url).searchParams;
@@ -88,4 +92,86 @@ test("a list whose reads swap its ends reads back only once the reader moves up"
   await waitFor(() => expect(reads).toEqual(["before=100", "after=148"]));
   await rest(box);
   expect(reads).toEqual(["before=100", "after=148"]);
+});
+
+// A tail on the run, with its frames run by hand, and a tool call that matches no search.
+function live(qc: QueryClient, after: number) {
+  const frames: (() => void)[] = [];
+  const tail = new RunTail(RUN, qc, (fn) => frames.push(fn));
+  tail.start(after);
+  const source = FakeEventSource.all.at(-1);
+  if (!source) throw new Error("no stream");
+  return {
+    tail,
+    batch: (seq: number) => {
+      act(() => source.send({ kind: "events", run_id: RUN, events: [event(seq, "tool.call")] }));
+      act(() => {
+        for (const fn of frames.splice(0)) fn();
+      });
+    },
+  };
+}
+
+const pagesOf = (qc: QueryClient, search: { q: string }) =>
+  qc.getQueryData<InfiniteData<RawPage>>(rawEventsQuery(RUN, search).queryKey)?.pages ?? [];
+
+test("a search on a live run keeps its matches however many batches match nothing", async () => {
+  log = [3, 5, 8].map((seq) => event(seq, "tool.call", { q: "pytest" }));
+  const qc = new QueryClient();
+  const { tail, batch } = live(qc, 10);
+  const search = { q: "pytest" };
+  await show(qc, search);
+  expect(await screen.findByText("3 events")).toBeTruthy();
+  let blank = 0;
+  for (let seq = 11; seq <= 70; seq++) {
+    batch(seq);
+    // oxlint-disable-next-line no-await-in-loop
+    await wait(20);
+    if (screen.queryByText("No events match.")) blank++;
+  }
+  expect(blank).toBe(0);
+  expect(await screen.findByText("3 events")).toBeTruthy();
+  await waitFor(() => expect(pagesOf(qc, search)).toHaveLength(1));
+  tail.stop();
+});
+
+test("a read on at the page cap that finds no match lets one far page go at most", async () => {
+  log = Array.from({ length: 10_000 }, (_, i) => event(i * 2, "tool.call", { q: "pytest" }));
+  const qc = new QueryClient();
+  const search = { q: "pytest" };
+  qc.setQueryData<InfiniteData<RawPage>>(rawEventsQuery(RUN, search).queryKey, {
+    pages: Array.from({ length: 50 }, (_, p) => ({
+      items: log.slice(p * 200, p * 200 + 200),
+      older: p === 0 ? null : p * 400,
+      newer: p === 49 ? null : p * 400 + 398,
+    })),
+    pageParams: Array.from({ length: 50 }, (_, p) => (p === 0 ? null : { after: p * 400 - 2 })),
+  });
+  const { tail, batch } = live(qc, 19_998);
+  const list = await show(qc, search);
+  // the reader is at the end
+  const box = list.parentElement as HTMLElement;
+  box.scrollTop = 10_000 * ROW;
+  fireEvent.scroll(box);
+  const rows = () => pagesOf(qc, search).reduce((n, p) => n + p.items.length, 0);
+  const key = rawEventsQuery(RUN, search).queryKey;
+  // read `n` landed and the list is at its end again
+  const landed = (n: number) =>
+    waitFor(() => {
+      expect(reads).toHaveLength(n);
+      expect(qc.getQueryState(key)?.fetchStatus).toBe("idle");
+      expect(pagesOf(qc, search).at(-1)?.newer).toBeNull();
+    });
+  batch(20_001);
+  await waitFor(() => expect(reads).toHaveLength(1));
+  // more comes while that read is under way: the list reads on as soon as it lands
+  batch(20_003);
+  await landed(2);
+  expect(rows()).toBe(9800);
+  batch(20_005);
+  await landed(3);
+  await rest(box);
+  expect(reads).toEqual(["after=19998", "after=19998", "after=19998"]);
+  expect(rows()).toBe(9800);
+  tail.stop();
 });
