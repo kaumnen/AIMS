@@ -16,8 +16,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 });
 
 // Everything waits on who is signed in; a 401 anywhere brings back the sign-in form in place.
-// The page stays under it, hidden and idle, so the same one signing in again finds a draft as
-// it was. Someone else gets a page of their own.
+// A control plane out of reach says so. The page stays under either, hidden and idle, so the
+// same one back again finds a draft as it was. Someone else gets a page of their own.
 function Root() {
   const queryClient = useQueryClient();
   const me = useQuery({ ...whoami, retry: false, staleTime: Infinity });
@@ -32,17 +32,18 @@ function Root() {
   }, [queryClient]);
   useEffect(() => watchSession(queryClient), [queryClient]);
 
-  const out = (me.error as Problem | null)?.status === 401;
-  if (me.data === undefined || (me.isError && !out)) {
-    if (me.isPending) return null;
-    return out ? <SignIn /> : <Unreachable retry={() => void me.refetch()} />;
-  }
+  const cover = !me.isError ? null : (me.error as Problem | null)?.status === 401 ? (
+    <SignIn />
+  ) : (
+    <Unreachable retry={() => void me.refetch()} />
+  );
+  if (me.data === undefined) return cover;
   return (
     <TooltipProvider>
-      {out && <SignIn />}
+      {cover}
       <Activity
         key={`${me.data.name}\n${me.data.role}\n${me.data.auth}`}
-        mode={out ? "hidden" : "visible"}
+        mode={cover ? "hidden" : "visible"}
       >
         <LiveProvider onClosed={async () => (await me.refetch()).isSuccess}>
           <div data-shell className="flex h-dvh flex-col print:h-auto">

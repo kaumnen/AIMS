@@ -1,5 +1,6 @@
-// A session that ends under an open draft: the sign-in form shows over the page, which keeps the
-// draft for the same one signing in again. Someone else starts from nothing.
+// A session that ends under an open draft, or a control plane out of reach: the sign-in form or
+// the outage screen shows over the page, which keeps the draft for the same one coming back.
+// Someone else starts from nothing.
 import { EditorView } from "@codemirror/view";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -14,6 +15,8 @@ const TEXT = "version: 1\nname: cache-keys\noversight: observe\n";
 // who the cookie names, null for nobody; a sign-in makes it `next`
 let who: string | null;
 let next: string;
+// a proxy answers in place of the control plane
+let away: boolean;
 
 const detail = {
   source: "project",
@@ -44,11 +47,13 @@ beforeAll(() => {
 beforeEach(() => {
   who = "op";
   next = "op";
+  away = false;
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const path = new URL(request.url).pathname;
+    if (away) return new Response(null, { status: 502, headers: { "Content-Length": "0" } });
     if (path === "/api/session" && request.method === "POST") {
       who = next;
       return new Response(null, { status: 204 });
@@ -132,6 +137,24 @@ test.each([
   expect(await text()).toBe(`# mine\n${TEXT}`);
   expect(screen.getByText("unsaved changes")).toBeTruthy();
   // its stream opens again
+  await waitFor(() => expect(usable()).toHaveLength(1));
+});
+
+test("a draft is still there when the control plane is back after an outage", async () => {
+  const { source, followed } = await draft();
+  away = true;
+  act(() => source.fail(true));
+  const again = await screen.findByRole("button", { name: "Try again" });
+  // the page waits hidden under the outage screen, with no stream and no read but the session
+  expect(screen.queryByRole("tab", { name: "Files" })).toBeNull();
+  await waitFor(() => expect(usable()).toHaveLength(0));
+  expect(followed()).toEqual([["get", "/api/session"]]);
+  away = false;
+  fireEvent.click(again);
+  await screen.findByRole("tab", { name: "Files" });
+  expect(screen.queryByText(/Cannot reach/)).toBeNull();
+  expect(await text()).toBe(`# mine\n${TEXT}`);
+  expect(screen.getByText("unsaved changes")).toBeTruthy();
   await waitFor(() => expect(usable()).toHaveLength(1));
 });
 
