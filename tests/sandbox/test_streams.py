@@ -33,8 +33,8 @@ from aims.sandbox import (
     SandboxStoppedError,
 )
 from aims.sandbox.base import TOOLBOX, Capture
-from aims.sandbox.docker import _helper
-from aims.sandbox.execs import DockerClient, open_stream, refused
+from aims.sandbox.docker import _call, _helper
+from aims.sandbox.execs import DockerClient, exec_output, open_stream, refused
 from aims.sandbox.reader import stream_archive
 
 pytestmark = pytest.mark.anyio
@@ -57,7 +57,8 @@ class Daemon:
     call in `cut` midway, as a daemon that dies or restarts does: `wait` after its header, `logs`
     and `archive` after their first chunk, the first exec's stream after its first output. A
     restarted daemon has no record of an exec it cut. With `lost` in `cut`, only the connection
-    of the first exec's stream drops: that exec runs on until an `aims-exec -k` ends it."""
+    of the first exec's stream drops: that exec runs on until an `aims-exec -k` ends it. With
+    `kill` too, the first kill's connection drops as well."""
 
     def __init__(self, cut: set[str]) -> None:
         self.cut = cut
@@ -65,6 +66,8 @@ class Daemon:
         self.execs = 0
         self.forgot: set[str] = set()
         self.kills: list[list[str]] = []
+        # the execs of the kills, by name
+        self.killers: list[str] = []
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
@@ -79,6 +82,7 @@ class Daemon:
                 self.calls.append(f"{method} {path}")
                 if path == "containers/c1/exec" and "-k" in (cmd := json.loads(body)["Cmd"]):
                     self.kills.append(cmd)
+                    self.killers.append(f"e{self.execs + 1}")
                 if not await self.answer(method, path, writer):
                     break
         writer.close()
@@ -125,6 +129,9 @@ class Daemon:
         elif path == f"exec/{name}/json":
             if name in self.forgot:
                 self.reply(writer, "404 Not Found", {"message": f"No such exec instance: {name}"})
+            elif "kill" in self.cut and self.killers[:1] == [name]:
+                state = {"Running": True, "ExitCode": None, "Pid": 43}
+                self.reply(writer, "200 OK", {**state, "ProcessConfig": {"tty": False}})
             elif "lost" in self.cut and name == "e1":
                 running = not self.kills
                 state = {"Running": running, "ExitCode": None if running else 137, "Pid": 42}
@@ -233,6 +240,24 @@ async def test_images_prune_goes_on_past_an_image_whose_delete_reply_the_daemon_
     assert deleted == ["DELETE images/aims-env:aaaa", "DELETE images/aims-env:bbbb"]
 
 
+@pytest.mark.parametrize("call", ["output", "exit code"])
+async def test_a_short_exec_whose_stream_is_lost_raises_a_docker_error(call: str) -> None:
+    """Docker ends an exec's stream once the exec ended. A stream that ends while the exec runs
+    on lost its connection, so what came is not all of the exec's output."""
+
+    def run(docker: aiodocker.Docker) -> Any:
+        container = DockerContainer(docker, id="c1")
+        if call == "output":
+            return exec_output(container, ["x"], timeout_s=5)
+        return _call(container, ["x"], "root")
+
+    async with serving({"lost"}) as (_, docker):
+        with pytest.raises(aiodocker.DockerStreamError, match="connection to Docker was lost"):
+            await run(docker)
+    async with serving(set()) as (_, docker):
+        assert await run(docker) == (b"hi\n" if call == "output" else 0)
+
+
 async def test_a_close_whose_container_delete_the_daemon_cuts_still_removes_the_volumes() -> None:
     """aiodocker reads the body of an error reply before it raises, so that read is cut too."""
     async with serving({"DELETE containers/c1"}) as (daemon, docker):
@@ -262,14 +287,18 @@ class Backend:
         pass
 
 
-@pytest.mark.parametrize("cut", ["open", "midway", "lost"])
+CUTS = {"midway": {"exec"}, "lost": {"lost"}, "lost kill": {"lost", "kill"}}
+
+
+@pytest.mark.parametrize("cut", ["open", "midway", "lost", "lost kill"])
 async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
     cut: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Cut as it opens, the socket set-up fails: macOS refuses a socket option on a socket the
     daemon closed. Cut midway, the stream ends early and a daemon that restarted has no record of
     the exec. Lost midway, the stream ends early and the exec runs on, so it is ended. Each way
-    the exec ends as failed, which stops the sandbox."""
+    the exec ends as failed, which stops the sandbox. A kill whose own stream is lost may still
+    have ended it, so the exec is looked at again."""
     real = trsock.TransportSocket.setsockopt
     refused: list[int] = []
 
@@ -282,7 +311,7 @@ async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
     monkeypatch.setattr(trsock.TransportSocket, "setsockopt", setsockopt)
     spec = SandboxSpec(image="img")
     async with (
-        serving({"midway": {"exec"}, "lost": {"lost"}}.get(cut, set())) as (daemon, docker),
+        serving(CUTS.get(cut, set())) as (daemon, docker),
         await LocalEventStore.open(tmp_path / "runs") as store,
     ):
         backend = SimpleNamespace(tracer=None, docker=docker)
@@ -311,7 +340,7 @@ async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
         ("sandbox.stopped", None, "exec_failed"),
     ]
     assert "POST containers/c1/kill" in daemon.calls
-    if cut == "lost":
+    if cut.startswith("lost"):
         # The exec is ended before the sandbox is stopped.
         assert result.finished.error == "the connection to Docker was lost while the exec ran"
         assert [k[:2] for k in daemon.kills] == [[f"{TOOLBOX}/aims-exec", "-k"]]

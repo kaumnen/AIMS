@@ -6,6 +6,7 @@ from typing import Any
 import aiodocker
 import aiohttp
 from aiodocker.containers import DockerContainer
+from aiodocker.execs import Exec
 from aiodocker.stream import Stream
 from aiohttp import BytesPayload
 from aiohttp.abc import AbstractStreamWriter
@@ -117,7 +118,8 @@ def _drop(stream: Stream) -> None:
 
 
 async def exec_output(container: DockerContainer, argv: list[str], *, timeout_s: int) -> bytes:
-    """Run `argv` in `container` and return what it wrote to stdout.
+    """Run `argv` in `container` and return what it wrote to stdout. One whose stream is cut
+    raises a DockerStreamError.
 
     The command runs under the container's `timeout`, so it is killed when the wait gives up.
     """
@@ -132,4 +134,15 @@ async def exec_output(container: DockerContainer, argv: list[str], *, timeout_s:
                     out += message.data
         finally:
             await stream.close()
+        await ended(run)
         return bytes(out)
+
+
+async def ended(run: Exec) -> dict[str, Any]:
+    """What Docker says of `run`, an exec whose stream ended. Docker ends that stream only once
+    it has recorded the exec's end, so an exec still running lost its connection to the daemon:
+    that raises a DockerStreamError."""
+    state = await run.inspect()
+    if state.get("Running"):
+        raise aiodocker.DockerStreamError("the connection to Docker was lost while the exec ran")
+    return state

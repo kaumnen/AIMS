@@ -36,7 +36,7 @@ from aims.sandbox.base import (
     check_name,
 )
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import DockerClient, lost_socket, open_stream, refused, streamed
+from aims.sandbox.execs import DockerClient, ended, lost_socket, open_stream, refused, streamed
 from aims.sandbox.images import (
     KEEP_DAYS,
     LockError,
@@ -911,8 +911,16 @@ class DockerSandbox:
                     if state.get("Running"):
                         why = "it was still starting"
                         if state.get("Pid"):
-                            code = await _call(self._container, kill, user)
-                            why = f"the kill exited {code}" if code else "it ran on after the kill"
+                            try:
+                                code = await _call(self._container, kill, user)
+                            except aiodocker.DockerStreamError as e:
+                                why = f"the kill was cut: {e.message}"
+                            else:
+                                why = (
+                                    f"the kill exited {code}"
+                                    if code
+                                    else "it ran on after the kill"
+                                )
                     elif state.get("ExitCode") is not None or state.get("Pid"):
                         return None
                     await asyncio.sleep(END_POLL_S)
@@ -1232,7 +1240,8 @@ async def _read_feeding(
 
 
 async def _call(container: DockerContainer, argv: list[str], user: str) -> int | None:
-    """Run `argv` in `container` as `user`, wait for it to end and return its exit code."""
+    """Run `argv` in `container` as `user`, wait for it to end and return its exit code. One
+    whose stream is cut raises a DockerStreamError."""
     exe = await container.exec(argv, user=user, workdir="/", stdout=True, stderr=True)
     stream = await open_stream(exe.start(detach=False))
     try:
@@ -1240,7 +1249,7 @@ async def _call(container: DockerContainer, argv: list[str], user: str) -> int |
             pass
     finally:
         await stream.close()
-    return (await exe.inspect()).get("ExitCode")
+    return (await ended(exe)).get("ExitCode")
 
 
 async def _feed(stream: Any, data: bytes) -> None:
