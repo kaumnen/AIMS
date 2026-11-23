@@ -1201,7 +1201,9 @@ class Runner:
         )
         out = await run(read, VERIFY_PREP_S, cwd="/", limit=REWARD_BYTES + 3)
         kind, _, body = out.stdout.partition(b"\n")
-        reward, metrics, source, error = _reward(kind, body)
+        # A reward.json near REWARD_BYTES can take most of a second to read. It is read off the
+        # loop, so the live view, the monitor and the agents still running go on meanwhile.
+        reward, metrics, source, error = await asyncio.to_thread(_reward, kind, body)
         if f.end != "exited":
             ended = f"the verifier ended with {f.end}"
             error = ended if error is None else f"{ended}; {error}"

@@ -572,6 +572,21 @@ async def test_a_verifier_that_ends_early_says_so_beside_the_note_on_its_reward(
 
 
 @pytest.mark.anyio
+async def test_the_reward_file_is_read_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    read: list[int] = []
+
+    def reward(kind: bytes, body: bytes) -> Any:
+        read.append(threading.get_ident())
+        return _reward(kind, body)
+
+    monkeypatch.setattr("aims.run.runner._reward", reward)
+    scored = await verify(Verifier(b'{"reward": 0.5}'))
+    assert scored.reward == 0.5
+    assert len(read) == 1
+    assert read[0] != threading.get_ident()
+
+
+@pytest.mark.anyio
 async def test_a_reward_file_past_the_read_cap_is_not_read_whole() -> None:
     big = json.dumps({"reward": 1, "log": "x" * (2 * REWARD_BYTES)}).encode()
     sandbox = Verifier(big)
