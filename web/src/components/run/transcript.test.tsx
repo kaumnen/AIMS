@@ -1,7 +1,7 @@
 // The step view's labels for an exec whose output ran past its limit. `truncated` is one flag
 // for both streams.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { Event } from "@/api/events";
@@ -111,6 +111,56 @@ test("a step names the provider that served its answer", async () => {
   show({ stdout: "a\n", stderr: "" }, { provider: "Wafer\u202e", latency_ms: 1500 });
   const heading = await screen.findByRole("heading", { name: /^Step 1/ });
   expect(heading.textContent).toBe("Step 11.5 s · via Wafer\\u202E");
+});
+
+test("the last step shows what the verifier ran and what it printed", async () => {
+  const qc = new QueryClient();
+  const last = {
+    ...step,
+    tools: [{ seq: 3, call_id: "c1", name: "submit", execs: [], done: true }],
+  };
+  const events = [
+    ev(1, "model.response", { call_id: "m1", text: "", finish_reason: "tool_calls" }),
+    ev(2, "agent.step", { n: 1, call_id: "m1", status: "completed" }),
+    ev(3, "tool.call", { call_id: "c1", name: "submit", arguments: '{"answer": "done"}' }),
+    ev(4, "tool.result", { call_id: "c1", output: "submitted" }),
+    ev(5, "agent.finished", { reason: "submitted", answer: "done", steps: 1 }),
+    ev(6, "exec.started", {
+      exec_id: "v1",
+      command: "python -m pytest /grader",
+      phase: "verifier",
+    }),
+    ev(7, "exec.finished", {
+      exec_id: "v1",
+      exit_code: 1,
+      end: "exited",
+      procs: 4,
+      stdout: "1 failed, 2 passed",
+      stderr: "boom",
+    }),
+    ev(8, "task.scored", { reward: 0.5, metrics: { passed: 2, total: 3 } }),
+  ];
+  qc.setQueryData(stepEventsQuery(RUN, last, 0, true).queryKey, events);
+  qc.setQueryData(activityQuery(RUN, []).queryKey, new Map());
+  qc.setQueryData(
+    activityQuery(RUN, ["v1"]).queryKey,
+    new Map([
+      ["v1", { exec_id: "v1", events: 9, changes: 0, types: { "proc.exec": 4 }, file_ops: {} }],
+    ]),
+  );
+  render(
+    <QueryClientProvider client={qc}>
+      <Transcript runId={RUN} step={last} after={0} last multi={false} />
+    </QueryClientProvider>,
+  );
+  const verifier = (await screen.findByText("Reward 0.50, 2 of 3 tests passed")).closest("section");
+  if (!verifier) throw new Error("no verifier section");
+  const shown = within(verifier);
+  expect(shown.getByText("Ran 4 processes")).toBeTruthy();
+  expect(shown.getByText("python -m pytest /grader")).toBeTruthy();
+  expect(shown.getByText("1 failed, 2 passed")).toBeTruthy();
+  expect(shown.getByText("boom")).toBeTruthy();
+  expect(shown.getByRole("button", { name: /4 procs/ })).toBeTruthy();
 });
 
 test("a step whose answer names no provider says nothing of one", async () => {

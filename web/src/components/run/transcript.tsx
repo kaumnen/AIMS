@@ -114,6 +114,12 @@ export function Transcript({
   const tools = step.tools ?? [];
   const execs = tools.flatMap((t) => t.execs ?? []).slice(0, MAX_EXECS);
   const activity = useQuery(activityQuery(runId, execs));
+  // what the verifier ran after the agent, with no tool call of its own
+  const checks = (q.data ?? []).filter(
+    (e) => e.type === "exec.started" && data(e)["phase"] === "verifier",
+  );
+  const idOf = (e: Event) => String(data(e)["exec_id"]);
+  const checked = useQuery(activityQuery(runId, checks.map(idOf)));
   const article = useRef<HTMLElement>(null);
   const lit = (...seqs: (number | undefined)[]) =>
     seqs.some((n) => n !== undefined && focus.seqs.has(n)) ? focus.tone : undefined;
@@ -247,7 +253,25 @@ export function Transcript({
           )}
         </Section>
       )}
-      {scored && <Score event={scored} lit={lit(scored.seq)} />}
+      {scored && (
+        <Score
+          event={scored}
+          lit={lit(scored.seq, ...checks.flatMap((e) => [e.seq, finished.get(idOf(e))?.seq]))}
+        >
+          {checks.map((e) => (
+            <Exec
+              key={idOf(e)}
+              runId={runId}
+              execId={idOf(e)}
+              started={e}
+              finished={finished.get(idOf(e))}
+              activity={checked.data?.get(idOf(e))}
+              focus={focus.execs.get(idOf(e))}
+              tone={focus.tone}
+            />
+          ))}
+        </Score>
+      )}
       {children}
     </article>
   );
@@ -439,7 +463,15 @@ const end = (runId: string, f: Data, name: string) => {
   ) : null;
 };
 
-function Score({ event, lit }: { event: Event; lit: Tone | undefined }) {
+function Score({
+  event,
+  lit,
+  children,
+}: {
+  event: Event;
+  lit: Tone | undefined;
+  children: ReactNode;
+}) {
   const d = data(event);
   const metrics = (d["metrics"] ?? {}) as Data;
   const passed = num(metrics["passed"]);
@@ -451,6 +483,7 @@ function Score({ event, lit }: { event: Event; lit: Tone | undefined }) {
         {reward === undefined ? "No reward" : `Reward ${reward.toFixed(2)}`}
         {passed !== undefined && total !== undefined ? `, ${passed} of ${total} tests passed` : ""}
       </p>
+      {children}
     </Section>
   );
 }
