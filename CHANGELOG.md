@@ -73,6 +73,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- A run report holds at most 64 KiB of each text and 1 MiB in all. A cut text says how many bytes it left out, in the JSON, the Markdown and the UI. A large answer made the report as large as the answer. One blob behind many references was read once for each.
 - The control plane loads a fork's origin without the tool outputs only a replay uses. It read each of them whole, once per reference.
 - A runner decodes a job's inputs only up to the size their references state.
 - The judge's blob tool reads only the window it was asked for. Each page decoded the whole blob.

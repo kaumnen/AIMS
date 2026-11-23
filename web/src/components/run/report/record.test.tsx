@@ -277,8 +277,8 @@ test("no other source says none", async () => {
 test("the appendix holds answers, reports and disagreements as written", async () => {
   state.report = fullReport({
     appendix: {
-      answers: [{ agent: "agent", seq: 19, step: 3, text: "<img src=x onerror=alert(1)>" }],
-      reports: [{ agent: "agent", seq: 12, step: null, text: "I changed\n  the keys." }],
+      answers: [{ agent: "agent", seq: 19, step: 3, text: "<img src=x onerror=alert(1)>", cut: 0 }],
+      reports: [{ agent: "agent", seq: 12, step: null, text: "I changed\n  the keys.", cut: 0 }],
       disagreements: ["Rollouts differed on drift.", "**not bold**"],
     },
   });
@@ -304,6 +304,19 @@ test("the appendix holds answers, reports and disagreements as written", async (
   await waitFor(() =>
     expect(router.state.location.search).toMatchObject({ seq: 19, source: REVIEW }),
   );
+});
+
+test("a text the report cut counts the bytes it left out", async () => {
+  state.report = fullReport({
+    appendix: {
+      answers: [{ agent: "agent", seq: 19, step: 3, text: "The head.", cut: 1_000_000 }],
+      reports: [{ agent: "agent", seq: 12, step: null, text: "Whole.", cut: 0 }],
+      disagreements: [],
+    },
+  });
+  const fold = await section("Appendix");
+  expect(fold.getByText("1,000,000 more bytes left out of the report.")).toBeTruthy();
+  expect(fold.queryAllByText(/left out of the report/)).toHaveLength(1);
 });
 
 test("an empty appendix says none", async () => {

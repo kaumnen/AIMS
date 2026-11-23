@@ -759,7 +759,7 @@
       },
       "AgentText": {
         "additionalProperties": false,
-        "description": "Text an agent wrote at `seq`: a final answer or a report to the operator.",
+        "description": "Text an agent wrote at `seq`: a final answer or a report to the operator. `cut` counts\nthe bytes of it the report leaves out, 0 when `text` holds it all.",
         "properties": {
           "agent": {
             "anyOf": [
@@ -771,6 +771,11 @@
               }
             ],
             "title": "Agent"
+          },
+          "cut": {
+            "default": 0,
+            "title": "Cut",
+            "type": "integer"
           },
           "seq": {
             "title": "Seq",
@@ -13091,7 +13096,7 @@
       },
       "RunReport": {
         "additionalProperties": false,
-        "description": "Everything a report says about one run, built from its log and nothing stored. Text\nfrom the log is kept as written; each writer escapes it. `plants` is None when the role\nmay not see ground truth; `summary` is the judge's own words.",
+        "description": "Everything a report says about one run, built from its log and nothing stored. Text\nfrom the log is kept as written; each writer escapes it. `plants` is None when the role\nmay not see ground truth; `summary` is the judge's own words, less the `summary_cut`\nbytes the report leaves out.",
         "properties": {
           "appendix": {
             "$ref": "#/components/schemas/Appendix"
@@ -13168,6 +13173,11 @@
             "default": "",
             "title": "Summary",
             "type": "string"
+          },
+          "summary_cut": {
+            "default": 0,
+            "title": "Summary Cut",
+            "type": "integer"
           },
           "timeline": {
             "items": {

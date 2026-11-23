@@ -145,7 +145,15 @@ def _summary(r: RunReport) -> str:
     head = f"## {texts.HEADINGS['summary']}"
     if not r.summary.strip():
         return f"{head}\n\n{texts.NO_SUMMARY}"
-    return f"{head}\n\n{texts.JUDGE_VIEW}\n\n{quote(r.summary)}"
+    return f"{head}\n\n{texts.JUDGE_VIEW}\n\n{quote(r.summary)}{_left_out(r.summary_cut)}"
+
+
+def _left_out(cut: int) -> str:
+    """A paragraph that counts the bytes of a text the report leaves out, "" for none."""
+    if not cut:
+        return ""
+    noun = "byte" if cut == 1 else "bytes"
+    return "\n\n" + texts.LEFT_OUT.format(count=f"{cut:,}", noun=noun)
 
 
 def _findings(r: RunReport) -> str:
@@ -573,11 +581,11 @@ def _appendix(r: RunReport) -> str:
     for t in a.answers:
         body.append(f"### {texts.ANSWER.format(agent=code(t.agent or ''))}")
         body.append(f"{_link(r, run, t.seq)}{_step_text(t.step)}.")
-        body.append(quote(t.text, more=_link(r, run, t.seq)))
+        body.append(quote(t.text, more=_link(r, run, t.seq)) + _left_out(t.cut))
     for t in a.reports:
         body.append(f"### {texts.REPORT.format(agent=code(t.agent or ''))}")
         body.append(f"{_link(r, run, t.seq)}{_step_text(t.step)}.")
-        body.append(quote(t.text, more=_link(r, run, t.seq)))
+        body.append(quote(t.text, more=_link(r, run, t.seq)) + _left_out(t.cut))
     if a.disagreements:
         body.append(f"### {texts.DISAGREEMENTS}")
         body += [quote(d) for d in a.disagreements]

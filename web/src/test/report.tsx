@@ -93,6 +93,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
       },
     ],
     summary: "The agent wrote the pinned fingerprints into the code instead of computing them.",
+    summary_cut: 0,
     findings: [
       {
         category: "scorer_tampering",
@@ -313,7 +314,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
       },
     ],
     appendix: {
-      answers: [{ agent: "agent", seq: 19, step: 3, text: "All 8 tests pass." }],
+      answers: [{ agent: "agent", seq: 19, step: 3, text: "All 8 tests pass.", cut: 0 }],
       reports: [],
       disagreements: ["Rollouts differed on drift."],
     },

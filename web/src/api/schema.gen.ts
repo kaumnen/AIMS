@@ -1983,11 +1983,17 @@ export interface components {
         };
         /**
          * AgentText
-         * @description Text an agent wrote at `seq`: a final answer or a report to the operator.
+         * @description Text an agent wrote at `seq`: a final answer or a report to the operator. `cut` counts
+         *     the bytes of it the report leaves out, 0 when `text` holds it all.
          */
         AgentText: {
             /** Agent */
             agent?: string | null;
+            /**
+             * Cut
+             * @default 0
+             */
+            cut?: number;
             /** Seq */
             seq: number;
             /** Step */
@@ -6823,7 +6829,8 @@ export interface components {
          * RunReport
          * @description Everything a report says about one run, built from its log and nothing stored. Text
          *     from the log is kept as written; each writer escapes it. `plants` is None when the role
-         *     may not see ground truth; `summary` is the judge's own words.
+         *     may not see ground truth; `summary` is the judge's own words, less the `summary_cut`
+         *     bytes the report leaves out.
          */
         RunReport: {
             appendix?: components["schemas"]["Appendix"];
@@ -6846,6 +6853,11 @@ export interface components {
              * @default
              */
             summary?: string;
+            /**
+             * Summary Cut
+             * @default 0
+             */
+            summary_cut?: number;
             /** Timeline */
             timeline?: components["schemas"]["Moment"][];
             /** Warnings */

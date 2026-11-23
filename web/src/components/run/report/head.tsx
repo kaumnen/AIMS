@@ -376,7 +376,7 @@ export function SummarySection({ report }: SectionProps) {
       {blank ? (
         <p className="text-muted-foreground">{NO_SUMMARY}</p>
       ) : (
-        <Quote>{report.summary}</Quote>
+        <Quote left={report.summary_cut}>{report.summary}</Quote>
       )}
     </Section>
   );

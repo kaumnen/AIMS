@@ -1,6 +1,7 @@
 """Gather a run's report from its log, its monitor runs, its score runs and its labels."""
 
 import bisect
+import codecs
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any, get_args
@@ -62,6 +63,10 @@ from aims.report.model import (
 from aims.run.score import CheckError, check_run, gaps_of
 
 PAGE = 1000
+TEXT_BYTES = 64 * 1024
+"""The most bytes of one text in a blob that a report holds."""
+TEXTS_BYTES = 1024 * 1024
+"""The most bytes of text in blobs that a report holds in all."""
 NOT_REPORTED = frozenset({"monitor", "score", "models.check", "selftest"})
 TIMELINE_IMPORTANCE = 3
 KERNEL_TYPES = frozenset(
@@ -210,14 +215,22 @@ async def build(
         held_started.config if review and isinstance(held_started, RunStarted) else None,
     )
     sources = await _sources(store, run_id, info, started, reviews, picked, facts, marks)
+    room = _Room()
+    summary, summary_cut = (
+        ("", 0) if verdict is None else await _content(store, holder, verdict.summary, room)
+    )
     appendix = Appendix(
         answers=[
-            AgentText(agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t)
-            for e, t in await _texts(store, run_id, marks, AgentFinished, "answer")
+            AgentText(
+                agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t, cut=c
+            )
+            for e, t, c in await _texts(store, run_id, marks, AgentFinished, "answer", room)
         ],
         reports=[
-            AgentText(agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t)
-            for e, t in await _texts(store, run_id, marks, AgentReport, "message")
+            AgentText(
+                agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t, cut=c
+            )
+            for e, t, c in await _texts(store, run_id, marks, AgentReport, "message", room)
         ],
         disagreements=[] if verdict is None else list(verdict.disagreements),
     )
@@ -258,7 +271,8 @@ async def build(
         ),
         headline=headline,
         warnings=warnings,
-        summary="" if verdict is None else await _content(store, holder, verdict.summary),
+        summary=summary,
+        summary_cut=summary_cut,
         findings=_findings(verdict),
         observations=[] if verdict is None else list(verdict.anomalies),
         plants=plants,
@@ -310,26 +324,50 @@ def _of[T: Payload](events: Iterable[Event], cls: type[T]) -> list[tuple[Event, 
     return out
 
 
-async def _content(store: LocalEventStore, run_id: str, value: Content | None) -> str:
+class _Room:
+    """The bytes of blob text a report may still hold, of TEXTS_BYTES."""
+
+    def __init__(self) -> None:
+        self.left = TEXTS_BYTES
+
+
+async def _content(
+    store: LocalEventStore, run_id: str, value: Content | None, room: _Room
+) -> tuple[str, int]:
+    """`value` as text, with the bytes of its blob the report leaves out. A blob gives at most
+    TEXT_BYTES and what `room` has left; the read checks it whole and holds only those."""
     if value is None:
-        return ""
-    if isinstance(value, BlobRef):
-        try:
-            data = await store.get_blob(run_id, value.sha256, value.size)
-        except BlobError as e:
-            return f"({e})"
-        return data.decode("utf-8", errors="replace")
-    return value
+        return "", 0
+    if not isinstance(value, BlobRef):
+        return value, 0
+    take = min(TEXT_BYTES, room.left)
+    if take == 0:
+        return "", value.size
+    try:
+        part = await store.get_part(run_id, value.sha256, 0, take, value.size)
+    except BlobError as e:
+        return f"({e})", 0
+    # a cut inside a character holds back its first bytes, which then count as left out
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    text = decoder.decode(part.data, final=len(part.data) == part.size)
+    held = len(part.data) - len(decoder.getstate()[0])
+    room.left -= held
+    return text, part.size - held
 
 
 async def _texts(
-    store: LocalEventStore, run_id: str, marks: Sequence[Event], cls: type[Payload], field: str
-) -> list[tuple[Event, str]]:
+    store: LocalEventStore,
+    run_id: str,
+    marks: Sequence[Event],
+    cls: type[Payload],
+    field: str,
+    room: _Room,
+) -> list[tuple[Event, str, int]]:
     out = []
     for e, payload in _of(marks, cls):
-        text = await _content(store, run_id, getattr(payload, field))
-        if text.strip():
-            out.append((e, text))
+        text, cut = await _content(store, run_id, getattr(payload, field), room)
+        if text.strip() or cut:
+            out.append((e, text, cut))
     return out
 
 

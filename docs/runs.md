@@ -52,6 +52,7 @@ aims report <run> --html report.html   # one self-contained HTML page to print o
 
 - A report is built from the log each time. Nothing is stored. Its header pins every input. Two builds of the same inputs give the same bytes apart from the build time.
 - Text from the log is escaped, so an agent cannot forge headings, links or alerts.
+- A report holds at most 64 KiB of each answer, message or summary kept in a blob. It holds 1 MiB of such text in all. It counts the bytes it left out.
 - A report takes its monitor from the newest finished review of the run, else from the live monitor. `--source` or the API's `?source=` picks another.
 - The run page in the UI has a **Report** tab with a Markdown download.
 - When part of a run's cost is at a [list price](models.md#list-prices), the report says how much for each profile, with the row and the date of the copy. The run page says it under the run's cost.

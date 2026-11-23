@@ -186,8 +186,17 @@ export function RunLink({ run, className }: { run: string; className?: string })
 }
 
 // Text an agent or the judge wrote, kept as written. React escapes it, so it can hold anything.
-// Past PROSE_CHARS it is cut until someone asks for the rest.
-export function Quote({ children, className }: { children: string; className?: string }) {
+// Past PROSE_CHARS it is cut until someone asks for the rest. `left` counts the bytes of it the
+// report itself left out.
+export function Quote({
+  children,
+  className,
+  left = 0,
+}: {
+  children: string;
+  className?: string;
+  left?: number;
+}) {
   const [whole, setWhole] = useState(false);
   // by code point, as Python counts, so a cut never splits an emoji
   const chars = Array.from(children);
@@ -211,6 +220,9 @@ export function Quote({ children, className }: { children: string; className?: s
         >
           Cut, {count(rest, "more character")}.<span className="print:hidden"> Show all</span>
         </button>
+      )}
+      {left > 0 && (
+        <p className="text-muted-foreground">{count(left, "more byte")} left out of the report.</p>
       )}
     </div>
   );

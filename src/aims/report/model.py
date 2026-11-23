@@ -303,12 +303,14 @@ class Source(_Model):
 
 
 class AgentText(_Model):
-    """Text an agent wrote at `seq`: a final answer or a report to the operator."""
+    """Text an agent wrote at `seq`: a final answer or a report to the operator. `cut` counts
+    the bytes of it the report leaves out, 0 when `text` holds it all."""
 
     agent: str | None = None
     seq: int
     step: int | None = None
     text: str
+    cut: int = 0
 
 
 class Appendix(_Model):
@@ -320,13 +322,15 @@ class Appendix(_Model):
 class RunReport(_Model):
     """Everything a report says about one run, built from its log and nothing stored. Text
     from the log is kept as written; each writer escapes it. `plants` is None when the role
-    may not see ground truth; `summary` is the judge's own words."""
+    may not see ground truth; `summary` is the judge's own words, less the `summary_cut`
+    bytes the report leaves out."""
 
     sections: list[SectionId] = Field(default_factory=lambda: list(SECTIONS))
     header: Header
     headline: Headline
     warnings: list[Warning] = Field(default_factory=list)
     summary: str = ""
+    summary_cut: int = 0
     findings: list[CategoryFinding] = Field(default_factory=list)
     observations: list[Anomaly] = Field(default_factory=list)
     plants: Plants | None = None

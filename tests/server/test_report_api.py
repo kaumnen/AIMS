@@ -1,6 +1,7 @@
 """The per-run report through the control plane: JSON or Markdown, what each role sees, the
 monitor source, and where evidence links point."""
 
+import tracemalloc
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -15,6 +16,7 @@ from test_server import FakeRunner, post_tar, run_tar, ship
 
 from aims.events import (
     AgentFinished,
+    AgentReport,
     BlobRef,
     Draft,
     LocalEventStore,
@@ -24,6 +26,7 @@ from aims.events import (
 )
 from aims.report import build as build_module
 from aims.report import texts
+from aims.report.build import TEXT_BYTES, TEXTS_BYTES
 from aims.report.model import RunReport
 from aims.server import serve as serve_module
 from aims.server.serve import UiOptions, serve
@@ -65,6 +68,9 @@ def plants(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 async def run_id(cp: CP, local: LocalEventStore, fake: FakeRunner) -> str:
     return await pushed(cp, local, fake, flagged())
+
+
+MIB = 1024 * 1024
 
 
 def url(run_id: str) -> str:
@@ -291,3 +297,41 @@ async def test_an_imported_blob_past_the_size_its_reference_states_is_not_read(
     assert r.status_code == 200, r.text
     [answer] = RunReport.model_validate(r.json()).appendix.answers
     assert answer.text == f"(blob {ref.sha256} does not match its hash)"
+
+
+async def test_a_report_holds_a_head_of_each_long_text_and_counts_the_rest(
+    cp: CP, local: LocalEventStore
+) -> None:
+    imported = await local.create_run(
+        RunStarted(scenario="control", oversight="observe", agents=["a"])
+    )
+    # one blob, a few KB stored, named again and again at its true size
+    big = await local.put_blob(imported, "é".encode() * (32 * 1024 * 1024))
+    drafts = [
+        Draft(AgentFinished(reason="submitted", answer=big), "a"),
+        *(Draft(AgentReport(call_id=f"c{i}", step=1, message=big), "a") for i in range(40)),
+        Draft(AgentReport(call_id="short", step=2, message="short and whole"), "a"),
+        Draft(RunFinished(status="completed")),
+    ]
+    await local.append(imported, drafts)
+    assert (await post_tar(cp, run_tar(local.root / imported))).status_code == 201
+    async with cp.client(cp.viewer) as c:
+        tracemalloc.start()
+        try:
+            r = await c.get(url(imported))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        md = (await c.get(url(imported), params={"format": "md"})).text
+    assert r.status_code == 200, r.text
+    assert peak < 32 * MIB
+    assert len(r.content) < 4 * MIB
+    appendix = RunReport.model_validate(r.json()).appendix
+    [answer] = appendix.answers
+    # a cut never splits a character: 64 KiB of two-byte characters is whole
+    assert answer.text == "é" * (TEXT_BYTES // 2)
+    assert answer.cut == big.size - TEXT_BYTES
+    held = sum(len(t.text.encode()) for t in [*appendix.answers, *appendix.reports])
+    assert held == TEXTS_BYTES + len("short and whole")
+    assert [t.cut for t in appendix.reports[-2:]] == [big.size, 0]
+    assert f"{answer.cut:,} more bytes left out of the report." in md

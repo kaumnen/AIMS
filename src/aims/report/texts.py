@@ -38,6 +38,7 @@ NO_LINKS = "none. Evidence shows as seq N."
 LABELS_NOTE = "Labels sit beside the log. They are not in the hash chain."
 
 JUDGE_VIEW = "The judge's view, in its own words."
+LEFT_OUT = "{count} more {noun} left out of the report."
 NO_VERDICT = {
     "running": "none yet, the run is in progress",
     "no_monitor": "none, the run had no monitor",

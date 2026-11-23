@@ -337,7 +337,7 @@ function Written({
         <Seq seq={text.seq} onSeq={onSeq} print={print} />
         {text.step === null ? "" : `, step ${text.step}`}.
       </p>
-      <Quote>{text.text}</Quote>
+      <Quote left={text.cut}>{text.text}</Quote>
     </div>
   );
 }
