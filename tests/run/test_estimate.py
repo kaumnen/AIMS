@@ -45,6 +45,7 @@ from aims.run.estimate import (
     WATCH_CACHED_SHARE,
     Estimate,
     History,
+    Past,
     Progress,
     ProviderCredit,
     Tokens,
@@ -976,6 +977,32 @@ async def test_a_fork_pays_for_the_steps_after_its_cut_and_the_monitor_for_every
     end = estimate(found, [replace(base, done={"a": 12})])
     assert end.parts[0].agents.typical_usd == pytest.approx(0.4 * (1 - 0.9**2))
     assert end.parts[0].agents.ceiling_usd == pytest.approx(STEP * TRIES)
+
+
+def test_a_fork_scales_runs_of_other_scenarios_by_the_steps_of_their_model_agents(
+    tmp_path: Path,
+) -> None:
+    """Past runs of another scenario on the same model, each with a scripted agent that took 90
+    steps beside the model agent's 10. A fork that replays 5 of 10 steps pays for its last 5,
+    as it does after runs with no scripted agent."""
+    settings, path = write(tmp_path, budget="{steps: 10, cost_usd: 50}")
+    base = plan(settings, load_scenario(path))
+    for steps in ({"a": 10, "c": 90}, {"a": 10}):
+        past = Past(
+            run_id="r",
+            scenario="other",
+            variant=None,
+            models=(("agent-model", "medium"),),
+            budget=10,
+            monitor=None,
+            agents={"agent-model": Tokens(output=output_for(0.4), cost=0.4)},
+            steps=steps,
+            taken=10,
+        )
+        found = History(runs=[replace(past, run_id=f"r{i}") for i in range(3)])
+        agents = estimate(found, [replace(base, done={"a": 5})]).parts[0].agents
+        assert (agents.tier, agents.runs) == ("models", 3)
+        assert agents.typical_usd == pytest.approx(0.4 * 0.75), steps
 
 
 @pytest.mark.anyio

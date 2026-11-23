@@ -1067,13 +1067,14 @@ def _scale(budget: int, past: Past) -> float:
 def _left(done: Mapping[str, int], past: Past, tier: Tier, scale: float) -> float:
     """The share of a past run's agent cost that a fork replaying `done` steps still pays: its
     steps after the cut, each weighted by its place in the run since the context grows with
-    it, and at least its last step. A run of other agents counts all its steps, scaled."""
+    it, and at least its last step. A run of other agents counts the steps of all its agents
+    that call a model, scaled."""
     if not done:
         return 1.0
     if tier == "scenario":
         taken = float(sum(past.steps.get(a, 0) for a in done))
     else:
-        taken = sum(past.steps.values()) * scale
+        taken = past.taken * scale
     if taken <= 1:
         return 1.0
     replayed = min(float(sum(done.values())), taken - 1)
