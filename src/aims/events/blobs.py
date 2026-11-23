@@ -216,6 +216,23 @@ def _passes(path: Path, size: int) -> bool:
     return path.stat().st_size > size
 
 
+def holds_more(raw: bytes, size: int) -> bool:
+    """Whether `raw`, a blob file, decodes to more than `size` bytes, or holds more as is when it
+    does not decode. Decodes no more than a chunk past `size`. A file larger than any file of
+    `size` bytes holds more."""
+    if len(raw) > compress_bound(size):
+        return True
+    if raw.startswith(ZSTD_MAGIC):
+        total = 0
+        with contextlib.suppress(zstd.ZstdError):
+            for out in _decoded([raw]):
+                total += len(out)
+                if total > size:
+                    return True
+            return False
+    return len(raw) > size
+
+
 def read_blob(path: Path, size: int | None = None) -> bytes | None:
     """The bytes of the blob at `path` if they match the sha256 it is named by, else None.
     With `size`, also None when they are longer; no more than that is decoded. A file larger

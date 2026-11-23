@@ -9,6 +9,7 @@ from pydantic import JsonValue
 from scripted import profile
 
 from aims.models import ProfileError, load_models
+from aims.node import service
 from aims.node.client import ControlClient
 from aims.node.service import job_inputs
 from aims.run.job import Job, JobFork
@@ -94,3 +95,32 @@ async def test_a_runner_decodes_a_job_input_no_further_than_its_reference_states
     scenario["context"] = {"sha256": shas[2], "size": len(frame)}
     got = await job_inputs(client, Job(run_id="r", scenario=scenario, folder=shas[0]))
     assert got == {shas[0]: text, shas[2]: frame}
+
+
+@pytest.mark.anyio
+async def test_a_runner_decodes_a_scenario_folder_no_further_than_its_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No reference states the size of the folder the control plane tars, and a reply of a few
+    KiB may decode to many GiB."""
+    monkeypatch.setattr(service, "FOLDER_LIMIT", 1024 * 1024, raising=False)
+    folder = bytes(64 * 1024 * 1024)
+    sha = hashlib.sha256(folder).hexdigest()
+    streamed = zstd.ZstdCompressor()
+    client = cast("ControlClient", Blobs({sha: streamed.compress(folder) + streamed.flush()}))
+    tracemalloc.start()
+    try:
+        with pytest.raises(RuntimeError, match=f"folder {sha} holds more than 1048576 bytes"):
+            await job_inputs(client, Job(run_id="r", folder=sha))
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 1024 * 1024
+    # one that fits is read; one with other bytes is told apart
+    small = b"x" * 1024
+    client = cast("ControlClient", Blobs({sha: zstd.compress(small)}))
+    with pytest.raises(RuntimeError, match=f"blob {sha} came back with other bytes"):
+        await job_inputs(client, Job(run_id="r", folder=sha))
+    sha = hashlib.sha256(small).hexdigest()
+    client = cast("ControlClient", Blobs({sha: zstd.compress(small)}))
+    assert await job_inputs(client, Job(run_id="r", folder=sha)) == {sha: small}

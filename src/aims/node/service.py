@@ -27,7 +27,7 @@ from aims.events import (
     RunStatus,
     SelfTestCase,
 )
-from aims.events.blobs import blob_bytes
+from aims.events.blobs import blob_bytes, holds_more
 from aims.events.log import next_lines
 from aims.events.schema import blob_refs
 from aims.events.store import TruthRefused, is_run_id
@@ -63,6 +63,9 @@ DROP_WAIT_S = 180.0
 # is only fetched again.
 COPY_DAYS = 7.0
 BLOB_LIMIT = 2 * 1024**3
+# The most a runner decodes of a job's scenario folder, whose size the control plane does not
+# state. A reply of a few KiB can decode to many GiB, and the folder is read into memory.
+FOLDER_LIMIT = 1024**3
 INGEST_CHUNK = 1000
 INGEST_BYTES = 4 * 1024 * 1024
 
@@ -79,10 +82,16 @@ def data_dir(env: dict[str, str] | None = None) -> Path:
 
 async def job_inputs(client: ControlClient, job: Job) -> dict[str, bytes]:
     """The scenario inputs of `job`, each checked against its sha256 and decoded no further than
-    its reference states."""
+    its reference states. The folder is decoded no further than FOLDER_LIMIT."""
     out: dict[str, bytes] = {}
     for sha, size in job.sizes().items():
-        data = blob_bytes(await client.job_blob(job.run_id, sha), sha, size)
+        raw = await client.job_blob(job.run_id, sha)
+        data = blob_bytes(raw, sha, FOLDER_LIMIT if size is None else size)
+        if data is None and size is None and holds_more(raw, FOLDER_LIMIT):
+            raise RuntimeError(
+                f"the scenario folder {sha} holds more than {FOLDER_LIMIT} bytes,"
+                " the most a runner takes"
+            )
         if data is None:
             raise RuntimeError(f"blob {sha} came back with other bytes")
         out[sha] = data
