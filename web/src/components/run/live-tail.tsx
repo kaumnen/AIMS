@@ -18,10 +18,13 @@ export function useRunTail(runId: string, open: boolean, after: number): readonl
   useEffect(() => {
     from.current = after;
   });
-  // a stream the browser gave up on is opened again with the page's
+  // a stream the browser gave up on is opened again with the page's; the compiler memoizes by
+  // what the body reads, so it reads `epoch`
   const epoch = useLiveEpoch();
-  // oxlint-disable-next-line react-hooks/exhaustive-deps
-  const tail = useMemo(() => (open ? new RunTail(runId, qc) : null), [runId, open, qc, epoch]);
+  const tail = useMemo(
+    () => (open && epoch >= 0 ? new RunTail(runId, qc) : null),
+    [runId, open, qc, epoch],
+  );
   useEffect(() => {
     if (tail === null) return;
     tail.start(from.current);
