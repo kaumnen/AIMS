@@ -2492,10 +2492,8 @@ async def stalled(
                 await asyncio.Event().wait()
 
     app = create_app(cp.state, dispatcher=False)
-    # in a group: FastAPI's keepalive task, sending into a response that has ended
-    with contextlib.suppress(anyio.BrokenResourceError):
-        async with asyncio.timeout(10):
-            await app(scope, receive, send)
+    async with asyncio.timeout(10):
+        await app(scope, receive, send)
 
 
 async def test_a_runner_stream_that_stalls_and_drops_releases_its_offers(cp: CP) -> None:
@@ -2574,6 +2572,49 @@ async def test_a_ui_stream_that_stalls_and_drops_releases_its_subscription(cp: C
         await stalled(cp, "/api/stream", cp.operator, query=f"deltas={run_id}")
         assert cp.state.streams == 0
         assert not cp.state.bus.subscribers
+
+
+def keepalive_error() -> anyio.BrokenResourceError:
+    """A BrokenResourceError raised in a frame that passes for FastAPI's SSE keepalive task."""
+    space: dict[str, Any] = {"__name__": "fastapi.routing", "anyio": anyio}
+    exec("def _keepalive_inserter():\n    raise anyio.BrokenResourceError\n", space)
+    try:
+        space["_keepalive_inserter"]()
+    except anyio.BrokenResourceError as e:
+        return e
+    raise AssertionError("it did not raise")
+
+
+@pytest.mark.parametrize(
+    ("errors", "gone", "dropped"),
+    [
+        ([keepalive_error()], True, True),
+        ([keepalive_error(), keepalive_error()], True, True),
+        ([keepalive_error()], False, False),
+        ([keepalive_error(), ValueError("x")], True, False),
+        ([anyio.BrokenResourceError()], True, False),
+    ],
+)
+async def test_only_the_keepalive_error_after_the_client_goes_is_dropped(
+    errors: list[Exception], gone: bool, dropped: bool
+) -> None:
+    async def failing(scope: Scope, receive: Any, send: Any) -> None:
+        if gone:
+            await receive()
+        raise ExceptionGroup("in a group", errors)
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        pass
+
+    guarded = app_module.KeepaliveGone(failing)
+    if dropped:
+        await guarded({"type": "http"}, receive, send)
+    else:
+        with pytest.raises(ExceptionGroup):
+            await guarded({"type": "http"}, receive, send)
 
 
 def open_fds(path: Path) -> int:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
+import anyio
 from fastapi import Depends, FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -17,6 +18,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import TypeAdapter
 from pydantic.json_schema import models_json_schema
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from aims import __version__
 from aims.aio import stopped
@@ -47,6 +49,46 @@ from aims.wire import RunnerFeed, StreamMessage
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]", "::1")
 REF = "#/components/schemas/{model}"
 COPIES = (("br", ".br"), ("gzip", ".gz"))
+
+
+class KeepaliveGone:
+    """Drops the BrokenResourceError of FastAPI's SSE keepalive task once the client has gone.
+    The task raises it when a client that stopped reading goes (fastapi/fastapi discussion
+    15725). Nothing is lost, yet uvicorn would log it as an error with a traceback. Drop this
+    once FastAPI catches it there."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        gone = False
+
+        async def watched() -> Message:
+            nonlocal gone
+            message = await receive()
+            gone = gone or message["type"] == "http.disconnect"
+            return message
+
+        try:
+            await self.app(scope, watched, send)
+        except BaseExceptionGroup as e:
+            if not gone or e.split(_from_keepalive)[1] is not None:
+                raise
+
+
+def _from_keepalive(e: BaseException) -> bool:
+    if not isinstance(e, anyio.BrokenResourceError):
+        return False
+    tb = e.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        if (frame.f_globals.get("__name__"), frame.f_code.co_name) == (
+            "fastapi.routing",
+            "_keepalive_inserter",
+        ):
+            return True
+        tb = tb.tb_next
+    return False
 
 
 def ui_root() -> Path | None:
@@ -122,6 +164,7 @@ def create_app(
     app.add_middleware(BodyLimit)
     app.add_middleware(SecurityHeaders)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*LOOPBACK, *hosts])
+    app.add_middleware(KeepaliveGone)
     root = ui if ui is not None and (ui / "index.html").is_file() else ui_root()
     _spa(app, root)
     return app
