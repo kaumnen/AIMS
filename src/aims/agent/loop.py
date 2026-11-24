@@ -767,6 +767,13 @@ class Agent:
         """Whether a kept agent still answers from the recording past its fork step."""
         return self.replay is not None and self.replay.keep and not self._left_recording
 
+    def _go_live(self) -> None:
+        """Send a kept agent live. Its own caps hold from here, so a cap it is already past
+        ends it before its first live call."""
+        self._left_recording = True
+        if (hit := self._over_budget()) is not None:
+            raise _End(*hit)
+
     def _model(self) -> tuple[ModelClient, Profile]:
         if self.replay is not None and (self._replaying() or self._kept()):
             return self.replay.client, self.replay.profile_for(self.steps + 1)
@@ -785,7 +792,7 @@ class Agent:
             except ReplayError:
                 if self._replaying() or not self._kept():
                     raise
-                self._left_recording = True
+                self._go_live()
                 client, profile = self._model()
                 self._open_profile = profile
                 reply = await client.call(
@@ -1240,7 +1247,7 @@ class Agent:
                 # A summary the recording lacks sends a kept agent live, as a step's request does.
                 if self._replaying() or not self._kept():
                     raise
-                self._left_recording = True
+                self._go_live()
                 client, profile = self._model()
                 reply = await client.call(
                     profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt), cut=self._cut

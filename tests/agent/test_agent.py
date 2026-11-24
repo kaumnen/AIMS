@@ -828,13 +828,17 @@ async def summary_fork(
     keep: bool = False,
     ran_on: Profile,
     outputs: dict[tuple[int, int], RecordedOutput] | None = None,
+    ran_under: Budget | None = None,
+    **config: Any,
 ) -> tuple[AgentFinished, list[AgentCompacted]]:
     """A fork of `origin` after `fork_at` on a profile with 150 tokens of context, which
-    compacts by summary; its schedule says the origin ran on `ran_on`."""
+    compacts by summary; its schedule says the origin ran on `ran_on`, under the caps
+    `ran_under`. `config` is the fork's own agent config."""
     from aims.models import Recording
 
     summary = Compaction(at=0.5, strategy="summary", keep_recent=1)
-    agent, run_id = await make_agent(store, live, p=profile(context_tokens=150), compaction=summary)
+    small = profile(context_tokens=150)
+    agent, run_id = await make_agent(store, live, p=small, compaction=summary, **config)
     agent.replay = ReplayPlan(
         client=ModelClient(
             store, run_id, models(agent.profile), replay=await Recording.load(store, origin), env={}
@@ -843,6 +847,7 @@ async def summary_fork(
         schedule=[(None, ran_on)],
         outputs=outputs or {},
         keep=keep,
+        budget=ran_under,
     )
     finished = await agent.run()
     return finished, await payloads(store, run_id, AgentCompacted)
@@ -903,6 +908,35 @@ async def test_a_summary_the_recording_lacks_sends_a_kept_agent_live(
     assert finished.reason == "error"
     assert (finished.detail or "").startswith("replay of step 3 failed: "), finished.detail
     assert live.requests == []
+
+
+async def test_a_kept_agent_past_its_own_cap_makes_no_live_summary(
+    store: LocalEventStore,
+) -> None:
+    """As above, a summary falls due after step 2 that the recording lacks. The kept agent ran
+    its steps under the origin's caps. Its own cap of 2 steps holds once it goes live, so it
+    ends before the summary call."""
+    summary = Compaction(at=0.5, strategy="summary", keep_recent=1)
+    big = profile(context_tokens=1_000_000)
+    play = Script(say("a"), say("b"), call("bash", command="true"), call("submit", answer="done"))
+    origin_agent, origin = await make_agent(store, play, p=big, compaction=summary)
+    assert (await origin_agent.run()).reason == "submitted"
+    small = big.model_copy(update={"context_tokens": 150})
+
+    live = Script(say("Said a and b."), call("submit", answer="live"))
+    finished, compacted = await summary_fork(
+        store,
+        origin,
+        live,
+        fork_at=1,
+        keep=True,
+        ran_on=small,
+        ran_under=Budget(),
+        budget=Budget(steps=2),
+    )
+    assert (finished.reason, finished.steps) == ("budget_steps", 2), finished.detail
+    assert finished.detail == "agent limit of 2 steps reached"
+    assert (live.requests, compacted) == ([], [])
 
 
 def summarizing(body: dict[str, Any]) -> dict[str, Any]:

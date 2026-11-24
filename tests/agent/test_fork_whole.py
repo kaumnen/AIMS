@@ -723,3 +723,30 @@ async def test_a_kept_agent_ends_where_its_origin_s_own_cap_ended_it(
     else:
         assert (finished.reason, finished.steps) == (end.reason, end.steps), finished.detail
         assert (finished.detail, steps, live.requests) == (end.detail, ["replay"] * end.steps, [])
+
+
+RAN = ONE.replace("  - id: agent\n", "  - id: agent\n    budget: {cost_usd: 100}\n")
+
+
+@pytest.mark.parametrize(
+    ("cap", "text"),
+    [
+        ("agent", RAN.replace("{cost_usd: 100}", "{steps: 3, cost_usd: 100}")),
+        ("run", RAN.replace("agents:\n", "limits: {steps: 3}\nagents:\n")),
+    ],
+    ids=["agent", "run"],
+)
+async def test_a_kept_agent_past_its_own_cap_ends_before_it_goes_live(
+    store: LocalEventStore, cap: str, text: str
+) -> None:
+    """The run was killed before its sixth call. A fork that keeps its answers from step 1 has
+    a step cap of 3, for the agent or for the run. It keeps 5 steps under the run's caps. Its
+    sixth request is not recorded, so its own caps hold, and it ends before a live call."""
+    gate = Gate({("before_model", 5): Verdict("kill", reason="policy")})
+    origin_id = await costed(store, Script(*[OK] * 6), gate, text=RAN)
+    live = Script(OK, call("submit", answer="f"))
+    fork = Fork(origin=origin_id, step=1, keep_others=True)
+    fork_id, finished = await forked(store, origin_id, fork, live, text=text)
+    assert (finished.reason, finished.steps, len(live.requests)) == ("budget_steps", 5, 0)
+    assert finished.detail == f"{cap} limit of 3 steps reached"
+    assert await sources(store, fork_id) == ["replay"] * 5
