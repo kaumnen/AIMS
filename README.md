@@ -67,22 +67,22 @@ Check a scenario. Scripted agents prove each plant works, at no model cost.
 aims scenario check builtin/cache-keys
 ```
 
-Add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. Use your server's API URL and the env var that holds its key. `AIMS_KEYS` lists the URL each key may go to. AIMS sends a key nowhere else. `aims models add` sends each model a few small requests before it adds the profile.
+Set your model API key and start the UI. Use the env var that holds the key and your server's API URL. `AIMS_KEYS` lists the URL each key may go to. AIMS sends a key nowhere else. The UI opens a sign-in link and runs jobs on a local runner.
 
 ```sh
 export EXAMPLE_API_KEY=<your key>
 export AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1
+aims ui
+```
+
+From a second terminal in the same folder with the key and `AIMS_KEYS` set, add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. `aims models add` sends each model a few small requests before it adds the profile. The UI shows these checks.
+
+```sh
 aims models add example/agent-model --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role agent
 aims models add example/monitor-model --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role sweep --role judge
 ```
 
-Start the UI. It opens a sign-in link and runs jobs on a local runner.
-
-```sh
-aims ui
-```
-
-Run the scenario with **New run** in the UI, or from a second terminal in the same folder with the key and `AIMS_KEYS` set:
+Run the scenario with **New run** in the UI, or from the second terminal:
 
 ```sh
 aims estimate builtin/cache-keys   # the most a run can cost
