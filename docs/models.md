@@ -222,6 +222,8 @@ max_output_tokens = 16384
 | `--no-check` | Skips the check. `reasoning` stays a guess. Needs no `AIMS_KEYS` entry. |
 | `--config <path>` | An `aims.toml` to use instead of the project's |
 | `--runs-dir <dir>` | Where the check is recorded as a run. `runs` by default. |
+| `--server <url>` | Ships the check to this control plane. `AIMS_TOKEN` or `--token-file` holds its runner token. By default it ships to a local `aims ui` that is running, so the app shows it. |
+| `--no-server` | Keeps the check here only. |
 
 > [!NOTE]
 > The server may bill the check's few small calls. When a test fails, the command writes nothing and exits 1. Fix the profile with `--set` or pass `--no-check`. A model without tool calls fails the `tools` test, so add it with `--no-check`.
@@ -326,7 +328,7 @@ Errors:
 aims models check <profile> [<profile> ...]
 ```
 
-It sends each profile four small requests and records them as a run. With no names it checks each of these once: the profiles the roles name and those the `[monitor]` table of the config files names. The table counts whatever its preset, since `aims run --monitor` can turn its models on. A scenario's `monitor:` section is not read. An unknown profile under `[monitor]` is an error. An unknown one in `extract` only gets a note, since a run skips it.
+It sends each profile four small requests and records them as a run. The run ships to a local `aims ui` that is running, so the app shows the check. `--server` ships it to another control plane. `--no-server` keeps it here. A check made while no `aims ui` runs stays here. `aims push runs` ships it later. With no names it checks each of these once: the profiles the roles name and those the `[monitor]` table of the config files names. The table counts whatever its preset, since `aims run --monitor` can turn its models on. A scenario's `monitor:` section is not read. An unknown profile under `[monitor]` is an error. An unknown one in `extract` only gets a note, since a run skips it.
 
 | Check | What it asks for |
 | --- | --- |

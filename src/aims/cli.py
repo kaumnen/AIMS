@@ -518,9 +518,16 @@ def models_check(
     ] = None,
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
+    server: ServerOption = None,
+    token_file: TokenFileOption = None,
+    no_server: Annotated[
+        bool, typer.Option("--no-server", help="Do not ship to a local `aims ui`.")
+    ] = False,
     key: KeyOption = None,
 ) -> None:
-    """Call each provider with small requests and report what works. Recorded as a run."""
+    """Call each provider with small requests and report what works. Recorded as a run.
+
+    With a control plane (a local `aims ui`, or --server) the run ships to it."""
     import asyncio
     import uuid
 
@@ -528,6 +535,7 @@ def models_check(
     from aims.models.check import to_check
     from aims.monitor.config import named_profiles
 
+    link = _link(server, token_file, no_server)
     settings = _settings(config)
     models = settings.models
     calls, extract = named_profiles(settings.monitor)
@@ -549,7 +557,7 @@ def models_check(
                 _echo(f"note: [monitor] extract: unknown profile {name!r} is not checked", err=True)
     run_id = str(uuid.uuid7())
     try:
-        checks = asyncio.run(_check(models, chosen, runs_dir, run_id))
+        checks = asyncio.run(_check(models, chosen, runs_dir, run_id, link=link))
     except asyncio.CancelledError:
         raise typer.Exit(EXIT_CANCELLED) from None
     if any(c.verdict == "fail" for c in checks):
@@ -629,11 +637,16 @@ def models_add(
     ] = False,
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
+    server: ServerOption = None,
+    token_file: TokenFileOption = None,
+    no_server: Annotated[
+        bool, typer.Option("--no-server", help="Do not ship to a local `aims ui`.")
+    ] = False,
     key: KeyOption = None,
 ) -> None:
     """Draft a profile for a model on any server, check it with a few small requests, then
     print it or add it. The check sets what the model sends of its reasoning. Recorded as a
-    run."""
+    run, which ships to a control plane (a local `aims ui`, or --server)."""
     import asyncio
     import uuid
     from typing import cast, get_args
@@ -659,6 +672,7 @@ def models_add(
     backends: tuple[str, ...] = get_args(ModelBackend)
     if backend is not None and backend not in backends:
         raise typer.BadParameter(f"use {' or '.join(backends)}", param_hint="--backend")
+    link = None if no_check else _link(server, token_file, no_server)
 
     settings: Any = _settings(config) if write or base is not None else None
     reached = None
@@ -720,7 +734,13 @@ def models_add(
         try:
             checks = asyncio.run(
                 _check(
-                    models, [profile], runs_dir, str(uuid.uuid7()), err=True, measure=found.guessed
+                    models,
+                    [profile],
+                    runs_dir,
+                    str(uuid.uuid7()),
+                    err=True,
+                    measure=found.guessed,
+                    link=link,
                 )
             )
         except asyncio.CancelledError:
@@ -871,10 +891,12 @@ async def _check(
     *,
     err: bool = False,
     measure: bool = False,
+    link: tuple[str, str] | None = None,
 ) -> list[Any]:
     """Check the profiles `chosen`, recorded as run `run_id`. Print a line for each test and
-    the run's id, to stderr when `err`. `measure` is as for check_profile. Returns the
-    checks."""
+    the run's id, to stderr when `err`. `measure` is as for check_profile. A run that ended
+    ships to the control plane at `link`, so the app shows the check; one that does not get
+    there gives a warning. Returns the checks."""
     import asyncio
 
     from aims.events import LocalEventStore
@@ -894,6 +916,14 @@ async def _check(
             await _stopped(store, run_id, "run")
             raise
     typer.echo(f"run {run_id}", err=err)
+    if link is not None:
+        try:
+            # bounded, as a shipper tries again without end
+            async with asyncio.timeout(SHIP_SEALED_S):
+                await _push(runs_dir, [run_id], *link, quiet=True)
+        except Exception as e:
+            why = (str(e) or type(e).__name__).splitlines()[0]
+            _echo(f"warning: the check did not reach the control plane: {why}", err=True)
     return checks
 
 

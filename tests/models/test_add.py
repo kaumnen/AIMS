@@ -17,6 +17,7 @@ from typing import Any
 import httpcore2
 import httpx2
 import pytest
+from cp import control_plane
 from proxy import environ
 from typer.testing import CliRunner
 
@@ -1135,6 +1136,70 @@ def test_no_check_adds_the_draft_unchecked(fakes: Fakes, tmp_path: Path) -> None
     assert "note: It is not checked. aims models check big-model checks it." in err
     assert load(tmp_path / "aims.toml").models.get("big-model").reasoning == "none"
     assert not (tmp_path / "runs").exists()
+
+
+def run_of(out: Any) -> str:
+    [run_id] = [line[4:] for line in out.output.splitlines() if line.startswith("run ")]
+    return run_id
+
+
+def local_ui(at: Path, url: str, token: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server.json as a local `aims ui` writes it."""
+    at.mkdir()
+    (at / "server.json").write_text(json.dumps({"url": url, "token": token}))
+    monkeypatch.setenv("AIMS_SERVER_DIR", str(at))
+
+
+async def test_a_check_ships_to_the_local_ui_so_the_app_shows_it(
+    fakes: Fakes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed check ships too. Once the check stayed in the runs dir. The app then said the
+    model was never checked."""
+    async with control_plane(tmp_path / "app") as cp:
+        local_ui(tmp_path / "local-ui", cp.url, cp.runner, monkeypatch)
+        monkeypatch.chdir(cp.project.parent)
+        added = await asyncio.to_thread(add, *BIG, "--write")
+        assert added.exit_code == 0, added.output
+        async with cp.client(cp.viewer) as c:
+            r = await c.get("/api/models")
+        [shown] = [p["check"] for p in r.json()["profiles"] if p["name"] == "big-model"]
+        assert shown is not None
+        assert shown["run_id"] == run_of(added)
+        assert [c["verdict"] for c in shown["checks"]] == ["ok"] * 4
+        fakes.verdicts = {"tools": "fail"}
+        failed = await asyncio.to_thread(add, *BIG, "--name", "failed", "--write")
+        assert failed.exit_code == 1
+        fakes.verdicts = {}
+        kept = await asyncio.to_thread(add, *BIG, "--name", "kept", "--write", "--no-server")
+        assert kept.exit_code == 0, kept.output
+        held = {run.run_id for run in await cp.state.store.runs(kind="models.check")}
+    assert "warning" not in added.stderr + failed.stderr
+    assert held == {run_of(added), run_of(failed)}
+
+
+async def test_models_check_ships_to_the_local_ui_too(
+    fakes: Fakes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with control_plane(tmp_path / "app") as cp:
+        local_ui(tmp_path / "local-ui", cp.url, cp.runner, monkeypatch)
+        monkeypatch.chdir(cp.project.parent)
+        out = await asyncio.to_thread(CliRunner().invoke, app, ["models", "check", "scripted"])
+        assert out.exit_code == 0, out.output
+        async with cp.client(cp.viewer) as c:
+            r = await c.get("/api/models")
+    [shown] = [p["check"] for p in r.json()["profiles"] if p["name"] == "scripted"]
+    assert shown is not None
+    assert shown["run_id"] == run_of(out)
+
+
+def test_a_check_that_does_not_reach_the_control_plane_only_warns(
+    fakes: Fakes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local_ui(tmp_path / "local-ui", "http://127.0.0.1:1", "t", monkeypatch)
+    out = add(*BIG, "--write")
+    assert out.exit_code == 0, out.output
+    assert "warning: the check did not reach the control plane: " in out.stderr
+    assert load(tmp_path / "aims.toml").models.get("big-model").reasoning == "full"
 
 
 def test_what_is_refused_for_free_is_refused_before_the_check(
