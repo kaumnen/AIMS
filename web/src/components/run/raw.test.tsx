@@ -1,6 +1,6 @@
 import { type InfiniteData, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import type { Event } from "@/api/events";
 import { rawEventsQuery, type RawPage } from "@/api/run";
@@ -198,4 +198,90 @@ test("a read on at the page cap moves the reader up and reads on no further", as
   expect(reads).toEqual(["after=9999"]);
   await rest(box);
   expect(reads).toEqual(["after=9999"]);
+});
+
+// A list from the first event whose read on let the pages before `from` go.
+function heldFrom(qc: QueryClient, from: number, to: number) {
+  const pages: RawPage[] = [];
+  for (let at = from; at <= to; at += 200) {
+    const end = Math.min(at + 199, to);
+    pages.push({ items: range(at, end), older: at, newer: end === log.at(-1)?.seq ? null : end });
+  }
+  qc.setQueryData<InfiniteData<RawPage>>(rawEventsQuery(RUN, {}).queryKey, {
+    pages,
+    pageParams: pages.map((p) => ({ after: (p.older ?? 0) - 1 })),
+  });
+}
+
+test.each([
+  ["First", () => fireEvent.click(screen.getByRole("button", { name: "First" }))],
+  ["Home", (list: HTMLElement) => fireEvent.keyDown(list, { key: "Home" })],
+])("%s on a list that let its first pages go reads from the first event", async (_, press) => {
+  log = range(0, 2399);
+  const qc = new QueryClient();
+  heldFrom(qc, 2000, 2399);
+  const list = await show(qc);
+  const box = list.parentElement as HTMLElement;
+  await rest(box);
+  expect(reads).toEqual([]);
+  press(list);
+  // the rows shown stay up until the first page is in
+  expect(within(list).getByRole("option", { name: /^2000\b/ })).toBeTruthy();
+  await within(list).findByRole("option", { name: /^0\b/ });
+  expect(box.scrollTop).toBe(0);
+  await rest(box);
+  expect(reads).toEqual(["after=-"]);
+});
+
+// Scrolls as far as happy-dom can: it lays nothing out, so a list's scroll height is the set
+// height of its first child.
+function scrolls() {
+  const to = vi.spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(function (
+    this: HTMLElement,
+    at?: ScrollToOptions | number,
+  ) {
+    this.scrollTop = typeof at === "object" ? (at.top ?? 0) : 0;
+    this.dispatchEvent(new Event("scroll"));
+  });
+  const height = vi
+    .spyOn(HTMLElement.prototype, "scrollHeight", "get")
+    .mockImplementation(function (this: HTMLElement) {
+      return Number.parseFloat((this.firstElementChild as HTMLElement | null)?.style.height ?? "");
+    });
+  onTestFinished(() => {
+    to.mockRestore();
+    height.mockRestore();
+  });
+}
+
+test("First at the end of a list reads from the first event if the start let it go", async () => {
+  scrolls();
+  log = range(0, 2399);
+  const qc = new QueryClient();
+  heldFrom(qc, 2000, 2199);
+  const list = await show(qc);
+  fireEvent.click(screen.getByRole("button", { name: "Last" }));
+  await within(list).findByRole("option", { name: /^2399\b/ });
+  fireEvent.click(screen.getByRole("button", { name: "First" }));
+  await within(list).findByRole("option", { name: /^0\b/ });
+  expect(reads).toEqual([`before=${Number.MAX_SAFE_INTEGER}`, "after=-"]);
+});
+
+test.each([
+  ["a wheel up", (list: HTMLElement) => fireEvent.wheel(list.parentElement!, { deltaY: -100 })],
+  ["an ArrowUp", (list: HTMLElement) => fireEvent.keyDown(list, { key: "ArrowUp" })],
+])("%s at the top of a list that let its first pages go reads them back", async (_, move) => {
+  log = range(0, 2399);
+  const qc = new QueryClient();
+  heldFrom(qc, 2000, 2399);
+  const list = await show(qc, { seq: 2000 });
+  const box = list.parentElement as HTMLElement;
+  await rest(box);
+  expect(reads).toEqual([]);
+  move(list);
+  await waitFor(() => expect(reads).toEqual(["before=2000"]));
+  // the rows read in above leave the view where it was
+  await waitFor(() => expect(box.scrollTop).toBe(200 * ROW));
+  await rest(box);
+  expect(reads).toEqual(["before=2000"]);
 });

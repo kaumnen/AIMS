@@ -77,7 +77,15 @@ export function RawEvents({
   const [jump, setJump] = useState<Jump | null>(null);
   const go = (to: Jump["to"]) => {
     if (to === "end" && list.hasNextPage) setEnded(shown);
-    if (to === "start" && anchor === "end" && list.hasPreviousPage) setEnded(null);
+    if (to === "start" && list.hasPreviousPage) {
+      // A list from the first event that let its first pages go reads from that event again.
+      // The rows shown stay up until it is in.
+      const start = rawEventsQuery(runId, filters).queryKey;
+      if ((qc.getQueryData(start)?.pages[0]?.older ?? null) !== null) {
+        qc.removeQueries({ queryKey: start, exact: true });
+      }
+      setEnded(null);
+    }
     setJump((j) => ({ to, n: (j?.n ?? 0) + 1 }));
   };
   const set = (key: keyof RawSearch, value: string | number | undefined) =>
@@ -275,6 +283,10 @@ function EventList({
     <div
       ref={scroller}
       className="has-[[role=listbox]:focus-visible]:ring-ring/50 min-h-0 flex-1 overflow-auto rounded-sm border has-[[role=listbox]:focus-visible]:ring-2"
+      // at the top no scroll comes, so a wheel up there reads back
+      onWheel={(e) => {
+        if (e.deltaY < 0 && e.currentTarget.scrollTop === 0) onNearStart();
+      }}
     >
       <div
         role="listbox"
@@ -298,6 +310,8 @@ function EventList({
                 : 0;
           if (by === 0) return;
           e.preventDefault();
+          // up from the first row held reads back
+          if (by < 0 && at === 0) onNearStart();
           moved.current = { from: selected };
           const top = scroller.current?.scrollTop ?? 0;
           onMove(by, events[items.find((it) => it.start >= top)?.index ?? 0]?.seq);
