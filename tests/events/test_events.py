@@ -56,6 +56,7 @@ from aims.events import store as store_module
 from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore, Part, read_blob
 from aims.events.chain import GENESIS, MAX_LINE, Head, digest, follow, seal
 from aims.events.disk import make_dir
+from aims.events.index import VERSION as INDEX_VERSION
 from aims.events.index import Index
 from aims.events.log import LogFile
 from aims.events.schema import now, opaque_fields, payload_types, text_of
@@ -538,6 +539,44 @@ async def test_index_rebuilds_from_logs(tmp_path: Path) -> None:
     async with await LocalEventStore.open(root) as store:
         assert [r.run_id for r in await store.runs()] == [run_id]
     assert dump(root) == before
+
+
+async def test_an_open_that_rebuilds_the_index_says_so_before_it_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first open after an upgrade indexed 138 runs again in 72 s and said nothing."""
+    root = tmp_path / "runs"
+    said: list[object] = []
+
+    def opened() -> Any:
+        return LocalEventStore.open(root, on_reindex=lambda *told: said.append(told))
+
+    async with await opened() as store:
+        await finished_run(store)
+        await finished_run(store)
+    async with await opened():
+        pass
+    # a new folder holds no runs; the second open finds the index current
+    assert said == []
+    reset = Index.reset
+
+    async def reset_told(index: Index) -> None:
+        said.append("reset")
+        await reset(index)
+
+    monkeypatch.setattr(Index, "reset", reset_told)
+    with contextlib.closing(sqlite3.connect(root / "index.sqlite")) as db:
+        db.execute(f"pragma user_version = {INDEX_VERSION - 1}")
+        db.commit()
+    async with await opened() as store:
+        assert len(await store.runs()) == 2
+    assert said == [(2, True), "reset"]
+    said.clear()
+    for name in ("index.sqlite", "index.sqlite-wal", "index.sqlite-shm"):
+        (root / name).unlink(missing_ok=True)
+    async with await opened() as store:
+        assert len(await store.runs()) == 2
+    assert said == [(2, False), "reset"]
 
 
 async def test_paging(store: LocalEventStore) -> None:
@@ -2118,7 +2157,7 @@ async def test_cut_lines_another_process_indexed_are_taken_out_and_the_writer_go
 async def test_an_index_that_does_not_open_on_a_full_disk_says_why(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def refused(path: Path) -> Index:
+    async def refused(path: Path, **kw: object) -> Index:
         raise sqlite3.OperationalError("unable to open database file")
 
     monkeypatch.setattr(Index, "open", refused)

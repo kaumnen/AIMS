@@ -391,17 +391,18 @@ async def open_state(
     tls: bool = False,
     public_url: str | None = None,
     keep_days: float | None = None,
+    on_reindex: Callable[[int, bool], object] | None = None,
 ) -> ServerState:
     """The control plane's stores under `data`: `runs/` (ingest only) and `server.sqlite`,
     with expired sessions and old audit rows dropped. `public_url` is the address people open,
     for links the server writes. Housekeeping deletes runs that ended more than `keep_days`
-    ago."""
+    ago. `on_reindex` is as `LocalEventStore.open` takes it."""
     db = await ServerDB.open(data / "server.sqlite")
     config = ConfigCache(project)
     try:
         await db.prune_sessions()
         await audit.prune(db, config.layers)
-        store = await LocalEventStore.open(data / "runs", ingest_only=True)
+        store = await LocalEventStore.open(data / "runs", ingest_only=True, on_reindex=on_reindex)
     except BaseException:
         await db.close()
         raise

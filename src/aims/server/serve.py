@@ -302,6 +302,12 @@ def in_use_by(data: Path) -> str:
     return f"the data dir {data} is in use by another `aims ui`"
 
 
+def say_reindex(runs: int, upgrade: bool) -> None:
+    """Say why the address takes a while: indexing 138 runs again took 78 s in a test."""
+    why = ", once after an upgrade" if upgrade else ""
+    print(f"indexing {runs} run{'s' * (runs != 1)}{why}", file=sys.stderr)
+
+
 async def _serve(o: UiOptions, sockets: list[socket.socket]) -> int:
     tls = o.tls_cert is not None
     shown = None if o.public_url is None else public_url(o.public_url)
@@ -314,6 +320,7 @@ async def _serve(o: UiOptions, sockets: list[socket.socket]) -> int:
         tls=https,
         public_url=shown,
         keep_days=o.keep_days,
+        on_reindex=say_reindex,
     )
     child: asyncio.subprocess.Process | None = None
     server: _Server | None = None

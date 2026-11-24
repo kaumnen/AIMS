@@ -33,6 +33,7 @@ from aims import cli
 from aims.cli import EXIT_CANCELLED, app
 from aims.config import MAX_KEEP_DAYS
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall, ToolResult
+from aims.events.index import VERSION as INDEX_VERSION
 from aims.net import Outbound
 from aims.node import service
 from aims.node.link import Link
@@ -61,6 +62,7 @@ from aims.server.serve import (
     server_dir,
     snap_browser,
 )
+from aims.server.state import close_state
 from aims.terminal import AGAIN
 
 pytestmark = pytest.mark.anyio
@@ -2368,6 +2370,28 @@ async def test_aims_ui_on_a_data_dir_in_use_opens_none_of_its_state(
     again = hold(data)
     assert again is not None
     os.close(again)
+
+
+async def test_aims_ui_says_it_indexes_the_runs_again_after_an_upgrade(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It was silent for the 78 s it took to index 138 runs again, before its address."""
+    data = tmp_path / "server"
+    async with await LocalEventStore.open(data / "runs") as store:
+        await store.create_run(RunStarted(scenario="demo", oversight="observe", agents=["a"]))
+    with contextlib.closing(sqlite3.connect(data / "runs" / "index.sqlite")) as db:
+        db.execute(f"pragma user_version = {INDEX_VERSION - 1}")
+        db.commit()
+    real = serve_module.open_state
+
+    async def opened(*args: Any, **kwargs: Any) -> NoReturn:
+        await close_state(await real(*args, **kwargs))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(serve_module, "open_state", opened)
+    with pytest.raises(RuntimeError, match="stop here"):
+        await serve(UiOptions(port=0, data=data, runner=False, open_browser=False))
+    assert capsys.readouterr().err == "indexing 1 run, once after an upgrade\n"
 
 
 def test_a_data_dir_on_a_file_system_without_locks_is_used_with_a_warning(

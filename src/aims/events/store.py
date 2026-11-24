@@ -46,6 +46,7 @@ from aims.events.index import (
     StepInfo,
     UnitRow,
 )
+from aims.events.index import VERSION as INDEX_VERSION
 from aims.events.log import (
     LogFile,
     checkpoint_ok,
@@ -417,10 +418,22 @@ class LocalEventStore:
 
     @classmethod
     async def open(
-        cls, root: Path, *, ingest_only: bool = False, reads: bool = False
+        cls,
+        root: Path,
+        *,
+        ingest_only: bool = False,
+        reads: bool = False,
+        on_reindex: Callable[[int, bool], object] | None = None,
     ) -> LocalEventStore:
         """`reads` says the caller only reads runs. Only such a store, or one that only
-        ingests, opens the runs folder of a control plane."""
+        ingests, opens the runs folder of a control plane. When the open indexes the runs
+        again, which can take minutes, `on_reindex` first gets how many and whether an
+        upgrade is why."""
+
+        async def before_reset(version: int) -> None:
+            if on_reindex is not None and (runs := len(await asyncio.to_thread(_run_ids, root))):
+                on_reindex(runs, 0 < version < INDEX_VERSION)
+
         await asyncio.to_thread(make_dir, root, parents=True)
         if not (ingest_only or reads) and await asyncio.to_thread((root / CONTROL_PLANE).exists):
             raise ControlPlaneRuns(
@@ -428,7 +441,7 @@ class LocalEventStore:
                 " there; use another folder"
             )
         try:
-            index = await Index.open(root / INDEX)
+            index = await Index.open(root / INDEX, before_reset=before_reset)
         except sqlite3.Error as e:
             await asyncio.to_thread(_note_space, e, root)
             if isinstance(e, sqlite3.OperationalError) and not _writable(root):
@@ -2073,8 +2086,7 @@ class LocalEventStore:
             del self._writers[run_id]
 
     def _run_ids(self) -> list[str]:
-        names = (p.name for p in self.root.iterdir() if (p / LOG).is_file())
-        return sorted(name for name in names if is_run_id(name))
+        return _run_ids(self.root)
 
     def _dir(self, run_id: str) -> Path:
         if not is_run_id(run_id):
@@ -2348,6 +2360,11 @@ def _append_line(path: Path, line: bytes) -> None:
         os.close(fd)
     if new:
         sync_dir(path.parent)
+
+
+def _run_ids(root: Path) -> list[str]:
+    names = (p.name for p in root.iterdir() if (p / LOG).is_file())
+    return sorted(name for name in names if is_run_id(name))
 
 
 def _read_labels(path: Path) -> list[Label]:

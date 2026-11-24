@@ -639,7 +639,11 @@ class Index:
         self._lock = asyncio.Lock()
 
     @classmethod
-    async def open(cls, path: Path) -> Index:
+    async def open(
+        cls, path: Path, *, before_reset: Callable[[int], Awaitable[object]] | None = None
+    ) -> Index:
+        """An index of another VERSION, or none, is emptied for a rebuild. `before_reset` gets
+        its version, 0 for none, before that."""
         db = await aiosqlite.connect(path, isolation_level=None)
         try:
             await db.executescript(
@@ -656,6 +660,8 @@ class Index:
             async with db.execute("pragma user_version") as cur:
                 row = await cur.fetchone()
             if row is None or row[0] != VERSION:
+                if before_reset is not None:
+                    await before_reset(0 if row is None else row[0])
                 await index.reset()
         except BaseException:
             await db.close()
