@@ -547,6 +547,7 @@ class OriginStore:
         status: Sequence[str] = (),
         agent_id: str | None = None,
         tainted: bool | None = None,
+        since: int | None = None,
     ) -> list[FlagInfo]:
         return await self._of(run_id).flags(
             run_id,
@@ -558,6 +559,7 @@ class OriginStore:
             status=status,
             agent_id=agent_id,
             tainted=tainted,
+            since=since,
         )
 
     async def samples(

@@ -84,7 +84,7 @@ function Pause({
   const flags = useQuery({
     ...flagsQuery(runId),
     refetchInterval: (q) =>
-      seqs.some((seq) => !q.state.data?.some((f) => f.seq === seq || f.latest === seq))
+      seqs.some((seq) => !q.state.data?.items.some((f) => f.seq === seq || f.latest === seq))
         ? FLAGS_MS
         : false,
   });

@@ -1649,8 +1649,11 @@ class Index:
         status: Sequence[str] = (),
         agent_id: str | None = None,
         tainted: bool | None = None,
+        since: int | None = None,
     ) -> list[FlagInfo]:
-        """One page of a run's logical flags in seq order, after seq `after`."""
+        """One page of a run's logical flags in seq order, after seq `after`. `since` keeps the
+        flags an event past that seq made or changed: a re-flag sets `latest`, a status
+        `status_seq`."""
         statuses = _within(status)
         if statuses is None or not _held(run_id, layer, category, agent_id):
             return []
@@ -1659,6 +1662,9 @@ class Index:
         if after is not None:
             where.append("seq > ?")
             args.append(_int(after))
+        if since is not None:
+            where.append("max(latest, coalesce(status_seq, -1)) > ?")
+            args.append(_int(since))
         if layer is not None:
             where.append("layer = ?")
             args.append(layer)

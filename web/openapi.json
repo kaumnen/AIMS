@@ -5181,8 +5181,12 @@
         "type": "object"
       },
       "FlagPage": {
-        "description": "`origin` is the run a monitor run watched: the evidence seqs of its flags point there.",
+        "description": "`origin` is the run a monitor run watched: the evidence seqs of its flags point there.\n`seq` and `hash` name the run's last event the index held before the page was read.",
         "properties": {
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/FlagInfo"
@@ -5211,12 +5215,18 @@
               }
             ],
             "title": "Origin"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
           }
         },
         "required": [
           "items",
           "next",
-          "origin"
+          "origin",
+          "seq",
+          "hash"
         ],
         "title": "FlagPage",
         "type": "object"
@@ -21852,7 +21862,7 @@
     },
     "/api/runs/{run_id}/flags": {
       "get": {
-        "description": "A run's flags in seq order, re-flags of a key folded into its first flag, each with the\nstatus later events gave it. Page on with `after=next`.",
+        "description": "A run's flags in seq order, re-flags of a key folded into its first flag, each with the\nstatus later events gave it. Page on with `after=next`.\n\nA reader that keeps the flags it has reads on with `since` and `hash`, the `seq` and `hash`\nof its last read. It gets each flag an event past `since` made or changed, to put in place\nof the one it holds. 409 when the run's event at `since` no longer has that hash, as after\nits log was cut and written again: read the flags again from the start.",
         "operationId": "list_flags",
         "parameters": [
           {
@@ -22024,6 +22034,41 @@
               ],
               "title": "Tainted"
             }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hash",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Hash"
+            }
           }
         ],
         "responses": {
@@ -22066,6 +22111,16 @@
               }
             },
             "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {

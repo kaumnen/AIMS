@@ -17,6 +17,7 @@ export type ExecActivity = Schemas["ExecActivity"];
 export type BlobRef = Schemas["BlobRef"];
 export type SampleWindow = Schemas["SampleWindow"];
 export type FlagInfo = Schemas["FlagInfo"];
+type FlagPage = Schemas["FlagPage"];
 export type CallCost = Schemas["CallCost"];
 
 const STEP_PAGE = 200;
@@ -395,21 +396,44 @@ export function costsQuery(runId: string) {
   });
 }
 
+// A run's flags. A poll reads on from the run's last event the last read saw: it gets each flag
+// made or changed since and puts it in place by seq. A flag not held comes after every one held.
+// When that event is no longer the one read, as after the log was cut, all are read again.
 export function flagsQuery(source: string) {
   return queryOptions({
     queryKey: ["runs", "flags", source] as const,
-    queryFn: ({ signal }) =>
-      everyPage(async (after) => {
-        const { data, error } = await client.GET("/api/runs/{run_id}/flags", {
-          params: {
-            ...path(source),
-            query: { limit: MAX_EVENTS, ...(after === undefined ? {} : { after }) },
-          },
-          signal,
+    queryFn: async ({ client: qc, queryKey, signal }) => {
+      const held = qc.getQueryData<FlagPage>(queryKey);
+      const read = async (since?: { since: number; hash: string }) => {
+        let first: FlagPage | undefined;
+        const items = await everyPage(async (after) => {
+          const { data, error } = await client.GET("/api/runs/{run_id}/flags", {
+            params: {
+              ...path(source),
+              query: { limit: MAX_EVENTS, ...since, ...(after === undefined ? {} : { after }) },
+            },
+            signal,
+          });
+          if (error) throw error;
+          first ??= data;
+          return data;
         });
-        if (error) throw error;
-        return data;
-      }),
+        return { ...(first as FlagPage), items };
+      };
+      if (held) {
+        try {
+          const page = await read({ since: held.seq, hash: held.hash });
+          if (page.items.length === 0) return { ...page, items: held.items };
+          const bySeq = new Map(held.items.map((f) => [f.seq, f]));
+          for (const f of page.items) bySeq.set(f.seq, f);
+          return { ...page, items: [...bySeq.values()] };
+        } catch (e) {
+          if ((e as { status?: number }).status !== 409) throw e;
+        }
+      }
+      return read();
+    },
+    select: (page: FlagPage) => page.items,
     staleTime: Infinity,
   });
 }

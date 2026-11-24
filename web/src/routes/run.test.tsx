@@ -298,6 +298,17 @@ const NO_FIGURES = {
   priced: true,
 };
 
+// The last event that made or changed a flag.
+const mark = (f: FlagInfo) => Math.max(f.latest, f.status_seq ?? -1);
+
+// Like the server: the flags an event past `since` made or changed, with the run's last event.
+const flagPage = (items: FlagInfo[], q: URLSearchParams) => {
+  const seq = Math.max(0, ...items.map(mark));
+  const since = Number(q.get("since") ?? -1);
+  const changed = items.filter((f) => mark(f) > since);
+  return Response.json({ items: changed, next: null, origin: null, seq, hash: `h${seq}` });
+};
+
 const verdict = (seq: number) =>
   ev(seq, "monitor.verdict", {
     max_severity: 4,
@@ -534,7 +545,7 @@ beforeEach(() => {
     const [, , , other, part] = path.split("/");
     const known = other === undefined ? undefined : others[other];
     if (known && part === undefined) return Response.json(known.detail);
-    if (known && part === "flags") return Response.json({ items: known.flags, next: null });
+    if (known && part === "flags") return flagPage(known.flags, q);
     if (known && part === "events") return Response.json({ items: known.sweeps, next: null });
     if (known && part === "steps") return Response.json({ items: [], next: null });
     if (known && part === "costs") return Response.json(known.costs ?? []);
@@ -576,7 +587,7 @@ beforeEach(() => {
       const last = items.at(-1);
       return Response.json({ items, next: items.length === limit && last ? last.seq : null });
     }
-    if (path === `/api/runs/${BEE5}/flags`) return Response.json({ items: flags, next: null });
+    if (path === `/api/runs/${BEE5}/flags`) return flagPage(flags, q);
     if (path === `/api/runs/${BEE5}/events` && q.getAll("types").join() === "sandbox.started") {
       const started = ev(0, "sandbox.started", {
         sandbox_id: "s1",

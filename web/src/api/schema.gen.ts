@@ -597,6 +597,11 @@ export interface paths {
          * List Flags
          * @description A run's flags in seq order, re-flags of a key folded into its first flag, each with the
          *     status later events gave it. Page on with `after=next`.
+         *
+         *     A reader that keeps the flags it has reads on with `since` and `hash`, the `seq` and `hash`
+         *     of its last read. It gets each flag an event past `since` made or changed, to put in place
+         *     of the one it holds. 409 when the run's event at `since` no longer has that hash, as after
+         *     its log was cut and written again: read the flags again from the start.
          */
         get: operations["list_flags"];
         put?: never;
@@ -3683,14 +3688,19 @@ export interface components {
         /**
          * FlagPage
          * @description `origin` is the run a monitor run watched: the evidence seqs of its flags point there.
+         *     `seq` and `hash` name the run's last event the index held before the page was read.
          */
         FlagPage: {
+            /** Hash */
+            hash: string;
             /** Items */
             items: components["schemas"]["FlagInfo"][];
             /** Next */
             next: string | null;
             /** Origin */
             origin: string | null;
+            /** Seq */
+            seq: number;
         };
         /**
          * FlagReview
@@ -11158,6 +11168,8 @@ export interface operations {
                 status?: ("open" | "cleared" | "tainted" | "confirmed" | "rejected" | "unclear")[] | null;
                 agent?: string | null;
                 tainted?: boolean | null;
+                since?: number | null;
+                hash?: string | null;
             };
             header?: never;
             path: {
@@ -11196,6 +11208,15 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

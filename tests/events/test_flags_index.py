@@ -193,6 +193,28 @@ async def test_flag_filters_and_paging(store: LocalEventStore) -> None:
     assert await seqs(after=9) == []
 
 
+async def test_a_read_since_a_head_gets_each_flag_made_or_changed_after_it(
+    store: LocalEventStore,
+) -> None:
+    run_id = await store.create_run(STARTED)
+    drafts = story()
+    await store.append(run_id, drafts[:8])
+    head = await store.head(run_id)
+    assert head is not None
+    assert head.seq == 8
+    await store.append(run_id, drafts[8:])
+
+    async def seqs(**kwargs: Any) -> list[int]:
+        return [f.seq for f in await store.flags(run_id, **kwargs)]
+
+    # 3 re-flagged at 11 and judged at 10, 4 judged at 10, 9 made at 9; 7 last tainted at 8
+    assert await seqs(since=head.seq) == [3, 4, 9]
+    assert await seqs(since=10) == [3]
+    assert await seqs(since=11) == []
+    assert await seqs(since=8, after=3, limit=1) == [4]
+    assert await seqs(since=-1) == [3, 4, 7, 9]
+
+
 async def test_rebuild_ingest_and_batching_all_index_the_same(
     store: LocalEventStore, tmp_path: Path
 ) -> None:

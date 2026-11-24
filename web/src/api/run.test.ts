@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { Event } from "./events";
-import { samplesQuery, type SampleWindow, sweepsQuery } from "./run";
+import { type FlagInfo, flagsQuery, samplesQuery, type SampleWindow, sweepsQuery } from "./run";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -157,5 +157,74 @@ test("a poll of the sweeps reads on from the last one held", async () => {
     { types: "monitor.sweep", limit: "1000", after: "11" },
     { types: "monitor.sweep", limit: "1000", after: "11" },
     { types: "monitor.sweep", limit: "1000" },
+  ]);
+});
+
+const flag = (seq: number, latest = seq, statusSeq: number | null = null): FlagInfo =>
+  ({
+    seq,
+    latest,
+    status: statusSeq === null ? "open" : "confirmed",
+    status_seq: statusSeq,
+  }) as FlagInfo;
+const mark = (f: FlagInfo) => Math.max(f.latest, f.status_seq ?? -1);
+const rows = (items: FlagInfo[]) => items.map((f) => [f.seq, f.latest, f.status]);
+
+test("a poll of the flags reads on from the run's last event the last read saw", async () => {
+  let flags = [flag(3), flag(4)];
+  let head = 5;
+  // the hash of each event as the server holds it now; a cut log holds another event 8
+  let cut = false;
+  const hashOf = (seq: number) => (cut && seq === 8 ? "other" : `h${seq}`);
+  const asked: URLSearchParams[] = [];
+  vi.stubGlobal("fetch", async (request: Request) => {
+    const q = new URL(request.url).searchParams;
+    asked.push(q);
+    const since = q.get("since");
+    if (since !== null && q.get("hash") !== hashOf(Number(since))) {
+      return Response.json({ title: "Conflict", status: 409, code: "moved" }, { status: 409 });
+    }
+    const items = flags.filter((f) => mark(f) > Number(since ?? -1));
+    return Response.json({ items, next: null, origin: null, seq: head, hash: hashOf(head) });
+  });
+  const qc = new QueryClient();
+  const read = async () => (await qc.fetchQuery({ ...flagsQuery("r"), staleTime: 0 })).items;
+
+  const first = await read();
+  // 3 re-flagged at 6, a verdict on 4 at 7 and a new flag 8
+  flags = [flag(3, 6), flag(4, 4, 7), flag(8)];
+  head = 8;
+  const second = await read();
+  // nothing new: the list the cache holds stays as it is
+  const held = await read();
+  expect(await read()).toBe(held);
+  expect(asked.map(query)).toEqual([
+    { limit: "1000" },
+    { limit: "1000", since: "5", hash: "h5" },
+    { limit: "1000", since: "8", hash: "h8" },
+    { limit: "1000", since: "8", hash: "h8" },
+  ]);
+  expect(rows(first)).toEqual([
+    [3, 3, "open"],
+    [4, 4, "open"],
+  ]);
+  expect(rows(second)).toEqual([
+    [3, 6, "open"],
+    [4, 4, "confirmed"],
+    [8, 8, "open"],
+  ]);
+  expect(rows(held)).toEqual(rows(second));
+
+  // the log was cut past 7 and written again: the flags are all read again
+  flags = [flag(3, 6), flag(9)];
+  head = 9;
+  cut = true;
+  expect(rows(await read())).toEqual([
+    [3, 6, "open"],
+    [9, 9, "open"],
+  ]);
+  expect(asked.slice(4).map(query)).toEqual([
+    { limit: "1000", since: "8", hash: "h8" },
+    { limit: "1000" },
   ]);
 });

@@ -265,6 +265,7 @@ class EventStore(Protocol):
         status: Sequence[str] = (),
         agent_id: str | None = None,
         tainted: bool | None = None,
+        since: int | None = None,
     ) -> list[FlagInfo]: ...
 
     async def samples(
@@ -1465,6 +1466,7 @@ class LocalEventStore:
         status: Sequence[str] = (),
         agent_id: str | None = None,
         tainted: bool | None = None,
+        since: int | None = None,
     ) -> list[FlagInfo]:
         """A page of a run's logical flags with their statuses, in seq order."""
         found = await self._index.flags(
@@ -1477,6 +1479,7 @@ class LocalEventStore:
             status=status,
             agent_id=agent_id,
             tainted=tainted,
+            since=since,
         )
         if not found:
             await self._missed(run_id)

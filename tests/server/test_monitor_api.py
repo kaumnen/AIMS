@@ -17,6 +17,7 @@ from aims.events import (
     AgentFinished,
     BlobRef,
     Draft,
+    Head,
     LocalEventStore,
     RunFinished,
     RunStarted,
@@ -201,6 +202,42 @@ async def test_flags_are_listed_filtered_and_paged(
         assert r.status_code == 422
         unknown = "00000000-0000-7000-8000-000000000009"
         assert (await c.get(f"/api/runs/{unknown}/flags")).status_code == 404
+
+
+async def test_flags_read_on_from_the_head_a_page_gave(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    untouched = flag(source="actions", layer="sweep", category="drift", importance=1)
+    run_id, task = await live(cp, local, fake, [*flagged()[:4], untouched])
+    url = f"/api/runs/{run_id}/flags"
+
+    async def head() -> Head:
+        h = await cp.state.store.head(run_id)
+        assert h is not None
+        return h
+
+    async with cp.client(cp.viewer) as c:
+        first = (await c.get(url)).json()
+        assert [f["seq"] for f in first["items"]] == [3, 4, 5]
+        held = await head()
+        await local.append(run_id, [*flagged()[4:], flag(importance=3)])
+        await until(head, lambda h: h.seq == 8)
+        fresh = (await c.get(url, params={"since": held.seq, "hash": held.hash})).json()
+        # the re-flag of 3 and the verdict on 4 come back with the new flag 8, 5 does not
+        assert [(f["seq"], f["reflags"], f["status"]) for f in fresh["items"]] == [
+            (3, 1, "open"),
+            (4, 0, "confirmed"),
+            (8, 0, "open"),
+        ]
+        assert (first["seq"], first["hash"]) == (held.seq, held.hash)
+        assert (fresh["seq"], fresh["hash"]) == ((await head()).seq, (await head()).hash)
+        again = await c.get(url, params={"since": fresh["seq"], "hash": fresh["hash"]})
+        assert again.json()["items"] == []
+        for since, hashed in ((held.seq, fresh["hash"]), (99, fresh["hash"])):
+            moved = await c.get(url, params={"since": since, "hash": hashed})
+            assert moved.status_code == 409
+            assert moved.json()["code"] == "moved"
+    await seal(local, run_id, task)
 
 
 async def test_run_list_filters_and_carries_monitor_fields(

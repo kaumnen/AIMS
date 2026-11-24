@@ -25,6 +25,7 @@ from aims.server.api import (
     Cursor,
     Operator,
     Out,
+    Seq,
     Started,
     State,
     Viewer,
@@ -42,14 +43,17 @@ router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
 
 
 class FlagPage(Out):
-    """`origin` is the run a monitor run watched: the evidence seqs of its flags point there."""
+    """`origin` is the run a monitor run watched: the evidence seqs of its flags point there.
+    `seq` and `hash` name the run's last event the index held before the page was read."""
 
     items: list[FlagInfo]
     next: str | None = None
     origin: str | None = None
+    seq: int
+    hash: str
 
 
-@router.get("/runs/{run_id}/flags", tags=["monitor"], responses=responses(404, 503))
+@router.get("/runs/{run_id}/flags", tags=["monitor"], responses=responses(404, 409, 503))
 async def list_flags(
     run_id: str,
     principal: Viewer,
@@ -62,13 +66,29 @@ async def list_flags(
     status: Annotated[list[FlagStatus] | None, Query()] = None,
     agent: str | None = None,
     tainted: bool | None = None,
+    since: Seq | None = None,
+    since_hash: Annotated[str | None, Query(alias="hash", max_length=64)] = None,
 ) -> FlagPage:
     """A run's flags in seq order, re-flags of a key folded into its first flag, each with the
-    status later events gave it. Page on with `after=next`."""
+    status later events gave it. Page on with `after=next`.
+
+    A reader that keeps the flags it has reads on with `since` and `hash`, the `seq` and `hash`
+    of its last read. It gets each flag an event past `since` made or changed, to put in place
+    of the one it holds. 409 when the run's event at `since` no longer has that hash, as after
+    its log was cut and written again: read the flags again from the start."""
     await _shown(state, principal, _run_id(run_id))
     info = await state.store.run(run_id)
     if info is None:
         raise _no_run(state, run_id)
+    if since is not None and since_hash is not None:
+        at = await state.store.events(run_id, after=since - 1, limit=1)
+        if not at or at[0].seq != since or at[0].hash != since_hash:
+            raise ProblemException(
+                409,
+                "Conflict",
+                f"the run's event {since} is not the one read before: read the flags again",
+                code="moved",
+            )
     items = await state.store.flags(
         run_id,
         after=after,
@@ -79,9 +99,10 @@ async def list_flags(
         status=status or (),
         agent_id=agent,
         tainted=tainted,
+        since=since,
     )
     nxt = str(items[-1].seq) if len(items) == limit else None
-    return FlagPage(items=items, next=nxt, origin=info.origin)
+    return FlagPage(items=items, next=nxt, origin=info.origin, seq=info.events - 1, hash=info.head)
 
 
 class StartMonitor(BaseModel):
