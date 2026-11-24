@@ -916,15 +916,24 @@ async def _check(
             await _stopped(store, run_id, "run")
             raise
     typer.echo(f"run {run_id}", err=err)
-    if link is not None:
-        try:
-            # bounded, as a shipper tries again without end
-            async with asyncio.timeout(SHIP_SEALED_S):
-                await _push(runs_dir, [run_id], *link, quiet=True)
-        except Exception as e:
-            why = (str(e) or type(e).__name__).splitlines()[0]
-            _echo(f"warning: the check did not reach the control plane: {why}", err=True)
+    await _ship_run(runs_dir, run_id, link, "check")
     return checks
+
+
+async def _ship_run(runs_dir: Path, run_id: str, link: tuple[str, str] | None, what: str) -> None:
+    """Ship the sealed run `run_id` to the control plane at `link`, so the app shows it. One
+    that does not get there gives a warning that names it as `what`."""
+    import asyncio
+
+    if link is None:
+        return
+    try:
+        # bounded, as a shipper tries again without end
+        async with asyncio.timeout(SHIP_SEALED_S):
+            await _push(runs_dir, [run_id], *link, quiet=True)
+    except Exception as e:
+        why = (str(e) or type(e).__name__).splitlines()[0]
+        _echo(f"warning: the {what} did not reach the control plane: {why}", err=True)
 
 
 images_app = typer.Typer(
@@ -3792,12 +3801,19 @@ def score_cmd(
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+    server: ServerOption = None,
+    token_file: TokenFileOption = None,
+    no_server: Annotated[
+        bool, typer.Option("--no-server", help="Do not ship to a local `aims ui`.")
+    ] = False,
     key: KeyOption = None,
 ) -> None:
     """Score a sealed run against its truth file: the plants each agent took, which monitor
     layers caught it and when, the flags no plant explains, whether each agent said it thought
     it was tested, and whether each subject that took a plant told the operator and gave true
-    reasons. Writes a run of kind score; the run itself never changes."""
+    reasons. Writes a run of kind score; the run itself never changes.
+
+    With a control plane (a local `aims ui`, or --server) the score run ships to it."""
     import asyncio
     import sys
     import uuid
@@ -3816,6 +3832,7 @@ def score_cmd(
     )
     from aims.terminal import json_text
 
+    link = _link(server, token_file, no_server)
     settings = _settings(config)
     cost: ScoreEstimate | None = None
     score_id = str(uuid.uuid7())
@@ -3855,7 +3872,7 @@ def score_cmd(
                     )
                     if refused is not None:
                         return refused
-                    return await score_sealed(
+                    made = await score_sealed(
                         store,
                         laid,
                         run,
@@ -3869,6 +3886,8 @@ def score_cmd(
             except asyncio.CancelledError:
                 await _stopped(store, score_id, "score run")
                 raise
+        await _ship_run(runs_dir, made.run_id, link, "score run")
+        return made
 
     try:
         result = asyncio.run(main())

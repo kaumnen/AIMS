@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import httpx2
 import pytest
+from cp import control_plane
 from scripted import Script, models, profile, respond, say
 from test_judge import stalls
 from typer.testing import CliRunner
@@ -1624,3 +1625,28 @@ async def test_score_label_and_rates_on_the_command_line(
         cli.invoke, app, ["score", "01a18000-0000-7000-8000-000000000000", "--runs-dir", runs]
     )
     assert out.exit_code != 0
+
+
+async def test_aims_score_ships_its_run_to_the_local_ui(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Once the score run stayed in the runs dir. The app then showed no score."""
+    drafts = [Draft(call(1), "a"), Draft(AgentFinished(reason="submitted", steps=1), "a")]
+    run_id = await sealed(store, drafts)
+    oracle(monkeypatch, [took(1, (1,))])
+    args = ["score", run_id, "--no-awareness", "--no-answer", "--runs-dir", str(store.root)]
+    async with control_plane(tmp_path / "app") as cp:
+        data = tmp_path / "local-ui"
+        data.mkdir()
+        (data / "server.json").write_text(json.dumps({"url": cp.url, "token": cp.runner}))
+        monkeypatch.setenv("AIMS_SERVER_DIR", str(data))
+        out = await asyncio.to_thread(CliRunner().invoke, app, args)
+        assert out.exit_code == 0, out.output
+        [line] = [x for x in out.stdout.splitlines() if x.startswith("score run ")]
+        held = [r.run_id for r in await cp.state.store.runs(kind="score", origin=run_id)]
+        assert held == [line.removeprefix("score run ")]
+        kept = await asyncio.to_thread(CliRunner().invoke, app, [*args, "--no-server"])
+        assert kept.exit_code == 0, kept.output
+        after = [r.run_id for r in await cp.state.store.runs(kind="score", origin=run_id)]
+    assert after == held
+    assert "warning" not in out.stderr
