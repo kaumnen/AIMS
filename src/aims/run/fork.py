@@ -21,6 +21,7 @@ from aims.events import (
     BlobRef,
     Content,
     EventStore,
+    InputKind,
     RunStarted,
     ToolCall,
     ToolResult,
@@ -44,9 +45,10 @@ log = logging.getLogger("aims.run")
 @dataclass(slots=True)
 class Origin:
     """What a fork needs from the run it forks: the scenario as recorded, each agent's profiles
-    and texts, its step count, the tool outputs it was given and the messages injected. What
-    the origin recorded of a tool call is keyed by its step and its place among the step's
-    calls, from 0, since a provider may give calls the same id or none."""
+    and texts, its step count and the tool outputs it was given. Also the messages injected and
+    the budget warnings, in the order it was given them. What the origin recorded of a tool call
+    is keyed by its step and its place among the step's calls, from 0, since a provider may give
+    calls the same id or none."""
 
     run_id: str
     bundle: Bundle
@@ -54,7 +56,7 @@ class Origin:
     texts: dict[str, Texts]
     steps: dict[str, int] = field(default_factory=dict)
     outputs: dict[str, dict[tuple[int, int], RecordedOutput]] = field(default_factory=dict)
-    injects: dict[str, dict[int, list[str]]] = field(default_factory=dict)
+    inputs: dict[str, dict[int, list[tuple[InputKind, str]]]] = field(default_factory=dict)
     totals: dict[str, dict[int, Totals]] = field(default_factory=dict)
     """What each agent had counted after each of its steps, from its `agent.step` events."""
     full_bundle: Bundle | None = None
@@ -261,7 +263,9 @@ async def load_origin(
     )
     steps: dict[str, int] = defaultdict(int)
     outputs: dict[str, dict[tuple[int, int], RecordedOutput]] = defaultdict(dict)
-    injects: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
+    inputs: dict[str, dict[int, list[tuple[InputKind, str]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     totals: dict[str, dict[int, Totals]] = defaultdict(dict)
     # the place of each agent's next tool result among its step's calls
     places: dict[str, int] = defaultdict(int)
@@ -288,11 +292,12 @@ async def load_origin(
                 # each of its calls in turn
                 outputs[agent][steps[agent], places[agent]] = RecordedOutput(text, payload.error)
                 places[agent] += 1
-            elif isinstance(payload, AgentInput) and payload.kind == "inject":
-                injects[agent][payload.step].append(await _text(store, run_id, payload.text))
+            elif isinstance(payload, AgentInput) and payload.kind in ("inject", "budget_warning"):
+                text = await _text(store, run_id, payload.text)
+                inputs[agent][payload.step].append((payload.kind, text))
     origin.steps = dict(steps)
     origin.outputs = dict(outputs)
-    origin.injects = {a: dict(v) for a, v in injects.items()}
+    origin.inputs = {a: dict(v) for a, v in inputs.items()}
     origin.totals = dict(totals)
     ids = [a.id for a in bundle.scenario.agents]
     origin.replayable = await replayable_steps(store, run_id, ids)
@@ -725,7 +730,8 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
         out: dict[str, ReplayPlan] = {}
         for agent in origin.bundle.scenario.agents:
             step = fork.at(agent.id)
-            injects = origin.injects.get(agent.id, {})
+            keep = fork.keep_others and agent.id != fork.agent
+            given = origin.inputs.get(agent.id, {})
             order = orders[agent.id]
             versions = origin.versions.get(agent.id, {})
             out[agent.id] = ReplayPlan(
@@ -733,14 +739,18 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
                 fork_at=step,
                 schedule=origin.schedules[agent.id],
                 outputs=origin.outputs.get(agent.id, {}),
-                injects={s: list(t) for s, t in injects.items() if s < step},
+                # a kept agent is also given the warnings of the steps it keeps
+                inputs={
+                    s: [i for i in inputs if s < step or (keep and i[0] == "budget_warning")]
+                    for s, inputs in given.items()
+                },
                 strict=fork.strict,
                 inject=fork.inject if fork.agent in (None, agent.id) else None,
                 turnstile=turnstile,
                 order=order,
                 versions={k: v for k, v in versions.items() if k in order},
                 after=holds.get(agent.id, []) if turnstile is not None else [],
-                keep=fork.keep_others and agent.id != fork.agent,
+                keep=keep,
                 actions=actions.get(agent.id, []),
                 budget=caps[agent.id],
                 limits=ran.limits,

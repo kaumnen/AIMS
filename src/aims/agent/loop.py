@@ -441,8 +441,9 @@ class ReplayPlan:
     and its place among the step's calls, from 0, since a provider may give calls the same id
     or none. A replayed step uses the profile the origin used for it, from
     `schedule` (each profile with the last step it ran, None for no end), so its request
-    matches; later steps use the agent's own profile. `injects` are the messages the origin was
-    given, by step.
+    matches; later steps use the agent's own profile. `inputs` are the messages injected and the
+    budget warnings the origin was given, by step, in the order it was given them. While the
+    answers come from the recording, the agent is given those warnings in place of its own.
 
     A fork of several agents runs the replayed tool calls of every agent in the origin's
     order: each waits at `turnstile` for its seq in `order`, and what it met of the channels is
@@ -454,8 +455,9 @@ class ReplayPlan:
     origin ran under, which hold while its steps replay so the replayed requests match; the
     fork's own caps hold from the cut. `totals` holds what the origin's agent had counted
     after each of its steps, from its `agent.step` events: while the answers come from the
-    recording, the agent's caps and budget warnings count those, so they fall where the
-    origin's did, though the fork counts the same answers another way."""
+    recording, the agent's caps count those, so they fall where the origin's did, though the
+    fork counts the same answers another way. Its record of the caps it was warned of counts
+    those too."""
 
     def profile_for(self, step: int) -> Profile:
         for until, profile in self.schedule:
@@ -467,7 +469,7 @@ class ReplayPlan:
     fork_at: int
     schedule: list[tuple[int | None, Profile]]
     outputs: dict[tuple[int, int], RecordedOutput]
-    injects: dict[int, list[str]] = field(default_factory=dict)
+    inputs: dict[int, list[tuple[InputKind, str]]] = field(default_factory=dict)
     strict: bool = False
     inject: str | None = None
     turnstile: Turnstile | None = None
@@ -736,8 +738,10 @@ class Agent:
 
     async def _take_inputs(self) -> None:
         if self.replay is not None:
-            for text in self.replay.injects.pop(self.steps, []):
-                await self._input("inject", text)
+            given = self.replay.inputs.pop(self.steps, [])
+            if self._replaying() or self._kept():
+                for kind, text in given:
+                    await self._input(kind, text)
             if self.steps == self.replay.fork_at and self.replay.inject is not None:
                 text, self.replay.inject = self.replay.inject, None
                 await self._input("inject", text)
@@ -927,9 +931,13 @@ class Agent:
         return f"{scope} limit of {limit:g} USD: {error}"
 
     def _warn_budget(self) -> None:
+        """Warn the agent of each cap it has used `warn_at` of. While its answers come from the
+        recording, it is given the origin's warnings instead, as the origin may have counted
+        cost the recording does not show."""
         b = self._budget()
         if b.warn_at is None:
             return
+        recorded = self._replaying() or self._kept()
         t = self._counts()
         used = {
             "steps": (t.steps, b.steps),
@@ -940,8 +948,9 @@ class Agent:
             if limit is None or self.warned.get(name) == limit or value < b.warn_at * limit:
                 continue
             self.warned[name] = limit
-            text = self.texts.budget(name).format(used=value, limit=limit)
-            self.pending.append(("budget_warning", text))
+            if not recorded:
+                text = self.texts.budget(name).format(used=value, limit=limit)
+                self.pending.append(("budget_warning", text))
 
     async def _gate(
         self, kind: GateKind, call_id: str | None = None, calls: tuple[str, ...] = ()

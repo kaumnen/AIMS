@@ -561,3 +561,124 @@ async def test_a_replay_warns_of_its_cost_and_stops_where_its_origin_did(
     assert [(i.step, str(i.text)) for i in warnings] == [
         (3, "You have spent 6.00 of your 10.00 USD.")
     ]
+
+
+COST = ONE.replace("  - id: agent\n", "  - id: agent\n    budget: {cost_usd: 10, warn_at: 0.5}\n")
+OK = call("bash", command="true") | {"usage": FULL}
+
+
+def priced() -> Profile:
+    """A profile on which each answer of `FULL` usage costs $2."""
+    return retrying(price={"input": 1000.0, "cached": 100.0, "output": 2000.0})
+
+
+async def costed(store: LocalEventStore, script: Script, gate: Gate | None = None) -> str:
+    """A run of `COST` that follows `script`."""
+    p, config = priced(), parse(COST).agent("agent")
+    run_id = await started(store, COST, p)
+    await agent(store, run_id, script, gate=gate, config=config, p=p).run()
+    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    return run_id
+
+
+async def forked(
+    store: LocalEventStore, origin_id: str, fork: Fork, live: Script
+) -> tuple[str, AgentFinished]:
+    """A fork of `origin_id` that `live` answers after the cut, recorded as a run that can be
+    forked in turn."""
+    p, config = priced(), parse(COST).agent("agent")
+    origin = await load_origin(store, origin_id)
+    bench = Bench(store, cast(Any, None), models(p))
+    fork_id = await started(store, COST, p)
+    plan = (await planner(bench, origin, fork)(fork_id))["agent"]
+    finished = await agent(store, fork_id, live, replay=plan, config=config, p=p).run()
+    await store.append(fork_id, [Draft(RunFinished(status="completed"))])
+    return fork_id, finished
+
+
+async def told(store: LocalEventStore, run_id: str) -> list[tuple[int, str]]:
+    inputs = await payloads(store, run_id, AgentInput)
+    return [(i.step, str(i.text)) for i in inputs if i.kind == "budget_warning"]
+
+
+async def sources(store: LocalEventStore, run_id: str) -> list[str]:
+    return [s.source for s in await payloads(store, run_id, AgentStep)]
+
+
+@pytest.mark.parametrize("keep", [False, True], ids=["cut", "kept"])
+@pytest.mark.parametrize("extra", ["unseen", "sized"])
+async def test_a_replay_gives_the_cost_warning_its_origin_got(
+    store: LocalEventStore, extra: str, keep: bool
+) -> None:
+    """The origin's cost warning counted a failed attempt with no cost reported, or an answer
+    with no token counts by its size. Its `agent.step` events record neither, so the fork
+    cannot count them. It is given the origin's warning. A fork after that step replays it,
+    then goes live. A kept fork keeps the answer after it."""
+    if extra == "unseen":
+        first = [OK, {"finish": "error", "usage": None}, OK]
+    else:
+        first = [OK, OK, call("bash", command="true") | {"usage": None}]
+    origin_id = await costed(store, Script(*first, *[OK] * 6))
+    given = await told(store, origin_id)
+    ((k, _),) = given
+    assert k == len(first) - (extra == "unseen")
+    origin = await load_origin(store, origin_id)
+    assert origin.totals["agent"][k].counted_usd < 5
+    fork = Fork(origin=origin_id, step=1, keep_others=True) if keep else Fork(origin_id, k + 1)
+    fork_id, finished = await forked(store, origin_id, fork, Script(call("submit", answer="f")))
+    steps = await sources(store, fork_id)
+    if keep:
+        assert steps[: k + 2] == ["replay"] * (k + 2)
+    else:
+        assert (finished.reason, finished.answer) == ("submitted", "f"), finished.detail
+        assert steps == ["replay"] * (k + 1) + ["live"]
+    assert await told(store, fork_id) == given
+
+
+@pytest.mark.parametrize("keep", [False, True], ids=["c-cut", "c-kept"])
+@pytest.mark.parametrize("middle", ["b-cut", "b-kept"])
+async def test_a_fork_of_a_fork_gives_the_warning_its_origin_got(
+    store: LocalEventStore, middle: str, keep: bool
+) -> None:
+    """Run A is told of its cost after step 3 and ends on its cap after step 5. Fork B replays
+    or keeps that warning by A's count, as a replayed answer costs B nothing. B's `agent.step`
+    events record its own count. Fork C of B replays or keeps B's steps past step 3 and is given
+    B's warning."""
+    a_id = await costed(store, Script(*[OK] * 6))
+    given = [(3, "You have spent 6.00 of your 10.00 USD.")]
+    assert await told(store, a_id) == given
+    if middle == "b-kept":
+        b_fork, b_live = Fork(origin=a_id, step=1, keep_others=True), Script()
+    else:
+        b_fork, b_live = Fork(a_id, 4), Script(OK, call("submit", answer="b"))
+    b_id, _ = await forked(store, a_id, b_fork, b_live)
+    assert await told(store, b_id) == given
+    assert (await load_origin(store, b_id)).totals["agent"][3].cost_usd == 0
+    c_fork = Fork(origin=b_id, step=1, keep_others=True) if keep else Fork(b_id, 5)
+    c_id, c_end = await forked(store, b_id, c_fork, Script(call("submit", answer="c")))
+    steps = await sources(store, c_id)
+    if keep:
+        assert steps[:5] == ["replay"] * 5
+    else:
+        assert (c_end.reason, c_end.answer) == ("submitted", "c"), c_end.detail
+        assert steps == ["replay"] * 5 + ["live"]
+    assert await told(store, c_id) == given
+
+
+async def test_a_replay_gives_a_warning_and_an_inject_in_the_order_its_origin_did(
+    store: LocalEventStore,
+) -> None:
+    """The gate injects a message before the model call after step 3, after the warning of
+    cost. A fork after step 4 gives them in that order, so its requests match the recording."""
+    gate = Gate({("before_model", 3): Verdict("inject", text="Keep going.")})
+    origin_id = await costed(store, Script(*[OK] * 6), gate)
+
+    async def inputs(run_id: str) -> list[tuple[str, int]]:
+        given = await payloads(store, run_id, AgentInput)
+        return [(i.kind, i.step) for i in given if i.kind != "instruction"]
+
+    assert await inputs(origin_id) == [("budget_warning", 3), ("inject", 3)]
+    live = Script(call("submit", answer="f"))
+    fork_id, finished = await forked(store, origin_id, Fork(origin_id, 4), live)
+    assert (finished.reason, finished.answer) == ("submitted", "f"), finished.detail
+    assert await inputs(fork_id) == [("budget_warning", 3), ("inject", 3)]
