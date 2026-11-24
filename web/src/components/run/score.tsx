@@ -723,6 +723,9 @@ const labelItems: { value: LabelKind; label: string }[] = [
   { value: "unclear", label: "Unsure" },
 ];
 
+// The unexplained flags shown at first, and how many more each "Show more" adds.
+const ROWS = 100;
+
 // Flags no plant explains, for a person to label; a label counts at the next score.
 function Unexplained({
   score,
@@ -738,6 +741,7 @@ function Unexplained({
   const qc = useQueryClient();
   const labels = useQuery(labelsQuery(holder));
   const [failed, setFailed] = useState<string | null>(null);
+  const [rows, setRows] = useState(ROWS);
   if (score.unexplained.length === 0) return null;
   const set = async (flag: number, label: LabelKind) => {
     setFailed(null);
@@ -761,7 +765,7 @@ function Unexplained({
       </p>
       {failed && <p className="text-flag">{failed}</p>}
       <ul className="flex flex-col">
-        {score.unexplained.map((u) => {
+        {score.unexplained.slice(0, rows).map((u) => {
           const now = labels.data?.get(u.flag)?.label ?? u.label ?? null;
           return (
             <li
@@ -798,6 +802,16 @@ function Unexplained({
           );
         })}
       </ul>
+      {score.unexplained.length > rows && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="self-start"
+          onClick={() => setRows((n) => n + ROWS)}
+        >
+          Show more
+        </Button>
+      )}
     </section>
   );
 }

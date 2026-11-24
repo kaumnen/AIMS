@@ -1719,6 +1719,33 @@ test("a label goes to the run that holds the flag", async () => {
   ]);
 });
 
+// A score that lists `n` flags no plant explains, each its own event.
+function manyUnexplained(scoreId: string, n: number): Event[] {
+  const log = scoreLog(scoreId);
+  const [unexplained, finished] = log.slice(6) as [Event, Event];
+  const each = Array.from({ length: n }, (_, i) => ({
+    ...unexplained,
+    seq: 6 + i,
+    data: { ...unexplained.data, flag: 1000 + i },
+  }));
+  return [...log.slice(0, 6), ...each, { ...finished, seq: 6 + n }];
+}
+
+test("a long list of unexplained flags shows a page at a time", async () => {
+  withScore();
+  scoreEvents[SCORE] = manyUnexplained(SCORE, 250);
+  renderAt(`/runs/${BEE5}?tab=score`);
+  const region = await screen.findByRole("region", { name: "Unexplained flags" });
+  const shown = () => region.querySelectorAll("li").length;
+  expect(within(region).getByText("250")).toBeTruthy();
+  expect(shown()).toBe(100);
+  fireEvent.click(within(region).getByRole("button", { name: "Show more" }));
+  expect(shown()).toBe(200);
+  fireEvent.click(within(region).getByRole("button", { name: "Show more" }));
+  expect(shown()).toBe(250);
+  expect(within(region).queryByRole("button", { name: "Show more" })).toBeNull();
+});
+
 test("a label that was not saved says so on its own score only", async () => {
   withScore();
   const base = fetch.getMockImplementation()!;
