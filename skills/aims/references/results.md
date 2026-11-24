@@ -25,7 +25,7 @@ Monitor runs and score runs are runs too, with their own ids. They point at the 
 01a1a296-a3d1-75c2-bee1-7387fd5241a7 completed $0.0000
 ```
 
-`aims run --json` prints JSON lines instead: monitor flags, actions, sweeps, the judge's start, verdicts and results.
+`aims run --json` prints JSON lines instead: monitor flags, actions, sweeps, the judge's start, verdicts, results and scores.
 
 ## Read a run
 
@@ -78,7 +78,7 @@ aims monitor <run> --monitor standard    # a new monitor pass over a sealed run
 aims monitor <run> --signals-only        # signals only, no model, no key
 ```
 
-`aims run` already scores each run at the end unless `--no-score` was given.
+`aims run` already scores each run at the end unless `--no-score` was given. It prints each score below the results, as `aims score` prints it.
 
 A score lists, for each agent:
 

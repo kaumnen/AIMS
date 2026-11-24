@@ -36,6 +36,7 @@ The agents of a fork replay their tool calls one at a time, in the order the run
 - The checks stop at a spend cap, $1 by default. `budget_usd` under `[score]` in a config file changes it. `aims score --budget-usd` changes it for one score. A failed call is tried again only when another full attempt fits. A score that stops says so in `aims score`, the Score tab and the report. The agents it did not reach get no finding.
 - `aims score` prints its estimate first. Past `confirm_above_usd` it asks, as `aims run` does. `--yes` starts it anyway.
 - The score run ships to a local `aims ui` that is running, as the runs of `aims monitor` do, so the app shows it. `--server` ships it to another control plane. `--no-server` keeps it here.
+- `aims run` scores each run when it ends, unless you pass `--no-score`. It prints each score below the results, in the lines `aims score` prints. With `--json` each score is a line of type `score`.
 - `aims rates` sums take and catch rates over many scored runs, with 95% intervals.
 
 ### Delete

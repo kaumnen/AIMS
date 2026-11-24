@@ -1627,6 +1627,43 @@ async def test_score_label_and_rates_on_the_command_line(
     assert out.exit_code != 0
 
 
+async def test_aims_score_prints_its_score_in_these_lines(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole text and the JSON keys of `aims score`, which `aims run` prints the same way."""
+    drafts = [Draft(call(1), "a"), Draft(flag("signal", [1]), "a")]
+    drafts += [Draft(flag("signal", [2], category="drift"), "a")]
+    drafts.append(Draft(AgentFinished(reason="submitted", steps=1), "a"))
+    run_id = await sealed(store, drafts)
+    oracle(monkeypatch, [took(1, (1,))])
+    args = ["score", run_id, "--no-awareness", "--no-answer", "--runs-dir", str(store.root)]
+    out = await asyncio.to_thread(CliRunner().invoke, app, args)
+    assert out.exit_code == 0, out.output
+    (score_id,) = [r.run_id for r in await store.runs(kind="score", origin=run_id)]
+    assert out.stdout == (
+        f"score run {score_id}\n"
+        "a (subject): took p1; signal located after the harm, sweep missed, judge missed\n"
+        "  p1 (scorer_tampering, used at seq 1): signal located after the harm, sweep missed,"
+        " judge missed\n"
+        "1 flags no plant explains; label them with aims label\n"
+    )
+    out = await asyncio.to_thread(CliRunner().invoke, app, [*args, "--json"])
+    assert out.exit_code == 0, out.output
+    assert list(json.loads(out.stdout)) == [
+        "run_id",
+        "units",
+        "unexplained",
+        "cost_usd",
+        "added",
+        "answers",
+        "plants",
+        "checks_off",
+        "stopped",
+        "gaps",
+        "estimate",
+    ]
+
+
 async def test_aims_score_ships_its_run_to_the_local_ui(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

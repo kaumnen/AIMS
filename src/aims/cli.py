@@ -11,6 +11,7 @@ from aims import __version__
 
 if TYPE_CHECKING:
     from aims.events import LocalEventStore
+    from aims.run.scoring import ScoreResult
 
 
 def _shown_usage(e: typer.TyperException) -> None:
@@ -1356,7 +1357,7 @@ def run(
         typer.Option(
             "--json",
             help="Print JSON lines: monitor flags, actions, sweeps, the judge's start, verdicts,"
-            " results.",
+            " results, scores.",
         ),
     ] = False,
     replay: Annotated[str | None, typer.Option(help="Run id to replay and fork.")] = None,
@@ -1886,6 +1887,8 @@ async def _run(**o: Any) -> int:
                 )
                 await link.start()
             gate = asyncio.Semaphore(o["parallel"])
+            # each score made, by the run it scored, printed after the results
+            scores: dict[str, ScoreResult] = {}
             stops = 0
             closing = False
             main = asyncio.current_task()
@@ -1924,8 +1927,8 @@ async def _run(**o: Any) -> int:
                 return result
 
             async def score_after(run_id: str) -> None:
-                """Score a sealed run that has a truth file; a score that fails warns. A score
-                may call a model, so none starts after a stop."""
+                """Score a sealed run that has a truth file into `scores`; a score that fails
+                warns. A score may call a model, so none starts after a stop."""
                 from aims.run.scoring import ScoreError, score_sealed
 
                 if not truth.path(store.root / run_id).is_file():
@@ -1941,11 +1944,14 @@ async def _run(**o: Any) -> int:
                     link.ship(score_id)
                 try:
                     scored = await score_sealed(store, settings, run_id, run_id=score_id)
+                    scores[run_id] = scored
                     if scored.checks_off is not None:
                         err.print(f"[yellow]score of run {run_id}:[/]", shown(scored.checks_off))
                     if scored.stopped is not None:
                         stopped = f"the checks stopped: {scored.stopped}"
                         err.print(f"[yellow]score of run {run_id}:[/]", shown(stopped))
+                    for gap in scored.gaps:
+                        err.print(f"[yellow]score of run {run_id}:[/]", shown(gap))
                 except ScoreError as e:
                     err.print(f"[yellow]run {run_id} was not scored:[/]", shown(e))
                 except Exception as e:
@@ -2053,6 +2059,9 @@ async def _run(**o: Any) -> int:
                     line = {"type": "result", **result_json(r)}
                     line["monitor"] = None if found is None else found.json()
                     out.append(json_text(line) + "\n")
+                    if r.run_id in scores:
+                        made = {"type": "score", "origin": r.run_id, **score_json(scores[r.run_id])}
+                        out.append(json_text(made) + "\n")
                 else:
                     count = 0 if found is None else len(found.flags)
                     flags = f" flags {count}" if count else ""
@@ -2060,7 +2069,15 @@ async def _run(**o: Any) -> int:
                     out.append(one_line(text) + "\n")
             stdout("".join(out), nl=False)
         else:
+            # each score below the results, as `aims score` prints it
+            made = [
+                "\n" + "".join(f"{line}\n" for line in score_lines(scores[r.run_id], r.run_id))
+                for r in results
+                if r.run_id in scores
+            ]
             Console().print(summary(results, list(digests.values())))
+            if made:
+                stdout("".join(made), nl=False)
     except BrokenPipeError:
         # A closed pipe, as from `| head`, keeps the runs' own exit code
         stdout.close()
@@ -3852,7 +3869,6 @@ def score_cmd(
     from aims.run.scoring import (
         ScoreError,
         ScoreEstimate,
-        ScoreResult,
         estimate_sealed,
         priced_score,
         score_sealed,
@@ -3927,35 +3943,53 @@ def score_cmd(
         _echo(f"error: {result}", err=True)
         raise typer.Exit(EXIT_FAILED)
     if json_out:
-        out = {
-            "run_id": result.run_id,
-            "units": {a: u.model_dump(mode="json") for a, u in result.units.items()},
-            "unexplained": [u.model_dump(mode="json") for u in result.unexplained],
-            "cost_usd": result.cost_usd,
-            "added": result.added,
-            "answers": {a: x.model_dump(mode="json") for a, x in result.answers.items()},
-            "plants": [t.model_dump(mode="json") for t in result.triggered],
-            "checks_off": result.checks_off,
-            "stopped": result.stopped,
-            "gaps": result.gaps,
-            "estimate": None if cost is None else cost.model_dump(mode="json"),
-        }
-        typer.echo(json_text(out))
+        estimate = None if cost is None else cost.model_dump(mode="json")
+        typer.echo(json_text({**score_json(result), "estimate": estimate}))
         return
     if result.stopped is not None:
         _echo(f"warning: the checks stopped: {result.stopped}", err=True)
     for gap in result.gaps:
         _echo(f"warning: {gap}", err=True)
-    typer.echo(f"score run {result.run_id}")
+    for line in score_lines(result):
+        typer.echo(line)
+
+
+def score_lines(result: ScoreResult, origin: str | None = None) -> list[str]:
+    """A score in words, as `aims score` and `aims run` print it: the score run, of the run
+    `origin` when one is given, the rule plants it added, each agent's unit with the plants it
+    took, then the count of flags no plant explains. Hidden characters in them show as text."""
+    from aims.report.escape import visible
+
+    lines = [f"score run {result.run_id}" + (f" of run {origin}" if origin else "")]
     if result.added:
-        _echo(f"added rule plants: {', '.join(result.added)}")
+        lines.append(f"added rule plants: {', '.join(result.added)}")
     for agent, unit in result.units.items():
-        _echo(score_line(agent, unit))
+        lines.append(score_line(agent, unit))
         for row, t in zip(result.taken, result.triggered, strict=True):
             if row.agent == agent and t.matches:
-                _echo(plant_line(t))
+                lines.append(plant_line(t))
     if result.unexplained:
-        typer.echo(f"{len(result.unexplained)} flags no plant explains; label them with aims label")
+        lines.append(
+            f"{len(result.unexplained)} flags no plant explains; label them with aims label"
+        )
+    return [visible(line) for line in lines]
+
+
+def score_json(result: ScoreResult) -> dict[str, Any]:
+    """A score's fields, as `aims score --json` and the score lines of `aims run --json` give
+    them."""
+    return {
+        "run_id": result.run_id,
+        "units": {a: u.model_dump(mode="json") for a, u in result.units.items()},
+        "unexplained": [u.model_dump(mode="json") for u in result.unexplained],
+        "cost_usd": result.cost_usd,
+        "added": result.added,
+        "answers": {a: x.model_dump(mode="json") for a, x in result.answers.items()},
+        "plants": [t.model_dump(mode="json") for t in result.triggered],
+        "checks_off": result.checks_off,
+        "stopped": result.stopped,
+        "gaps": result.gaps,
+    }
 
 
 def score_line(agent: str, unit: Any) -> str:
