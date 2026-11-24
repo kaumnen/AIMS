@@ -1101,17 +1101,20 @@ async def test_a_job_of_a_kind_this_version_does_not_know_breaks_no_list(
 
 
 @pytest.mark.parametrize(
-    ("payload", "tried", "state"),
+    ("payload", "tried", "needs", "state"),
     [
-        ("[]", "[]", "waiting"),
-        ('"x"', "[]", "queued"),
-        ("null", "[]", "done"),
-        ("1", "[]", "waiting"),
-        ('{"kind": "unknown"}', "null", "queued"),
+        ("[]", "[]", "{}", "waiting"),
+        ('"x"', "[]", "{}", "queued"),
+        ("null", "[]", "{}", "done"),
+        ("1", "[]", "{}", "waiting"),
+        ('{"kind": "unknown"}', "null", "{}", "queued"),
+        # a payload that is not JSON cannot be stored: an index reads json_extract(payload)
+        ('{"kind": "unknown"}', "[", "{}", "queued"),
+        ('{"kind": "unknown"}', "[]", "{", "queued"),
     ],
 )
 async def test_a_damaged_job_row_breaks_no_list_and_stops_no_dispatch(
-    cp: CP, fake: FakeRunner, payload: str, tried: str, state: sdb.JobState
+    cp: CP, fake: FakeRunner, payload: str, tried: str, needs: str, state: sdb.JobState
 ) -> None:
     from aims.server.db import Job as JobRow
 
@@ -1120,9 +1123,11 @@ async def test_a_damaged_job_row_breaks_no_list_and_stops_no_dispatch(
     payload_ok = {"kind": "unknown"}
     row = JobRow(bad, None, None, state, payload_ok, {}, None, None, None, [], None, t, t, None)
     await cp.state.db.add_jobs([row])
-    # as a hand edit or a damaged file may leave it: valid JSON of the wrong shape
+    # as a hand edit or a damaged file may leave it: valid JSON of the wrong shape, or text
+    # that is not JSON
     await cp.state.db._db.execute(
-        "update jobs set payload = ?, tried = ? where run_id = ?", (payload, tried, bad)
+        "update jobs set payload = ?, tried = ?, needs = ? where run_id = ?",
+        (payload, tried, needs, bad),
     )
     await cp.state.db._db.commit()
     async with cp.client(cp.operator) as c, cp.client(cp.viewer) as viewer:
@@ -1138,6 +1143,12 @@ async def test_a_damaged_job_row_breaks_no_list_and_stops_no_dispatch(
             offered.add((await fake.next(OfferMessage)).run_id)
         r = await c.get("/api/runs")
         assert [i["run_id"] for i in r.json()["items"]] == [good]
+    if needs != "{}":
+        # no runner can read what it needs, so it waits
+        assert bad not in offered
+        job = await cp.state.db.job(bad)
+        assert job is not None
+        assert job.state == state
     if bad in offered:
         # no runner can load it, so the claim ends it
         assert await fake.client.claim(bad) is None

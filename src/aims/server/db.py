@@ -657,14 +657,23 @@ class ServerDB:
     )
 
     @staticmethod
-    def _tried(text: str) -> list[str]:
-        tried = json.loads(text)
-        # only a damaged row holds another shape; it would stop every dispatch
+    def _column(text: str) -> Any:
+        """A JSON column of a job row; None for text that is not JSON, which only a damaged row
+        holds. Such a value would stop every dispatch and fail the run list."""
+        try:
+            return json.loads(text)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _tried(cls, text: str) -> list[str]:
+        tried = cls._column(text)
+        # only a damaged row holds another shape
         return tried if isinstance(tried, list) else []
 
     @classmethod
     def _job(cls, r: tuple[Any, ...]) -> Job:
-        payload = json.loads(r[4])
+        payload = cls._column(r[4])
         if not isinstance(payload, dict):
             # Only a damaged row holds such a payload. It reads as a job of a kind this
             # version does not know: lists leave it out and no runner loads it.
@@ -675,7 +684,8 @@ class ServerDB:
             r[2],
             r[3],
             payload,
-            json.loads(r[5]),
+            # needs that are not JSON are needs no runner can read, so the job waits
+            cls._column(r[5]),
             r[6],
             r[7],
             r[8],
