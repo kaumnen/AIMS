@@ -91,7 +91,7 @@ const PROBE = `(() => {
 
 const STEP_READY = `__bench.stepShown()`;
 const RUNS_READY = `document.querySelectorAll('[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]').length >= 2`;
-// One panel shows once the switch is done; the old one stays for a moment beside the new.
+// One panel shows once the switch is done.
 const SCORE_READY = `(() => {
   const shown = [...document.querySelectorAll("[role=tabpanel]")].filter((p) => !p.hidden);
   const text = shown.length === 1 ? shown[0].innerText.trim() : "";

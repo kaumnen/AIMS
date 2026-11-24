@@ -2129,6 +2129,18 @@ test("an open run that ends stays on its latest step across tabs", async () => {
   await waitFor(() => expect(chosenStep()).toContain("edit"));
 });
 
+test("a tab left goes with the click, not a frame later", async () => {
+  renderAt(`/runs/${BEE5}`);
+  await screen.findByRole("listbox", { name: "Steps" });
+  // no frame comes. A panel kept for its exit animation would stay. A browser restyles all of
+  // it before that frame.
+  vi.stubGlobal("requestAnimationFrame", () => 0);
+  onTestFinished(() => void vi.unstubAllGlobals());
+  fireEvent.click(screen.getByRole("tab", { name: "Raw events" }));
+  await screen.findByRole("textbox", { name: /Search/ });
+  expect(screen.queryByRole("listbox", { name: "Steps" })).toBeNull();
+});
+
 test("an open run whose detail is read sealed before its last events still shows them", async () => {
   detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
   const router = renderAt(`/runs/${BEE5}`);

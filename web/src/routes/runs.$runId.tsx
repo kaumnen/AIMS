@@ -256,35 +256,39 @@ function Run() {
           {scored && <TabsTrigger value="score">Score</TabsTrigger>}
           <TabsTrigger value="raw">Raw events</TabsTrigger>
         </TabsList>
-        <TabsContent value="steps" className="flex min-h-0 flex-col pt-1">
-          {kind === "selftest" ? (
-            <Suspense fallback={<p className="text-muted-foreground">Loading cases</p>}>
-              <SelfTestCases runId={runId} detail={detail.data} />
-            </Suspense>
-          ) : kind === "models.check" ? (
-            <Suspense fallback={<p className="text-muted-foreground">Loading checks</p>}>
-              <ModelChecks runId={runId} detail={detail.data} />
-            </Suspense>
-          ) : kind === "monitor" ? (
-            <Suspense fallback={<p className="text-muted-foreground">Loading sweeps</p>}>
-              <ReviewSweeps
+        {/* only the open tab renders. Base UI keeps a panel closed by a click for a frame, for
+            an exit animation. The browser restyles all of it first. */}
+        {tab === "steps" && (
+          <TabsContent value="steps" className="flex min-h-0 flex-col pt-1">
+            {kind === "selftest" ? (
+              <Suspense fallback={<p className="text-muted-foreground">Loading cases</p>}>
+                <SelfTestCases runId={runId} detail={detail.data} />
+              </Suspense>
+            ) : kind === "models.check" ? (
+              <Suspense fallback={<p className="text-muted-foreground">Loading checks</p>}>
+                <ModelChecks runId={runId} detail={detail.data} />
+              </Suspense>
+            ) : kind === "monitor" ? (
+              <Suspense fallback={<p className="text-muted-foreground">Loading sweeps</p>}>
+                <ReviewSweeps
+                  runId={runId}
+                  detail={detail.data}
+                  onRaw={() => change((prev) => ({ ...prev, tab: "raw" }))}
+                />
+              </Suspense>
+            ) : (
+              <Steps
                 runId={runId}
                 detail={detail.data}
-                onRaw={() => change((prev) => ({ ...prev, tab: "raw" }))}
+                search={search}
+                onChange={change}
+                inflight={inflight}
+                follow={follow?.on ?? false}
               />
-            </Suspense>
-          ) : (
-            <Steps
-              runId={runId}
-              detail={detail.data}
-              search={search}
-              onChange={change}
-              inflight={inflight}
-              follow={follow?.on ?? false}
-            />
-          )}
-        </TabsContent>
-        {reported && (
+            )}
+          </TabsContent>
+        )}
+        {tab === "report" && (
           <TabsContent value="report" className="flex min-h-0 flex-col pt-1">
             <Suspense fallback={<p className="text-muted-foreground">Loading the report</p>}>
               <ReportTab
@@ -304,7 +308,7 @@ function Run() {
             </Suspense>
           </TabsContent>
         )}
-        {scored && (
+        {tab === "score" && (
           <TabsContent value="score" className="flex min-h-0 flex-col pt-1">
             <Score
               runId={runId}
@@ -315,9 +319,11 @@ function Run() {
             />
           </TabsContent>
         )}
-        <TabsContent value="raw" className="flex min-h-0 flex-col pt-1">
-          <RawEvents runId={runId} search={search} onChange={pickRaw} />
-        </TabsContent>
+        {tab === "raw" && (
+          <TabsContent value="raw" className="flex min-h-0 flex-col pt-1">
+            <RawEvents runId={runId} search={search} onChange={pickRaw} />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );
