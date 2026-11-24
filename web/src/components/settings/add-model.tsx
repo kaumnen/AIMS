@@ -365,7 +365,7 @@ function Draft({
   const now = useQuery(modelsQuery).data?.roles;
   const [adding, setAdding] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  // An add with a check makes paid calls, so a second click before the page shows the first
+  // An add with a check may make paid calls, so a second click before the page shows the first
   // adds nothing.
   const busy = useRef(false);
   const text = form.text ?? draft.toml;
@@ -475,8 +475,9 @@ function Draft({
       </fieldset>
       <div className="text-muted-foreground flex flex-col gap-1">
         <p>
-          Add saves it in this project&apos;s aims.toml. With a check it gets the roles only once
-          the check passes.
+          Add saves it in this project&apos;s aims.toml. The check sends the model a few small
+          requests, which may cost a little. With a check it gets the roles only once the check
+          passes.
           {measure && " The check also sets its reasoning to what the model sent."}
           {draft.guessed && !measure && " The reasoning stays as you set it."}
         </p>
@@ -504,7 +505,7 @@ function Draft({
           Add without checking
         </Button>
         <Button size="sm" disabled={adding || disabled || taken} onClick={() => void add(true)}>
-          Add and check (a few small paid calls)
+          Add and check
         </Button>
       </DialogFooter>
     </div>

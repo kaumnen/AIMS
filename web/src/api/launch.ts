@@ -16,6 +16,7 @@ export type ModelRole = ModelDraft["fits"][number];
 export type Backend = NonNullable<LookupAsk["backend"]>;
 export type ModelPrices = Schemas["ModelPrices"];
 export type PriceRow = Schemas["PriceRow"];
+export type ListedPrice = Schemas["ListedPrice"];
 export type Preset = NonNullable<StartRun["monitor"]>;
 export type Started = Schemas["Started"];
 

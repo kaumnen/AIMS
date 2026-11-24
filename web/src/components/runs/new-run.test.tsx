@@ -3,7 +3,7 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { Estimate } from "@/api/launch";
+import type { Estimate, ProfileInfo } from "@/api/launch";
 import type { ScenarioInfo } from "@/api/scenarios";
 import type { SeriesInfo } from "@/api/series";
 import { makeRouter } from "@/router";
@@ -24,6 +24,9 @@ let seriesFound: Record<string, SeriesInfo>;
 let seriesPost: Response | null;
 // an estimate answers only once this settles
 let estimateGate: Promise<void> | null;
+// what the models list says of each profile's price; the list prices the estimate holds
+let priced: Record<string, Pick<ProfileInfo, "price" | "price_key">>;
+let listed: Estimate["listed"];
 
 const CAPS = { steps: 80, output_tokens: null, cost_usd: 4, wall_s: 1800 };
 const NO_CAPS = { steps: null, output_tokens: null, cost_usd: null, wall_s: null };
@@ -119,7 +122,7 @@ function estimate(
     rates: [],
     total: { typical_usd: null, high_usd: null, ceiling_usd: ceiling },
     unpriced: [],
-    listed: [],
+    listed,
     unlisted: {},
   };
 }
@@ -135,6 +138,8 @@ beforeEach(() => {
   seriesFound = {};
   seriesPost = null;
   estimateGate = null;
+  priced = {};
+  listed = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -166,6 +171,7 @@ beforeEach(() => {
                 { name: "tools", verdict: "warn", detail: "usage lacks cached", reasoning: null },
               ],
             },
+            ...priced["alpha"],
           },
           {
             name: "beta",
@@ -180,6 +186,7 @@ beforeEach(() => {
             check: null,
             price: null,
             price_key: null,
+            ...priced["beta"],
           },
         ],
       });
@@ -355,6 +362,37 @@ test("a model check runs on demand and reads the result once it ends", async () 
   act(() => source.send({ kind: "run", run: run("c2", { status: "completed", state: "done" }) }));
   await waitFor(() => expect(models().length).toBe(before + 1));
   expect(await form.findByText("alpha (agent): works with warnings")).toBeTruthy();
+});
+
+const FREE = { price: { input: 0, cached: 0, output: 0 }, price_key: null };
+const KEYED = { price: null, price_key: "vendor-x/beta" };
+const listedAt = (key: string, usd: number): Estimate["listed"][number] => ({
+  profile: "beta",
+  source: "LiteLLM",
+  key,
+  checked: "2026-11-15T11:59:06+00:00",
+  input_usd: usd,
+  cached_usd: usd,
+  output_usd: usd,
+  cached_listed: true,
+  tier_from: null,
+  problem: null,
+  text: `LiteLLM list price for ${key}`,
+});
+
+test.each([
+  ["their own prices of 0", FREE, [], ""],
+  ["a list price of 0", KEYED, [listedAt("vendor-x/beta", 0)], ""],
+  ["a list price above 0", KEYED, [listedAt("vendor-x/beta", 0.1)], "paid "],
+  ["a list price of another key", KEYED, [listedAt("vendor-x/other", 0)], "paid "],
+  ["no price known for one", { price: null, price_key: null }, [], "paid "],
+])("a check of profiles with %s says whether it is paid", async (_, beta, prices, paid) => {
+  priced = { alpha: FREE, beta };
+  listed = prices;
+  renderAt("/runs");
+  const form = await openForm();
+  const region = within(form.getByRole("region", { name: "Model checks" }));
+  expect(region.getByText(`a few small ${paid}calls per profile`)).toBeTruthy();
 });
 
 test("the model list cannot be checked until the estimate of the new picks is in", async () => {

@@ -293,7 +293,7 @@ test("an edited profile is kept until you draft again, and a reasoning you set s
     (edited as HTMLTextAreaElement).value,
   );
   fireEvent.click(again.getByRole("checkbox", { name: /^sweep/ }));
-  fireEvent.click(again.getByRole("button", { name: "Add and check (a few small paid calls)" }));
+  fireEvent.click(again.getByRole("button", { name: "Add and check" }));
   await again.findByText(/^It is in/);
   expect(await adds()).toEqual([
     { toml: TOML.replace('"none"', '"full"'), roles: ["sweep"], check: true, measure: false },
@@ -315,12 +315,24 @@ test("drafting again drops the edit, and an edit back to the draft is none", asy
   expect(dialog.getByRole("textbox", { name: "Profile" })).toBeTruthy();
 });
 
+test("the check of a draft may cost, as the dialog does not know its price", async () => {
+  const free = `${TOML}price = { input = 0, cached = 0, output = 0 }\n`;
+  lookup = () => Response.json(draft({ toml: free }));
+  const dialog = await openDialog();
+  await drafted(dialog);
+  expect(dialog.getByRole("button", { name: "Add and check" })).toBeTruthy();
+  expect(
+    dialog.getByText(/The check sends the model a few small requests, which may cost a little\./),
+  ).toBeTruthy();
+  expect(dialog.queryAllByText(/paid/)).toHaveLength(0);
+});
+
 test("a name in use stops the add until the text renames it", async () => {
   lookup = () => Response.json(draft({ exists: true, name: "alpha" }));
   const dialog = await openDialog();
   const text = await drafted(dialog);
   expect(dialog.getByText(/^A profile named alpha exists already/)).toBeTruthy();
-  const check = dialog.getByRole("button", { name: "Add and check (a few small paid calls)" });
+  const check = dialog.getByRole("button", { name: "Add and check" });
   expect(check).toHaveProperty("disabled", true);
   expect(dialog.getByRole("button", { name: "Add without checking" })).toHaveProperty(
     "disabled",
@@ -337,7 +349,7 @@ test("an add with a check is sent once and follows the check to its end", async 
   const dialog = await openDialog();
   await drafted(dialog);
   fireEvent.click(dialog.getByRole("checkbox", { name: /^agent/ }));
-  const button = dialog.getByRole("button", { name: "Add and check (a few small paid calls)" });
+  const button = dialog.getByRole("button", { name: "Add and check" });
   act(() => {
     button.click();
     button.click();
@@ -451,14 +463,14 @@ test("a refused add saves nothing, and a check that was not queued says so", asy
   added = () => problem(409, "no runner is connected", "no_runner");
   const dialog = await openDialog();
   await drafted(dialog);
-  fireEvent.click(dialog.getByRole("button", { name: "Add and check (a few small paid calls)" }));
+  fireEvent.click(dialog.getByRole("button", { name: "Add and check" }));
   expect(await dialog.findByText("Nothing was saved: no runner is connected")).toBeTruthy();
   expect(dialog.getByRole("textbox", { name: "Profile" })).toBeTruthy();
 
   const note = "Its check was not queued: boom. Check it under Settings > Models.";
   added = () =>
     Response.json({ name: "gem-9", path: "/work/aims.toml", run_id: null, notes: [note] });
-  fireEvent.click(dialog.getByRole("button", { name: "Add and check (a few small paid calls)" }));
+  fireEvent.click(dialog.getByRole("button", { name: "Add and check" }));
   const done = within(await screen.findByRole("dialog", { name: "Added gem-9" }));
   expect(done.getByText(note)).toBeTruthy();
   expect(done.queryByRole("link", { name: "check run" })).toBeNull();

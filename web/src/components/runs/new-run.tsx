@@ -347,7 +347,11 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
           </label>
         </div>
       </div>
-      <ProfileChecks uses={uses} stale={estimate.isPending || estimate.isPlaceholderData} />
+      <ProfileChecks
+        uses={uses}
+        stale={estimate.isPending || estimate.isPlaceholderData}
+        listed={estimate.data?.listed}
+      />
       <Cost
         estimate={estimate}
         skip={1}

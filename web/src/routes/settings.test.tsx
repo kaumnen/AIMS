@@ -39,6 +39,8 @@ let projectExists: boolean;
 let saves: { layer: string; text: string; ifMatch: string | null; ifNoneMatch: string | null }[];
 // profiles the models list holds after alpha and gamma
 let more: ProfileInfo[];
+// when set, the only profiles the models list holds
+let only: ProfileInfo[] | null;
 // the profile of each role, null when the role is unset
 let modelRoles: Record<string, string | null>;
 // the answer to a read of the price map, by the search text
@@ -271,6 +273,7 @@ beforeEach(() => {
   projectExists = true;
   saves = [];
   more = [];
+  only = null;
   modelRoles = { agent: "alpha", sweep: "alpha", judge: "alpha" };
   prices = () => mapSays();
   FakeEventSource.all = [];
@@ -281,7 +284,7 @@ beforeEach(() => {
     if (url.pathname === "/api/session") return Response.json({ name: "me", role, auth: true });
     if (url.pathname === "/api/models")
       return Response.json({
-        profiles: [
+        profiles: only ?? [
           profile({ check: checked }),
           profile({
             name: "gamma",
@@ -593,6 +596,30 @@ test("a page with no profile that names a key reads no price map", async () => {
     await new Promise((r) => setTimeout(r, 20));
   });
   expect(priceReads()).toHaveLength(0);
+});
+
+test("the models page says a check is paid unless every profile's price is 0", async () => {
+  const free = { ...LISTED, input_usd: 0, cached_usd: 0, output_usd: 0 };
+  only = [
+    profile({ price: { input: 0, cached: 0, output: 0 } }),
+    profile({ name: "listed", roles: [], price: null, price_key: LISTED.key }),
+  ];
+  prices = () =>
+    mapSays({ profiles: [{ name: "listed", listed: free, unlisted: null, candidates: [] }] });
+  renderAt("/settings/models");
+  expect(
+    await screen.findByText(
+      "Set in the config files; a check makes a few small calls per profile.",
+    ),
+  ).toBeTruthy();
+  cleanup();
+  only = null;
+  renderAt("/settings/models");
+  expect(
+    await screen.findByText(
+      "Set in the config files; a check makes a few small paid calls per profile.",
+    ),
+  ).toBeTruthy();
 });
 
 test("a viewer finds a price key, copies its line and searches the map", async () => {

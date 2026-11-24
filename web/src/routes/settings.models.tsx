@@ -12,7 +12,7 @@ import {
 import { isProblem } from "@/api/session";
 import { CONFIG_DEPENDENT, layerQuery, patchConfig } from "@/api/settings";
 import { problemText } from "@/components/form";
-import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
+import { CHECK_TEXT, free, useModelCheck } from "@/components/model-check";
 import { AddLine, AddModel } from "@/components/settings/add-model";
 import { figures, PriceKeys, rowNotes, Slashed } from "@/components/settings/price-keys";
 import { Button } from "@/components/ui/button";
@@ -85,7 +85,7 @@ function Models() {
         <h2 className="font-medium">Model profiles</h2>
         <span className="text-muted-foreground">
           {operator
-            ? "Set in the config files; a check makes a few small paid calls per profile."
+            ? `Set in the config files; a check makes a few small ${profiles.every((p) => free(p, listedOf(p, prices))) ? "" : "paid "}calls per profile.`
             : "Set in the config files."}
         </span>
         {operator && (

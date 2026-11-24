@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import { checkModels, modelsQuery, type ProfileInfo } from "@/api/launch";
+import { checkModels, type ListedPrice, modelsQuery, type ProfileInfo } from "@/api/launch";
 import { runQuery } from "@/api/run";
 import { ended } from "@/api/runs";
 import { isProblem } from "@/api/session";
@@ -16,6 +16,13 @@ export const CHECK_TEXT = {
   none: "never checked",
   cut: "check stopped before it got here",
 } as const;
+
+// Whether the calls of a check of `p` are free: its own price, or else `listed`, the list price
+// of its key, is 0 for input and output. A price not known is not free.
+export const free = (p: ProfileInfo, listed: ListedPrice | null | undefined) =>
+  [p.price?.input ?? listed?.input_usd, p.price?.output ?? listed?.output_usd].every(
+    (x) => x === 0,
+  );
 
 // how often the models and the check's run are read while a check runs, in case the stream
 // misses its end
@@ -32,7 +39,7 @@ export function useModelCheck() {
   const live = useLive();
   // `run` is null while the check is being started
   const [checking, setChecking] = useState<{ run: string | null; profiles: string[] } | null>(null);
-  // A check is paid for, so a second click before the page shows the first starts nothing.
+  // A check may be paid for, so a second click before the page shows the first starts nothing.
   const starting = useRef(false);
   const [problem, setProblem] = useState<string | null>(null);
   const run = checking?.run ?? null;

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { modelsQuery } from "@/api/launch";
-import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
+import { type ListedPrice, modelsQuery } from "@/api/launch";
+import { CHECK_TEXT, free, useModelCheck } from "@/components/model-check";
 import { Button } from "@/components/ui/button";
 import { started } from "@/lib/format";
 import { checkProblem, checkState } from "@/lib/launch";
@@ -12,15 +12,18 @@ const NONE = new Map<string, string[]>();
 // The profiles a run calls with what each does in it, `uses`, and their checks. While `stale`
 // the list may be of other picks, so it cannot be checked. `recorded` names the models a fork
 // calls on a profile as its run recorded it, where that is not what this config's profile of the
-// name holds, which is what the check tests.
+// name holds, which is what the check tests. `listed` are the list prices of the profiles that set
+// none.
 export function ProfileChecks({
   uses,
   stale,
   recorded = NONE,
+  listed,
 }: {
   uses: Map<string, string[]>;
   stale: boolean;
   recorded?: Map<string, string[]>;
+  listed: readonly ListedPrice[] | undefined;
 }) {
   const models = useQuery(modelsQuery);
   const { checking, problem, check } = useModelCheck();
@@ -74,7 +77,18 @@ export function ProfileChecks({
         >
           Check
         </Button>
-        <span>a few small paid calls per profile</span>
+        <span>
+          a few small{" "}
+          {profiles.every((p) =>
+            free(
+              p,
+              listed?.find((l) => l.profile === p.name && l.key === p.price_key),
+            ),
+          )
+            ? ""
+            : "paid "}
+          calls per profile
+        </span>
       </span>
       {problem && <span className="text-flag">{problem}</span>}
     </section>

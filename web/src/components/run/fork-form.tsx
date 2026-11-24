@@ -281,6 +281,7 @@ export default function ForkForm({
         uses={uses}
         stale={estimate.isPending || estimate.isPlaceholderData}
         recorded={ran}
+        listed={estimate.data?.listed}
       />
       <Cost
         estimate={estimate}
