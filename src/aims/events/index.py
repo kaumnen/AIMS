@@ -1828,11 +1828,14 @@ class Index:
         ts_to: int | None = None,
         after: int | None = None,
         limit: int = MAX_PAGE,
+        by_seq: bool = False,
     ) -> list[SampleWindow]:
         """Windows of a run up to its head that overlap [`ts_from`, `ts_to`] on the boot clock,
         oldest first: by `ts_from`, then seq. `after` is the seq of the last window of the page
         before; the page goes on from there. It holds nothing when the run has no window at
-        that seq."""
+        that seq. With `by_seq` the windows come in seq order, the order the run logged them,
+        and the page holds those past seq `after`. A reader that keeps what it read can then
+        read on from its last window: one logged later with an earlier start still comes."""
         if not _held(run_id, agent_id):
             return []
         where = ["run_id = ?", f"+seq <= {HEAD}"]
@@ -1846,7 +1849,10 @@ class Index:
         if ts_to is not None:
             where.append("ts_from <= ?")
             args.append(_int(ts_to))
-        if after is not None:
+        if after is not None and by_seq:
+            where.append("seq > ?")
+            args.append(_int(after))
+        elif after is not None:
             where.append(
                 "(ts_from, seq) > (select ts_from, seq from samples where run_id = ? and seq = ?)"
             )
@@ -1854,7 +1860,7 @@ class Index:
         args.append(_cap(limit))
         async with self._db.execute(
             f"select {', '.join(SAMPLE_FIELDS)} from samples where {' and '.join(where)}"
-            " order by ts_from, seq limit ?",
+            f" order by {'seq' if by_seq else 'ts_from, seq'} limit ?",
             args,
         ) as cur:
             rows = await cur.fetchall()

@@ -3309,6 +3309,14 @@ async def test_sample_pages_hold_every_window_once(cp: CP, local: LocalEventStor
         a2 = sorted((ts, seq) for ts, seq, agent in windows if agent == "a2")
         assert len(a2) == 699
         assert await paged(c, agent="a2", limit=200) == a2
+        # by seq, as a reader that keeps its windows reads on from the last one it has
+        by_seq = sorted(stored, key=lambda w: w[1])
+        assert await paged(c, order="seq", limit=300) == by_seq
+        last = by_seq[-2][1]
+        r = await c.get(f"/api/runs/{run_id}/samples", params={"order": "seq", "after": last})
+        assert [(w["ts_from"], w["seq"]) for w in r.json()["items"]] == by_seq[-1:]
+        r = await c.get(f"/api/runs/{run_id}/samples", params={"order": "start"})
+        assert r.status_code == 422
 
 
 async def test_search_text_and_cursors_the_index_cannot_bind_are_refused(

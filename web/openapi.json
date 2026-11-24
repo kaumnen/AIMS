@@ -23596,7 +23596,7 @@
     },
     "/api/runs/{run_id}/samples": {
       "get": {
-        "description": "The resource timeline, one window per sandbox second, by start time then seq. `ts_from`\nand `ts_to` keep the windows that overlap that span of the boot clock. Page on with\n`after=next`, the seq of the page's last window.",
+        "description": "The resource timeline, one window per sandbox second, by start time then seq. `ts_from`\nand `ts_to` keep the windows that overlap that span of the boot clock. Page on with\n`after=next`, the seq of the page's last window. `order=seq` lists the windows by seq, the\norder the run logged them. Then `after` keeps those past that seq. A reader that keeps the\nwindows it has reads on from the last one: a window logged late with an earlier start\nstill comes.",
         "operationId": "list_samples",
         "parameters": [
           {
@@ -23688,6 +23688,20 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "time",
+              "enum": [
+                "time",
+                "seq"
+              ],
+              "title": "Order",
+              "type": "string"
             }
           }
         ],

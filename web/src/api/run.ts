@@ -271,10 +271,12 @@ export function joinLast<P>(
   };
 }
 
+type Get<T> = (
+  cursor: number | undefined,
+) => Promise<{ items: T[]; next?: number | string | null }>;
+
 // Pages follow one another: each starts where the last one ended.
-async function everyPage<T>(
-  get: (cursor: number | undefined) => Promise<{ items: T[]; next?: number | string | null }>,
-): Promise<T[]> {
+async function everyPage<T>(get: Get<T>): Promise<T[]> {
   const out: T[] = [];
   let cursor: number | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -287,16 +289,29 @@ async function everyPage<T>(
   return out;
 }
 
-// The resource timeline, every window: the scrubber spans the whole run.
+// A list in seq order that only grows, so a poll reads on from the last item held and adds
+// what came. That item is read again too: when the server no longer holds it as it was, as
+// after a log was cut and written again, the list is read again from the start.
+async function readOn<T extends { seq: number }>(held: T[] | undefined, get: Get<T>) {
+  const last = held?.at(-1);
+  if (!held || !last) return everyPage(get);
+  if (held.length >= MAX_PAGES * MAX_EVENTS) return held;
+  const [first, ...more] = await everyPage((after) => get(after ?? last.seq - 1));
+  if (JSON.stringify(first) !== JSON.stringify(last)) return everyPage(get);
+  return more.length > 0 ? [...held, ...more] : held;
+}
+
+// The resource timeline, every window: the scrubber spans the whole run. The windows come in
+// seq order, so a window logged late with an earlier start is not skipped.
 export function samplesQuery(runId: string) {
   return queryOptions({
     queryKey: ["runs", "samples", runId] as const,
-    queryFn: ({ signal }) =>
-      everyPage(async (after) => {
+    queryFn: ({ client: qc, queryKey, signal }) =>
+      readOn(qc.getQueryData<SampleWindow[]>(queryKey), async (after) => {
         const { data, error } = await client.GET("/api/runs/{run_id}/samples", {
           params: {
             ...path(runId),
-            query: { limit: MAX_EVENTS, ...(after === undefined ? {} : { after }) },
+            query: { order: "seq", limit: MAX_EVENTS, ...(after === undefined ? {} : { after }) },
           },
           signal,
         });

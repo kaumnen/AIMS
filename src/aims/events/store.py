@@ -276,6 +276,7 @@ class EventStore(Protocol):
         ts_to: int | None = None,
         after: int | None = None,
         limit: int = MAX_PAGE,
+        by_seq: bool = False,
     ) -> list[SampleWindow]: ...
 
     async def verify(self, run_id: str) -> Verification: ...
@@ -1643,11 +1644,18 @@ class LocalEventStore:
         ts_to: int | None = None,
         after: int | None = None,
         limit: int = MAX_PAGE,
+        by_seq: bool = False,
     ) -> list[SampleWindow]:
-        """The resource timeline of a run, one row per sandbox second, by start then seq.
-        `after` is the seq of the last window of the page before."""
+        """The resource timeline of a run, one row per sandbox second, by start then seq, or
+        by seq alone with `by_seq`. `after` is the seq of the last window of the page before."""
         return await self._index.samples(
-            run_id, agent_id=agent_id, ts_from=ts_from, ts_to=ts_to, after=after, limit=limit
+            run_id,
+            agent_id=agent_id,
+            ts_from=ts_from,
+            ts_to=ts_to,
+            after=after,
+            limit=limit,
+            by_seq=by_seq,
         )
 
     async def verify(self, run_id: str) -> Verification:

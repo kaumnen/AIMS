@@ -856,7 +856,10 @@ export interface paths {
          * List Samples
          * @description The resource timeline, one window per sandbox second, by start time then seq. `ts_from`
          *     and `ts_to` keep the windows that overlap that span of the boot clock. Page on with
-         *     `after=next`, the seq of the page's last window.
+         *     `after=next`, the seq of the page's last window. `order=seq` lists the windows by seq, the
+         *     order the run logged them. Then `after` keeps those past that seq. A reader that keeps the
+         *     windows it has reads on from the last one: a window logged late with an earlier start
+         *     still comes.
          */
         get: operations["list_samples"];
         put?: never;
@@ -12260,6 +12263,7 @@ export interface operations {
                 ts_to?: number | null;
                 after?: number | null;
                 limit?: number;
+                order?: "time" | "seq";
             };
             header?: never;
             path: {
@@ -16044,6 +16048,7 @@ export const pathsApiRunsRun_idFlagsGetParametersQueryStatusAnyOf0Values: Readon
 export const pathsApiRunsRun_idForksEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/forks/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const pathsApiRunsRun_idMonitorEstimateGetParametersQueryPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/monitor/estimate"]["get"]["parameters"]["query"]["preset"]> = ["signals", "standard", "research"];
 export const pathsApiRunsRun_idReportGetParametersQueryFormatValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/report"]["get"]["parameters"]["query"]["format"]> = ["json", "md"];
+export const pathsApiRunsRun_idSamplesGetParametersQueryOrderValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/samples"]["get"]["parameters"]["query"]["order"]> = ["time", "seq"];
 export const pathsApiScenariosSourceNameEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/scenarios/{source}/{name}/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const addInfoOutcomeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AddInfo"]["outcome"]> = ["done", "failed", "changed", "refused"];
 export const addInfoRolesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AddInfo"]["roles"]> = ["agent", "sweep", "judge"];

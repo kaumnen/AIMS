@@ -986,6 +986,44 @@ async def test_sample_pages_cut_inside_equal_starts(store: LocalEventStore) -> N
     assert await store.samples(run_id, after=0) == []
 
 
+async def test_sample_pages_by_seq_read_on_past_a_window_logged_late(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await two_sandboxes(store)
+    by_time = await stored_windows(store, run_id)
+    by_seq = sorted(by_time, key=lambda w: w[1])
+    assert await every_window(store, run_id, 1000, by_seq=True) == by_seq
+    assert await every_window(store, run_id, 7, by_seq=True) == by_seq
+    # a reader that holds every window reads on from the last one; the next window logged
+    # starts before the latest start, so a cursor by start time skips it
+    last = by_seq[-1][1]
+    await store.append(run_id, [window("a2", 600_000_000, 600_900_000)])
+    assert await store.samples(run_id, after=by_time[-1][1]) == []
+    db = store._index._db
+    real = db.execute
+    ran: list[tuple[str, Any]] = []
+
+    def execute(sql: str, parameters: Any = None) -> Any:
+        ran.append((sql, parameters))
+        return real(sql, parameters)
+
+    monkeypatch.setattr(db, "execute", execute)
+    page = await store.samples(run_id, after=last, by_seq=True)
+    monkeypatch.undo()
+    assert [(w.ts_from, w.seq) for w in page] == [(600_000_000, last + 1)]
+    ((sql, parameters),) = [(s, p) for s, p in ran if " from samples " in s]
+    con = sqlite3.connect(store.root / "index.sqlite")
+    try:
+        plan = [r[3] for r in con.execute(f"explain query plan {sql}", parameters)]
+    finally:
+        con.close()
+    # the rows past the cursor in the primary key, with no sort
+    assert [p for p in plan if "samples" in p] == [
+        "SEARCH samples USING INDEX sqlite_autoindex_samples_1 (run_id=? AND seq>?)"
+    ], plan
+    assert not [p for p in plan if "TEMP B-TREE" in p], plan
+
+
 async def test_content_writes_a_lone_surrogate_as_text(store: LocalEventStore) -> None:
     run_id = await store.create_run(STARTED)
     assert await store.content(run_id, "a\ud800") == "a\\ud800"

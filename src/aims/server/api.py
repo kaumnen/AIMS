@@ -1710,13 +1710,23 @@ async def list_samples(
     ts_to: BootUs | None = None,
     after: Cursor | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = MAX_PAGE,
+    order: Literal["time", "seq"] = "time",
 ) -> SamplePage:
     """The resource timeline, one window per sandbox second, by start time then seq. `ts_from`
     and `ts_to` keep the windows that overlap that span of the boot clock. Page on with
-    `after=next`, the seq of the page's last window."""
+    `after=next`, the seq of the page's last window. `order=seq` lists the windows by seq, the
+    order the run logged them. Then `after` keeps those past that seq. A reader that keeps the
+    windows it has reads on from the last one: a window logged late with an earlier start
+    still comes."""
     await _shown(state, principal, _run_id(run_id))
     items = await state.store.samples(
-        run_id, agent_id=agent, ts_from=ts_from, ts_to=ts_to, after=after, limit=limit
+        run_id,
+        agent_id=agent,
+        ts_from=ts_from,
+        ts_to=ts_to,
+        after=after,
+        limit=limit,
+        by_seq=order == "seq",
     )
     return SamplePage(items=items, next=items[-1].seq if len(items) == limit else None)
 

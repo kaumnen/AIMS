@@ -556,9 +556,13 @@ beforeEach(() => {
     }
     if (path === `/api/runs/${BEE5}/samples`) {
       const limit = Number(q.get("limit") ?? 1000);
-      const sorted = samples.toSorted((a, b) => a.ts_from - b.ts_from || a.seq - b.seq);
       const after = q.get("after");
-      const start = after === null ? 0 : sorted.findIndex((w) => w.seq === Number(after)) + 1;
+      const bySeq = q.get("order") === "seq";
+      const sorted = bySeq
+        ? samples.toSorted((a, b) => a.seq - b.seq).filter((w) => w.seq > Number(after ?? -1))
+        : samples.toSorted((a, b) => a.ts_from - b.ts_from || a.seq - b.seq);
+      const start =
+        after === null || bySeq ? 0 : sorted.findIndex((w) => w.seq === Number(after)) + 1;
       const items = sorted.slice(start, start + limit);
       const last = items.at(-1);
       return Response.json({ items, next: items.length === limit && last ? last.seq : null });

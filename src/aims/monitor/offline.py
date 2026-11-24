@@ -550,9 +550,16 @@ class OriginStore:
         ts_to: int | None = None,
         after: int | None = None,
         limit: int = 1000,
+        by_seq: bool = False,
     ) -> list[SampleWindow]:
         return await self._of(run_id).samples(
-            run_id, agent_id=agent_id, ts_from=ts_from, ts_to=ts_to, after=after, limit=limit
+            run_id,
+            agent_id=agent_id,
+            ts_from=ts_from,
+            ts_to=ts_to,
+            after=after,
+            limit=limit,
+            by_seq=by_seq,
         )
 
     async def verify(self, run_id: str) -> Verification:
