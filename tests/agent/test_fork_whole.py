@@ -103,6 +103,7 @@ def agent(
     sandbox: FakeSandbox | None = None,
     config: AgentConfig | None = None,
     p: Profile | None = None,
+    limits: Limits | None = None,
 ) -> Agent:
     p = p or profile()
     config = config or AgentConfig()
@@ -117,7 +118,7 @@ def agent(
         store=store,
         run_id=run_id,
         tools=load_tools(config.tool_names),
-        run_budget=RunBudget(Limits()),
+        run_budget=RunBudget(limits or Limits()),
         gate=gate,
         replay=replay,
     )
@@ -572,26 +573,31 @@ def priced() -> Profile:
     return retrying(price={"input": 1000.0, "cached": 100.0, "output": 2000.0})
 
 
-async def costed(store: LocalEventStore, script: Script, gate: Gate | None = None) -> str:
-    """A run of `COST` that follows `script`."""
-    p, config = priced(), parse(COST).agent("agent")
-    run_id = await started(store, COST, p)
-    await agent(store, run_id, script, gate=gate, config=config, p=p).run()
+async def costed(
+    store: LocalEventStore, script: Script, gate: Gate | None = None, text: str = COST
+) -> str:
+    """A run of the scenario `text` that follows `script`."""
+    p, scenario = priced(), parse(text)
+    run_id = await started(store, text, p)
+    config, limits = scenario.agent("agent"), scenario.limits
+    await agent(store, run_id, script, gate=gate, config=config, p=p, limits=limits).run()
     await store.append(run_id, [Draft(RunFinished(status="completed"))])
     return run_id
 
 
 async def forked(
-    store: LocalEventStore, origin_id: str, fork: Fork, live: Script
+    store: LocalEventStore, origin_id: str, fork: Fork, live: Script, text: str = COST
 ) -> tuple[str, AgentFinished]:
     """A fork of `origin_id` that `live` answers after the cut, recorded as a run that can be
     forked in turn."""
-    p, config = priced(), parse(COST).agent("agent")
+    p, scenario = priced(), parse(text)
     origin = await load_origin(store, origin_id)
     bench = Bench(store, cast(Any, None), models(p))
-    fork_id = await started(store, COST, p)
+    fork_id = await started(store, text, p)
     plan = (await planner(bench, origin, fork)(fork_id))["agent"]
-    finished = await agent(store, fork_id, live, replay=plan, config=config, p=p).run()
+    config, limits = scenario.agent("agent"), scenario.limits
+    made = agent(store, fork_id, live, replay=plan, config=config, p=p, limits=limits)
+    finished = await made.run()
     await store.append(fork_id, [Draft(RunFinished(status="completed"))])
     return fork_id, finished
 
@@ -682,3 +688,38 @@ async def test_a_replay_gives_a_warning_and_an_inject_in_the_order_its_origin_di
     fork_id, finished = await forked(store, origin_id, Fork(origin_id, 4), live)
     assert (finished.reason, finished.answer) == ("submitted", "f"), finished.detail
     assert await inputs(fork_id) == [("budget_warning", 3), ("inject", 3)]
+
+
+RUN_CAP = ONE.replace("agents:\n", "limits: {cost_usd: 10}\nagents:\n").replace(
+    "  - id: agent\n", "  - id: agent\n    budget: {cost_usd: 100}\n"
+)
+
+
+@pytest.mark.parametrize("case", ["unseen", "fork-of-fork", "run-cap"])
+async def test_a_kept_agent_ends_where_its_origin_s_own_cap_ended_it(
+    store: LocalEventStore, case: str
+) -> None:
+    """A kept agent ends where its own cost cap ended the origin, with the origin's reason and
+    detail. That holds when the origin counted a failed attempt with no cost reported, which its
+    `agent.step` events do not record. It holds in a fork of a kept fork, whose `agent.step`
+    events record its own count. A cap of the origin's run is left to the fork's run, which
+    counts what the fork spent."""
+    text = RUN_CAP if case == "run-cap" else COST
+    first = [OK, {"finish": "error", "usage": None}] if case == "unseen" else []
+    origin_id = await costed(store, Script(*first, *[OK] * 6), text=text)
+    if case == "fork-of-fork":
+        kept = Fork(origin=origin_id, step=1, keep_others=True)
+        origin_id, _ = await forked(store, origin_id, kept, Script())
+    (end,) = await payloads(store, origin_id, AgentFinished)
+    assert end.reason == "budget_cost"
+    live = Script(call("submit", answer="f"))
+    fork = Fork(origin=origin_id, step=1, keep_others=True)
+    fork_id, finished = await forked(store, origin_id, fork, live, text=text)
+    steps = await sources(store, fork_id)
+    if case == "run-cap":
+        assert end.detail == "run limit of 10 USD reached"
+        assert (finished.reason, finished.answer) == ("submitted", "f"), finished.detail
+        assert steps == ["replay"] * end.steps + ["live"]
+    else:
+        assert (finished.reason, finished.steps) == (end.reason, end.steps), finished.detail
+        assert (finished.detail, steps, live.requests) == (end.detail, ["replay"] * end.steps, [])

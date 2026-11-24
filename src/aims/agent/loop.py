@@ -383,6 +383,9 @@ def on_loop(at: float) -> float:
     return asyncio.get_running_loop().time() + (at - time.monotonic())
 
 
+_CAPS: tuple[AgentEnd, ...] = ("budget_steps", "budget_output_tokens", "budget_cost")
+
+
 def _over(
     t: Totals,
     steps: int | None,
@@ -455,9 +458,9 @@ class ReplayPlan:
     origin ran under, which hold while its steps replay so the replayed requests match; the
     fork's own caps hold from the cut. `totals` holds what the origin's agent had counted
     after each of its steps, from its `agent.step` events: while the answers come from the
-    recording, the agent's caps count those, so they fall where the origin's did, though the
-    fork counts the same answers another way. Its record of the caps it was warned of counts
-    those too."""
+    recording, the agent's record of the caps it was warned of counts those, though the fork
+    counts the same answers another way. `end` is how the origin's agent ended: its steps,
+    reason and detail. A kept agent ends there when the origin's own caps ended it."""
 
     def profile_for(self, step: int) -> Profile:
         for until, profile in self.schedule:
@@ -481,6 +484,7 @@ class ReplayPlan:
     budget: Budget | None = None
     limits: Limits | None = None
     totals: dict[int, Totals] = field(default_factory=dict)
+    end: tuple[int, AgentEnd, str | None] | None = None
 
 
 class Agent:
@@ -858,8 +862,8 @@ class Agent:
         self._charge(reply.model_copy(update={"cost_usd": reply.cost_usd or 0.0}), step=False)
 
     def _counts(self) -> Totals:
-        """What the agent's own caps count now: while its answers come from the recording, what
-        the origin had counted after this step, else its own totals."""
+        """What the agent's budget warnings count now: while its answers come from the
+        recording, what the origin had counted after this step, else its own totals."""
         r = self.replay
         if r is not None and (self._replaying() or self._kept()):
             recorded = r.totals.get(self.steps)
@@ -869,11 +873,15 @@ class Agent:
 
     def _over_budget(self) -> tuple[AgentEnd, str] | None:
         """Which cap ends the agent before its next call. None while the call replays a step
-        the origin took, as the origin's log shows the step fit its caps."""
+        the origin took, as the origin's log shows the step fit its caps. While the agent keeps
+        the origin's answers, its own caps end it only where they ended the origin."""
         if self._replaying():
             return None
-        b = self._budget()
-        own = _over(self._counts(), b.steps, b.output_tokens, b.cost_usd, "agent")
+        if self._kept():
+            own = self._kept_end()
+        else:
+            b = self._budget()
+            own = _over(self.totals, b.steps, b.output_tokens, b.cost_usd, "agent")
         limits = self._limits()
         run = _over(
             self.run_budget.totals,
@@ -884,6 +892,18 @@ class Agent:
             self.run_budget.owed_by_others(self.id),
         )
         return own or run
+
+    def _kept_end(self) -> tuple[AgentEnd, str] | None:
+        """The origin's end when one of the agent's own caps ended the origin's agent after
+        this step. The end's detail names the cap's scope. A cap of the origin's run is left to
+        the fork's run."""
+        end = None if self.replay is None else self.replay.end
+        if end is None:
+            return None
+        steps, reason, detail = end
+        if steps != self.steps or reason not in _CAPS or detail is None:
+            return None
+        return (reason, detail) if detail.startswith("agent limit") else None
 
     def _left(self) -> list[tuple[float, str, float]]:
         """What each cost cap leaves, with its scope and its limit: the agent's of what the

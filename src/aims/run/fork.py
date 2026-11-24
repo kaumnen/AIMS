@@ -15,6 +15,8 @@ from pydantic import ValidationError
 from aims.agent import ChannelVersions, RecordedOutput, ReplayPlan, Totals, Turnstile
 from aims.events import (
     MAX_INT,
+    AgentEnd,
+    AgentFinished,
     AgentInput,
     AgentStep,
     BlobError,
@@ -76,6 +78,8 @@ class Origin:
     """Whether the origin was still running when it was loaded."""
     ended: set[str] = field(default_factory=set)
     """The agents whose end is in the origin's log."""
+    ends: dict[str, tuple[int, AgentEnd, str | None]] = field(default_factory=dict)
+    """How each agent ended, from its `agent.finished` event: its steps, reason and detail."""
 
     @property
     def seed(self) -> bytes | None:
@@ -277,6 +281,12 @@ async def load_origin(
             agent = event.agent_id or ""
             if event.type == "agent.finished":
                 origin.ended.add(agent)
+                try:
+                    end = event.payload() if replay else None
+                except ValidationError:
+                    end = None
+                if isinstance(end, AgentFinished):
+                    origin.ends[agent] = (end.steps, end.reason, end.detail)
                 continue
             payload = event.payload()
             if event.type == "agent.step":
@@ -755,6 +765,7 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
                 budget=caps[agent.id],
                 limits=ran.limits,
                 totals=origin.totals.get(agent.id, {}),
+                end=origin.ends.get(agent.id),
             )
         return out
 
