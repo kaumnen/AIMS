@@ -463,6 +463,9 @@ class ModelsConfig(_Strict):
         return {name: self.get(name).snapshot() for name in sorted(set(names))}
 
 
+NO_MODELS = "AIMS ships no models"
+
+
 class _File(_Strict):
     profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
     roles: dict[str, str] = Field(default_factory=dict)
@@ -492,7 +495,7 @@ def load_models(*paths: Path | None) -> ModelsConfig:
         try:
             layer = _File.model_validate(known)
         except ValidationError as e:
-            raise ProfileError(f"{path}: {e}") from None
+            raise ProfileError(f"{path}: {problems(e)}") from None
         for name, table in layer.profiles.items():
             if "listed" in table:
                 raise ProfileError(
@@ -501,11 +504,24 @@ def load_models(*paths: Path | None) -> ModelsConfig:
                 )
             tables[name] = _layer(tables[name], table) if name in tables else table
         roles |= layer.roles
+    profiles = {name: _resolve(name, tables, ()) for name in tables}
     try:
-        profiles = {name: _resolve(name, tables, ()) for name in tables}
-        models = ModelsConfig(profiles=profiles, roles=Roles.model_validate(roles))
+        held = Roles.model_validate(roles)
     except ValidationError as e:
-        raise ProfileError(str(e)) from None
+        raise ProfileError(f"[roles]: {problems(e)}") from None
+    for role in ROLES:
+        name = getattr(held, role)
+        if name is not None and name not in profiles:
+            known = ", ".join(sorted(profiles)) or "none"
+            raise ProfileError(
+                f"role {role} names unknown profile {name!r}; known: {known}. {NO_MODELS}: set"
+                " the profile under [profiles] in aims.toml, or add one with `aims models add"
+                f" <model id> --base-url <url> --write --role {role}`"
+            )
+    try:
+        models = ModelsConfig(profiles=profiles, roles=held)
+    except ValidationError as e:
+        raise ProfileError(problems(e)) from None
     for role in ("sweep", "judge"):
         name = getattr(models.roles, role)
         if name is not None:
@@ -520,10 +536,30 @@ def _resolve(name: str, tables: Mapping[str, Mapping[str, Any]], seen: tuple[str
     parent = table.pop("extends", None)
     if parent is not None:
         if parent not in tables:
-            raise ProfileError(f"profile {name!r} extends unknown profile {parent!r}")
+            raise ProfileError(
+                f"profile {name!r} extends unknown profile {parent!r}. {NO_MODELS}: a profile"
+                " extends one of the config's own, or sets its fields itself"
+            )
         base = _resolve(parent, tables, (*seen, name)).model_dump(exclude={"name"})
         table = _layer(base, table)
-    return Profile.model_validate({**table, "name": name})
+    try:
+        return Profile.model_validate({**table, "name": name})
+    except ValidationError as e:
+        # a table that sets part of a profile no file holds, as one of an earlier release's
+        # built-in profiles
+        lacks = parent is None and any(x["type"] == "missing" for x in e.errors())
+        hint = f". {NO_MODELS}: a profile sets these itself, or extends one that does"
+        raise ProfileError(f"profile {name!r}: {problems(e)}{hint if lacks else ''}") from None
+
+
+def problems(error: ValidationError) -> str:
+    """A validation error in one line: each problem as its field and what is wrong with it."""
+    out = []
+    for e in error.errors(include_url=False):
+        where = ".".join(str(p) for p in e["loc"])
+        what = str(e["msg"]).removeprefix("Value error, ")
+        out.append(f"{where}: {what}" if where else what)
+    return "; ".join(out)
 
 
 def _layer(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:

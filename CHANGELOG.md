@@ -248,6 +248,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A score with more than about 990 flags no plant explains lost its later flags on the Score tab. It also lost its end, so a failed or cancelled score showed as finished. The tab now reads the score to its end.
 - A runner that closes as an offer or command arrives no longer warns of a coroutine never awaited.
 - A viewer refused a run of a kind this version does not know is told so.
+- A config that names a profile no file holds says so in one line with the fix. A config written for the built-in profiles of an earlier release got the validation library's own text for a role that names one or a table that sets part of one: several lines with a link to that library's docs. A role now gets `role agent names unknown profile 'x'; known: none` with the `aims models add` command. A profile with fields missing lists them. Any other problem in `[profiles]` or `[roles]` names its field in one line, as `profile 'x': sampling.temperature: Input should be less than or equal to 2`.
 
 ### Security
 

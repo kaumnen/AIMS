@@ -1498,6 +1498,60 @@ agent = "local"
             load_models(user, path)
 
 
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        (
+            '[roles]\nagent = "gone"\n',
+            "role agent names unknown profile 'gone'; known: none. AIMS ships no models: set"
+            " the profile under [profiles] in aims.toml, or add one with `aims models add"
+            " <model id> --base-url <url> --write --role agent`",
+        ),
+        (
+            "[profiles.gone.limits]\nrpm = 5\n",
+            "profile 'gone': backend: Field required; model: Field required; weights: Field"
+            " required; reasoning: Field required. AIMS ships no models: a profile sets these"
+            " itself, or extends one that does",
+        ),
+        (
+            '[profiles.mine]\nextends = "gone"\n',
+            "profile 'mine' extends unknown profile 'gone'. AIMS ships no models: a profile"
+            " extends one of the config's own, or sets its fields itself",
+        ),
+        ('[roles]\nextract = "x"\n', "[roles]: extract: Extra inputs are not permitted"),
+    ],
+)
+def test_a_config_that_names_a_profile_no_file_holds_says_so_in_one_line(
+    tmp_path: Path, text: str, said: str
+) -> None:
+    """A config written for a release with built-in profiles names one in a role, sets part of
+    one or extends one. The error was the validation library's own text for the first two:
+    several lines with a link to its docs and no word of the fix."""
+    path = tmp_path / "aims.toml"
+    path.write_text(text)
+    with pytest.raises(ProfileError) as e:
+        load_models(path)
+    assert str(e.value) == said
+
+
+def test_a_profile_error_names_each_field_in_one_line(tmp_path: Path) -> None:
+    path = tmp_path / "aims.toml"
+    path.write_text(
+        '[profiles.x]\nbackend = "chat"\nbase_url = "http://x.invalid/v1"\nmodel = "m"\n'
+        'weights = "w"\nreasoning = "full"\ncolour = "red"\n'
+        "[profiles.x.sampling]\ntemperature = 9\n"
+    )
+    with pytest.raises(ProfileError) as e:
+        load_models(path)
+    said = str(e.value)
+    assert said.startswith("profile 'x': ")
+    assert "colour: Extra inputs are not permitted" in said
+    assert "sampling.temperature: " in said
+    assert "\n" not in said
+    assert "pydantic" not in said
+    assert "AIMS ships no models" not in said
+
+
 CANARY = "CANARY-7f3a"
 KEY = f"sk-{CANARY}"
 LISTED = {"AIMS_KEYS": "TEST_KEY=http://model.invalid/v1"}
