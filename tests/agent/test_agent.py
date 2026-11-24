@@ -502,6 +502,40 @@ async def test_token_counts_past_what_the_log_holds_stop_at_its_bound(
     assert finished.usage.output_tokens == 40
 
 
+def counts(given: int, made: int) -> dict[str, Any]:
+    return {"usage": {"prompt_tokens": given, "completion_tokens": made}}
+
+
+async def test_a_token_count_below_0_counts_as_none(store: LocalEventStore) -> None:
+    """Two counts of -MAX_INT would sum past what the log holds. Each counts as none, so the
+    agent's steps and its end are logged."""
+    bash = call("bash", command="true")
+    script = Script(
+        bash | counts(-MAX_INT, 10), bash | counts(-MAX_INT, 10), call("submit", answer="done")
+    )
+    agent, run_id = await make_agent(store, script, p=profile(price=None))
+    finished = await agent.run()
+    assert (finished.reason, finished.steps) == ("submitted", 3)
+    responses = await payloads(store, run_id, ModelResponse)
+    assert [r.usage.input_tokens for r in responses] == [None, None, 100]
+    assert (finished.usage.input_tokens, finished.usage.output_tokens) == (100, 30)
+    assert len(await payloads(store, run_id, AgentFinished)) == 1
+
+
+async def test_an_output_count_below_0_does_not_lower_what_the_cap_counts(
+    store: LocalEventStore,
+) -> None:
+    bash = call("bash", command="true")
+    made = [bash | counts(100, n) for n in (60, -1000, 60, 60)]
+    script = Script(*made, call("submit", answer="done"))
+    budget = Budget(output_tokens=100)
+    agent, _ = await make_agent(store, script, p=profile(price=None), budget=budget)
+    finished = await agent.run()
+    # 60, none and 60 output tokens reach the cap of 100 after step 3
+    assert (finished.reason, finished.steps) == ("budget_output_tokens", 3)
+    assert finished.usage.output_tokens == 120
+
+
 async def test_a_kill_as_a_call_tries_again_keeps_the_billed_attempt(
     store: LocalEventStore,
 ) -> None:

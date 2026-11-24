@@ -94,6 +94,12 @@ def _int(value: object) -> int | None:
     return None
 
 
+def _tokens(value: object) -> int | None:
+    """A token count from 0 to MAX_INT, else None: a count below 0 counts as none."""
+    count = _int(value)
+    return None if count is None or count < 0 else count
+
+
 def _reported_cost(usage: dict[str, Any]) -> float | None:
     """What the provider says the attempt cost in USD, as OpenRouter's `usage.cost` does. None
     when it says nothing. `cost` is what the router charged. With the caller's own provider
@@ -292,10 +298,10 @@ class _ResponsesAccumulator:
         usage = body.get("usage")
         if isinstance(usage, dict):
             out.usage = ModelUsage(
-                input_tokens=_int(usage.get("input_tokens")),
-                cached_tokens=_int(_get(usage, "input_tokens_details", "cached_tokens")),
-                output_tokens=_int(usage.get("output_tokens")),
-                reasoning_tokens=_int(_get(usage, "output_tokens_details", "reasoning_tokens")),
+                input_tokens=_tokens(usage.get("input_tokens")),
+                cached_tokens=_tokens(_get(usage, "input_tokens_details", "cached_tokens")),
+                output_tokens=_tokens(usage.get("output_tokens")),
+                reasoning_tokens=_tokens(_get(usage, "output_tokens_details", "reasoning_tokens")),
             )
             out.cost_usd = _reported_cost(usage)
         if out.status == "completed" and out.finish_reason is None:
@@ -589,10 +595,10 @@ _BILLED = ("cost", "is_byok", "cost_details")
 
 def _chat_usage(usage: dict[str, Any]) -> ModelUsage:
     return ModelUsage(
-        input_tokens=_int(usage.get("prompt_tokens")),
-        cached_tokens=_int(_get(usage, "prompt_tokens_details", "cached_tokens")),
-        output_tokens=_int(usage.get("completion_tokens")),
-        reasoning_tokens=_int(_get(usage, "completion_tokens_details", "reasoning_tokens")),
+        input_tokens=_tokens(usage.get("prompt_tokens")),
+        cached_tokens=_tokens(_get(usage, "prompt_tokens_details", "cached_tokens")),
+        output_tokens=_tokens(usage.get("completion_tokens")),
+        reasoning_tokens=_tokens(_get(usage, "completion_tokens_details", "reasoning_tokens")),
     )
 
 
