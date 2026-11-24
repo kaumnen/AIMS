@@ -322,8 +322,14 @@ export function samplesQuery(runId: string) {
   });
 }
 
-function everyEvent(runId: string, types: string[], signal: AbortSignal): Promise<Event[]> {
-  return everyPage(async (after) => {
+// Every event of these types; with `held`, the ones the cache holds, read on from the last.
+function everyEvent(
+  runId: string,
+  types: string[],
+  signal: AbortSignal,
+  held?: Event[],
+): Promise<Event[]> {
+  return readOn(held, async (after) => {
     const { data, error } = await client.GET("/api/runs/{run_id}/events", {
       params: {
         ...path(runId),
@@ -367,7 +373,8 @@ export function sandboxesQuery(runId: string) {
 export function sweepsQuery(source: string) {
   return queryOptions({
     queryKey: ["runs", "sweeps", source] as const,
-    queryFn: ({ signal }) => everyEvent(source, ["monitor.sweep"], signal),
+    queryFn: ({ client: qc, queryKey, signal }) =>
+      everyEvent(source, ["monitor.sweep"], signal, qc.getQueryData(queryKey)),
     staleTime: Infinity,
   });
 }

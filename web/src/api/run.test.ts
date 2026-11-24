@@ -1,7 +1,8 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, expect, test, vi } from "vitest";
 
-import { type SampleWindow, samplesQuery } from "./run";
+import type { Event } from "./events";
+import { samplesQuery, type SampleWindow, sweepsQuery } from "./run";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -110,4 +111,51 @@ test("a first read of the windows pages through them all", async () => {
   const read = await qc.fetchQuery(samplesQuery("r"));
   expect(read.map((w) => w.seq)).toEqual(windows.map((w) => w.seq));
   expect(asked.map((q) => q.get("after"))).toEqual([null, "999", "1999"]);
+});
+
+const sweep = (seq: number, to: number, hash = `h${seq}`): Event =>
+  ({
+    agent_id: "a",
+    data: { name: "standard", lane: "a", step_from: 1, step_to: to },
+    hash,
+    prev_hash: "",
+    run_id: "m",
+    seq,
+    ts: "2026-11-24T10:00:00Z",
+    type: "monitor.sweep",
+    v: 1,
+  }) as Event;
+
+test("a poll of the sweeps reads on from the last one held", async () => {
+  let sweeps = [sweep(3, 2), sweep(8, 4)];
+  const asked: URLSearchParams[] = [];
+  vi.stubGlobal("fetch", async (request: Request) => {
+    const q = new URL(request.url).searchParams;
+    asked.push(q);
+    const items = sweeps.filter((e) => e.seq > Number(q.get("after") ?? -1));
+    return Response.json({ items, next: null });
+  });
+  const qc = new QueryClient();
+  const read = async () => (await qc.fetchQuery({ ...sweepsQuery("m"), staleTime: 0 })) ?? [];
+  const seqs = async () => (await read()).map((e) => e.seq);
+
+  expect(await seqs()).toEqual([3, 8]);
+  sweeps = [...sweeps, sweep(12, 6)];
+  expect(await seqs()).toEqual([3, 8, 12]);
+  // the last sweep held is read again, to see it is still there as it was
+  expect(asked.map(query)).toEqual([
+    { types: "monitor.sweep", limit: "1000" },
+    { types: "monitor.sweep", limit: "1000", after: "7" },
+  ]);
+  const held = await read();
+  expect(await read()).toBe(held);
+  // the log was cut past seq 8 and written again: the whole list is read again
+  sweeps = [sweep(3, 2), sweep(8, 4), sweep(12, 5, "other")];
+  expect((await read()).map((e) => e.hash)).toEqual(["h3", "h8", "other"]);
+  expect(asked.slice(2).map(query)).toEqual([
+    { types: "monitor.sweep", limit: "1000", after: "11" },
+    { types: "monitor.sweep", limit: "1000", after: "11" },
+    { types: "monitor.sweep", limit: "1000", after: "11" },
+    { types: "monitor.sweep", limit: "1000" },
+  ]);
 });
