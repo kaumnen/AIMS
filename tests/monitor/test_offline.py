@@ -5,6 +5,7 @@ import asyncio
 import dataclasses
 import json
 import shutil
+import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
@@ -42,6 +43,7 @@ from aims.monitor.config import MonitorConfigError
 from aims.monitor.core import Monitor
 from aims.monitor.offline import (
     Inert,
+    OfflineResult,
     OriginStore,
     monitor_offline,
     monitored,
@@ -52,6 +54,8 @@ from aims.monitor.offline import (
 from aims.monitor.setup import ResolvedMonitor
 from aims.monitor.sweep import NO_ROOM
 from aims.prompts import Prompts
+from aims.run import score as score_module
+from aims.run.fork import load_origin
 from aims.run.job import JobOptions, monitor_for
 from aims.run.runner import RunError, resolve_texts
 from aims.scenario import Bundle, load
@@ -395,6 +399,87 @@ async def test_a_changed_or_unsealed_origin_is_refused(
     with pytest.raises(RunError, match="monitor run"):
         await monitored(store, watched)
     assert len(await store.runs(kind="monitor")) == 1
+
+
+def refuse_seals(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Makes `Index.add` refuse each batch with a seal while the flag is up, as a lock another
+    process holds past the busy timeout does."""
+    on = [True]
+    real = Index.add
+
+    async def add(index: Index, events: Sequence[Event], head: Any, **kw: Any) -> None:
+        if on[0] and any(e.type == "run.finished" for e in events):
+            raise sqlite3.OperationalError("database is locked")
+        await real(index, events, head, **kw)
+
+    monkeypatch.setattr(Index, "add", add)
+    return on
+
+
+async def check_behind(store: LocalEventStore, origin_id: str, path: str) -> OfflineResult | None:
+    """Monitor the origin as `aims monitor` does or as a runner's monitor job does, which loads
+    the origin first. The origin's index lacks its seal."""
+    info = await store.run(origin_id)
+    assert info is not None
+    assert (info.status, info.events) == ("running", 317)
+    if path == "monitored":
+        await monitored(store, origin_id)
+        return None
+    origin = await load_origin(store, origin_id, full=False, replay=False)
+    m = models(WATCHER)
+    resolved = offline_monitor(
+        m, Prompts(), origin.bundle.scenario, origin_agents(origin), signals_only=True
+    )
+    return await monitor_offline(store, origin, resolved, models=m, mode="signals_only")
+
+
+@pytest.mark.parametrize("path", ["monitored", "monitor_offline"])
+async def test_an_origin_whose_index_is_behind_its_sealed_log_is_waited_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    refusal = refuse_seals(monkeypatch)
+    (origin_dir,) = FIXTURE.iterdir()
+    shutil.copytree(origin_dir, tmp_path / "runs" / origin_dir.name)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        real = store.wait_indexed
+        waited: list[int] = []
+
+        async def wait_indexed(run: str, seq: int) -> None:
+            # the lock is let go and the index catches up while the monitor waits
+            waited.append(seq)
+            refusal[0] = False
+            async with store._still(run):
+                await store._index_log(run)
+            await real(run, seq)
+
+        monkeypatch.setattr(store, "wait_indexed", wait_indexed)
+        result = await check_behind(store, origin_dir.name, path)
+        assert waited == [317]
+        info = await store.run(origin_dir.name)
+        assert info is not None
+        assert (info.status, info.events) == ("completed", 318)
+        if result is not None:
+            assert result.status == "completed"
+            (started,) = await of_type(store, result.run_id, "run.started")
+            assert started.data["origin_head"] == info.head
+
+
+@pytest.mark.parametrize("path", ["monitored", "monitor_offline"])
+async def test_an_origin_whose_index_stays_behind_its_sealed_log_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    refuse_seals(monkeypatch)
+    monkeypatch.setattr(score_module, "INDEX_WAIT_S", 0)
+    (origin_dir,) = FIXTURE.iterdir()
+    shutil.copytree(origin_dir, tmp_path / "runs" / origin_dir.name)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        with pytest.raises(RunError) as raised:
+            await check_behind(store, origin_dir.name, path)
+        assert str(raised.value) == (
+            f"run {origin_dir.name}: its index is behind its log. Try again once the index"
+            " caught up"
+        )
+        assert await store.runs(kind="monitor") == []
 
 
 async def test_a_second_cancel_while_the_monitor_run_seals_leaves_it_sealed(

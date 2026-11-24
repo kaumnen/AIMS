@@ -3,6 +3,7 @@ of kind `monitor`. Its evidence seqs point into the origin, its policy only simu
 origin never changes."""
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import uuid
@@ -40,6 +41,7 @@ from aims.monitor.setup import ResolvedMonitor, identity, resolve_monitor
 from aims.monitor.signals import SignalEngine, signal_versions
 from aims.monitor.signals.base import SignalError
 from aims.prompts import Prompts
+from aims.run import score
 from aims.run.fork import Origin, load_origin
 from aims.run.job import JobOptions
 from aims.run.runner import RunError
@@ -185,13 +187,34 @@ def varied(resolved: ResolvedMonitor) -> ResolvedMonitor:
     )
 
 
-async def monitored(store: EventStore, run_id: str) -> tuple[Origin, RunInfo]:
-    """The sealed scenario run `run_id`, loaded to monitor again. Raises RunError."""
+async def _sealed(store: EventStore, run_id: str) -> RunInfo:
+    """The index's row of the sealed run `run_id`. An index behind a sealed log is waited for,
+    up to INDEX_WAIT_S, as a plant check waits. Raises RunError for a run that is unknown, not
+    sealed or whose index stays behind its log."""
+    info = await store.run(run_id)
+    if info is None:
+        raise RunError(f"unknown run {run_id}")
+    if info.status != "running":
+        return info
+    head = await store.log_head(run_id)
+    if head is None or not head.finished:
+        raise RunError(f"run {run_id} is not sealed yet")
+    with contextlib.suppress(TimeoutError):
+        async with asyncio.timeout(score.INDEX_WAIT_S):
+            await store.wait_indexed(run_id, head.seq)
     info = await store.run(run_id)
     if info is None:
         raise RunError(f"unknown run {run_id}")
     if info.status == "running":
-        raise RunError(f"run {run_id} is not sealed yet")
+        raise RunError(
+            f"run {run_id}: its index is behind its log. Try again once the index caught up"
+        )
+    return info
+
+
+async def monitored(store: EventStore, run_id: str) -> tuple[Origin, RunInfo]:
+    """The sealed scenario run `run_id`, loaded to monitor again. Raises RunError."""
+    info = await _sealed(store, run_id)
     if info.kind != "scenario":
         raise RunError(f"run {run_id} is a {info.kind} run, with no agents to monitor")
     return await load_origin(store, run_id, full=False, replay=False), info
@@ -239,11 +262,7 @@ async def monitor_offline(
     match; both are for replaying a recording. Raises RunError before the run is made; after
     that, a failure seals the run as failed."""
     reads = source or store
-    info = await reads.run(origin.run_id)
-    if info is None:
-        raise RunError(f"unknown run {origin.run_id}")
-    if info.status == "running":
-        raise RunError(f"run {origin.run_id} is not sealed yet")
+    info = await _sealed(reads, origin.run_id)
     if origin_head is not None and info.head != origin_head:
         raise RunError(f"run {origin.run_id} changed since the monitor run was asked for")
     o = options or JobOptions()
