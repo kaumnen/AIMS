@@ -65,8 +65,10 @@ from aims.monitor.judge import (
     ANOMALY_CHARS,
     BLOB_MAX,
     CHARS_PER_TOKEN,
+    CUT_TRIES,
     EVENT_CHARS,
     EVENTS_PAGE,
+    FORCE_TRIES,
     HEAD_CHARS,
     HISTORY_ROWS,
     MIN_OUTPUT,
@@ -1177,6 +1179,31 @@ async def test_answers_cut_at_their_output_cap_say_what_gives_them_room(
         " the judge budget had room for. Raise the monitor budget or use a model that reasons"
         " less."
     )
+
+
+async def test_two_answers_in_a_row_cut_at_their_cap_ask_for_the_verdict(
+    store: LocalEventStore,
+) -> None:
+    """Each such answer spends a whole call and holds no tool call. A judge once spent all 30
+    of its tool calls on them before it was asked for its verdict."""
+    run = await make_run(store)
+    script = Script(*[thinking] * 40)
+    judge = make_judge(store, run, script, p=profile(max_output_tokens=2048))
+    result = await judge.run(flags=[], sweeps=[])
+    assert result.verdict is None
+    asked = [("tools" in body, "response_format" in body) for body in script.requests]
+    assert asked == [(True, False)] * CUT_TRIES + [(False, True)] * FORCE_TRIES
+    # A forced verdict that fits its cap is kept.
+    script = Script(thinking, thinking, say(json.dumps(verdict())))
+    judge = make_judge(store, run, script, p=profile(max_output_tokens=2048))
+    payload_of(await judge.run(flags=[], sweeps=[]))
+    assert len(script.requests) == 3
+    # One such answer between answers that read the run does not.
+    turns = [call("events"), thinking, call("events"), thinking, say(json.dumps(verdict()))]
+    script = Script(*turns)
+    judge = make_judge(store, run, script, p=profile(max_output_tokens=2048))
+    payload_of(await judge.run(flags=[], sweeps=[]))
+    assert all("tools" in body for body in script.requests)
 
 
 async def test_verdict_alone_gives_a_verdict(store: LocalEventStore) -> None:

@@ -97,6 +97,10 @@ HEAD_BLOB = 256 * 1024
 MORE_CHANGES = 16_384
 CACHE_BYTES = 32 * 1024 * 1024
 FORCE_TRIES = 2
+# Exploring answers in a row that stop at their output cap before the verdict is asked for.
+# Such an answer holds no tool call, and the next reads more, so it would most likely stop
+# there too.
+CUT_TRIES = 2
 # The most characters of problems a refused verdict is told, so a retry's input has a bound.
 PROBLEM_CHARS = 2_000
 MIN_OUTPUT = JUDGE_MIN_OUTPUT
@@ -1210,8 +1214,10 @@ class Judge:
         cap = self.config.max_tool_calls
         forced = full = False
         tries = 0
-        # Why the last answer stopped at its output cap, None when it did not.
+        # Why the last answer stopped at its output cap, None when it did not, and how many
+        # answers in a row did.
         cut: str | None = None
+        cuts = 0
         # A forced call after an exploring call reads its tool results, the force message and
         # the schema the exploring call did not send.
         explored = RESULT_TOKENS + self._tokens(self._force()) + self._format_tokens
@@ -1223,7 +1229,8 @@ class Judge:
                 plan = partial(self._room, context=context, later=FORCE_TRIES, grow=explored)
                 out = plan(left)
                 late = self.clock() >= self._force_at
-                if full or late or r.tool_calls >= cap or (out is not None and out < 0):
+                stuck = cuts >= CUT_TRIES
+                if full or late or stuck or r.tool_calls >= cap or (out is not None and out < 0):
                     forced = True
                     items.append(self._force())
                     context = self._context(r, items, specs, forced=True)
@@ -1270,6 +1277,7 @@ class Judge:
                     items.append(self._force())
                 continue
             cut = self._cut(reply, out if capped else limit, budget=capped)
+            cuts = 0 if cut is None else cuts + 1
             at = len(items)
             completed = reply.status == "completed"
             items.append(reply.turn if completed else Turn(text=reply.text))
