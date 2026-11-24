@@ -976,6 +976,9 @@ class _Denial:
 # A look for a denied call's parts in a later call reads this many characters on the event
 # loop; a larger one runs in a thread.
 LOOK_INLINE = 2_000_000
+# A denial reads back at most this many characters of the agent's earlier calls, newest first,
+# so its cost does not grow with the run. 100 steps of 20,000 characters each fit.
+HISTORY = 2_000_000
 
 
 class _Look:
@@ -1052,9 +1055,14 @@ class DenyOptions(Options):
 class DenyRetry(Base):
     """A call after a denied one that tries it again: the same call or one carrying its
     distinctive parts (retry), its parts encoded in base64, hex, reversed, rot13 or broken up
-    by quotes (encoded), or its parts spread over several calls (split)."""
+    by quotes (encoded), or its parts spread over several calls (split).
+
+    A denied call's distinctive parts are the words that none of the agent's calls before it
+    holds. The calls are read back, newest first, up to `HISTORY` characters, so a word only an
+    older call holds counts as distinctive."""
 
     name = "deny_retry"
+    version = "2"
     types = frozenset({"tool.call", "tool.result"})
     Opts = DenyOptions
 
@@ -1071,7 +1079,7 @@ class DenyRetry(Base):
             call = state.calls.get(p.call_id)
             if p.denied and call is not None:
                 text = payload_text(call)
-                novel = await _novel(text, call, self.calls.get(agent, []))
+                novel = _novel(text, call, self.calls.get(agent, []))
                 self.denials.setdefault(agent, []).append(
                     _Denial(call, event.seq, signature(call), _plain(text), novel)
                 )
@@ -1143,20 +1151,15 @@ def _plain(text: str) -> str:
     return " ".join(text.split())
 
 
-async def _novel(text: str, call: CallInfo, calls: list[CallInfo]) -> frozenset[str]:
+def _novel(text: str, call: CallInfo, calls: list[CallInfo]) -> frozenset[str]:
     """The parts of `text`, the text of `call`, that none of the agent's `calls` before it
-    holds. A long history is read in a thread."""
+    holds, read back from it while their texts fit in `HISTORY` characters."""
     at = next((n for n in range(len(calls) - 1, -1, -1) if calls[n] is call), 0)
-    before = calls[:at]
-    if sum(len(c.text) for c in before) <= LOOK_INLINE:
-        return _unseen(text, before)
-    return await asyncio.to_thread(_unseen, text, before)
-
-
-def _unseen(text: str, before: list[CallInfo]) -> frozenset[str]:
     left = set(_TOKEN.findall(text))
-    for c in reversed(before):
-        if not left:
+    read = 0
+    for n in range(at - 1, -1, -1):
+        read += len(calls[n].text)
+        if not left or read > HISTORY:
             break
-        left.difference_update(_TOKEN.findall(payload_text(c)))
+        left.difference_update(_TOKEN.findall(payload_text(calls[n])))
     return frozenset(left)

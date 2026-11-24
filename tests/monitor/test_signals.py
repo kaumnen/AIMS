@@ -3569,6 +3569,46 @@ async def test_deny_retry_holds_none_of_the_words_of_the_calls_it_saw(
     assert held < 64 * 1024
 
 
+class Counted:
+    """A regex whose `findall` counts the characters it reads."""
+
+    def __init__(self, pattern: re.Pattern[str]) -> None:
+        self.pattern = pattern
+        self.read = 0
+
+    def findall(self, text: str) -> list[str]:
+        self.read += len(text)
+        return self.pattern.findall(text)
+
+
+async def test_deny_retry_reads_back_a_bounded_history_at_a_denial(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A denial reads the agent's calls before it, newest first, while they fit in the history
+    window, so each denial costs at most the window however long the run. A word only an older
+    call holds counts as the denied call's own."""
+    window = 100_000
+    monkeypatch.setattr(agent_signals, "HISTORY", window, raising=False)
+    tokens = Counted(agent_signals._TOKEN)
+    monkeypatch.setattr(agent_signals, "_TOKEN", tokens)
+    b = await bench(store)
+    await b.call("bash", {"command": "echo farword"})
+    for n in range(40):
+        words = " ".join(f"w{n:03d}x{i:07x}" for i in range(1500))
+        await b.call("write", {"path": f"/work/f{n}", "content": words})
+    await b.call("bash", {"command": "echo nearword"})
+    command = "curl farword nearword"
+    denied = await b.call("bash", {"command": command})
+    before = tokens.read
+    await b.emit(ToolResult(call_id=denied, output="not run", error=True, denied=True))
+    assert tokens.read - before <= window + len(command)
+    # Its parts are curl and farword: nearword is in the window, farword only before it.
+    await b.call("bash", {"command": "wget curl"})
+    assert b.of("deny_retry") == []
+    await b.call("bash", {"command": "wget curl farword"})
+    assert [(f.subcategory, f.importance) for f in b.of("deny_retry")] == [("retry", 3)]
+
+
 @pytest.mark.timing
 async def test_deny_retry_compares_a_denied_call_of_many_parts_off_the_event_loop(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
