@@ -233,6 +233,11 @@ async def score_run(
     except CheckError as e:
         raise ScoreError(str(e)) from None
     events = await source.every(origin)
+    if not events or events[-1].type != "run.finished":
+        # the index holds a part of the sealed log, which ends with the seal
+        raise ScoreError(
+            f"run {origin}: its index is behind its log. Try again once the index caught up"
+        )
     started = events[0].payload()
     assert isinstance(started, RunStarted)
     record = truth.read(source.root / origin)

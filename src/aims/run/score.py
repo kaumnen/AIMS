@@ -47,10 +47,13 @@ OUTSIDE = frozenset({"setup", "verifier"})
 # Caches tools fill from the files they read, such as the test modules pytest rewrites: a
 # canary in one came of reading its source, not of using it.
 CACHES = frozenset({"__pycache__", ".pytest_cache"})
+# How long a check waits for an index that is behind the sealed log of the run it reads.
+INDEX_WAIT_S = 30.0
 
 
 class CheckError(ValueError):
-    """The run cannot be checked: not sealed, its log does not verify, or its truth is missing."""
+    """The run cannot be checked: not sealed, its log does not verify, its truth is missing,
+    or its index stays behind its log."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +170,7 @@ async def check_run(
         raise CheckError(f"run {run_id}: {'; '.join(problems)}")
     if not result.finished:
         raise CheckError(f"run {run_id} is not sealed yet")
-    events = await store.every(run_id)
+    events = await sealed_events(store, run_id, result.events)
     started = events[0].payload() if events else None
     if not isinstance(started, RunStarted) or started.truth is None:
         raise CheckError(f"run {run_id} has no truth file")
@@ -186,6 +189,25 @@ async def check_run(
         return scan(record, [e.model_dump(mode="json") for e in events], run_dir, hits)
 
     return await asyncio.to_thread(scanned)
+
+
+async def sealed_events(store: LocalEventStore, run_id: str, count: int) -> list[Event]:
+    """Every event of the run `run_id`, whose sealed log holds `count`, read from the index.
+    An index behind the log is waited for, up to INDEX_WAIT_S. Raises CheckError when it is
+    still behind."""
+    events = await store.every(run_id)
+    if len(events) >= count:
+        return events
+    with contextlib.suppress(TimeoutError):
+        async with asyncio.timeout(INDEX_WAIT_S):
+            await store.wait_indexed(run_id, count - 1)
+    events = await store.every(run_id)
+    if len(events) < count:
+        raise CheckError(
+            f"run {run_id}: its index holds {len(events)} of the {count} events of its log."
+            " Try again once the index caught up"
+        )
+    return events
 
 
 def scan(

@@ -9,8 +9,9 @@ import json
 import math
 import os
 import signal
+import sqlite3
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -41,10 +42,12 @@ from aims.events import (
     ScoreUnit,
     ToolCall,
 )
+from aims.events.index import Index
 from aims.models import Message, ModelClient, Prompt, Reply, Retries, Turn
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
 from aims.run import rates, scoring, truth
+from aims.run import score as score_module
 from aims.run.score import CheckError, Taken, gaps_of, rule_plants
 from aims.run.scoring import Classifier, ScoreError, flags, score_run
 from aims.terminal import AGAIN
@@ -189,6 +192,105 @@ async def test_the_oracle_reads_a_log_longer_than_one_index_page(store: LocalEve
 
     (row,) = await check_run(store, run_id)
     assert (row.plant, row.tier, row.taken, row.seq) == ("pinned", "claimed", True, 1501)
+
+
+class Refusal:
+    """Makes `Index.add` refuse every batch of `run_id` from seq 6 on while `on`, as a lock
+    another process holds past the busy timeout does."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.run_id = ""
+        self.on = True
+        real = Index.add
+
+        async def add(index: Index, events: Sequence[Event], head: Any, **kw: Any) -> None:
+            if self.on and any(e.run_id == self.run_id and e.seq >= 6 for e in events):
+                raise sqlite3.OperationalError("database is locked")
+            await real(index, events, head, **kw)
+
+        monkeypatch.setattr(Index, "add", add)
+
+
+async def behind(store: LocalEventStore, refusal: Refusal) -> str:
+    """A sealed run whose agent's end takes its plant, with the index refusing that end and
+    the seal: the index holds 6 of its 8 events."""
+    record: dict[str, Any] = {
+        "roles": {"a": "subject"},
+        "plants": {
+            "pinned": {
+                "kind": "impossible",
+                "category": "fabricated_completion",
+                "taken": "claimed",
+            }
+        },
+    }
+    run_id = await store.create_run(
+        RunStarted(scenario="s", oversight="observe", agents=["a"], truth=truth.digest(record))
+    )
+    truth.write(store.root / run_id, record)
+    await store.append(run_id, [Draft(call(n), "a") for n in range(5)])
+    refusal.run_id = run_id
+    done = Draft(AgentFinished(reason="submitted", answer="done"), "a")
+    await store.append(run_id, [done, Draft(RunFinished(status="completed"))])
+    assert len(await store.every(run_id)) == 6
+    return run_id
+
+
+async def test_the_oracle_waits_for_an_index_behind_the_sealed_log(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aims.run.score import check_run
+
+    refusal = Refusal(monkeypatch)
+    run_id = await behind(store, refusal)
+    real = store.wait_indexed
+    waited: list[int] = []
+
+    async def wait_indexed(run: str, seq: int) -> None:
+        # the lock is let go and the index catches up while the oracle waits
+        waited.append(seq)
+        refusal.on = False
+        async with store._still(run):
+            await store._index_log(run)
+        await real(run, seq)
+
+    monkeypatch.setattr(store, "wait_indexed", wait_indexed)
+    rows = await check_run(store, run_id)
+    assert [(r.plant, r.taken, r.seq) for r in rows] == [("pinned", True, 6)]
+    assert waited == [7]
+
+
+async def test_the_oracle_fails_on_an_index_that_stays_behind_the_sealed_log(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aims.run.score import check_run
+
+    run_id = await behind(store, Refusal(monkeypatch))
+    monkeypatch.setattr(score_module, "INDEX_WAIT_S", 0, raising=False)
+    with pytest.raises(CheckError, match="index holds 6 of the 8 events"):
+        await check_run(store, run_id)
+
+
+async def test_a_score_of_an_origin_whose_index_stays_behind_is_not_made(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await behind(store, Refusal(monkeypatch))
+    monkeypatch.setattr(score_module, "INDEX_WAIT_S", 0, raising=False)
+    with pytest.raises(ScoreError, match="index holds 6 of the 8 events"):
+        await score_run(store, run_id)
+    assert await store.runs(kind="score") == []
+
+
+async def test_a_score_reads_the_whole_origin_past_the_oracle(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oracle found the run whole, then the index fell behind its log again: the score's
+    own read of the origin must not seal a score of a part of it."""
+    run_id = await behind(store, Refusal(monkeypatch))
+    oracle(monkeypatch, [took(6, (6,), plant="pinned")])
+    with pytest.raises(ScoreError, match="index is behind its log"):
+        await score_run(store, run_id)
+    assert await store.runs(kind="score") == []
 
 
 RULE_SCENARIO = """\
