@@ -1331,7 +1331,8 @@ def test_aims_monitor_json_into_a_closed_pipe_ends_quietly_with_the_runs_exit_co
     proc.stderr.close()
     assert proc.wait(timeout=60) == 0, err
     assert first["type"] == "estimate"
-    assert err == "note: stdout was closed; the rest of the output is dropped\n"
+    # the folder holds a copied run and no index yet
+    assert err == "indexing 1 run\nnote: stdout was closed; the rest of the output is dropped\n"
 
 
 async def test_the_view_shows_the_last_few_notes_and_the_end_lists_all(tmp_path: Path) -> None:

@@ -2540,6 +2540,31 @@ def test_the_runner_says_it_indexes_its_runs_again_after_an_upgrade(
     )
 
 
+def test_a_command_says_it_indexes_the_runs_again_after_an_upgrade(tmp_path: Path) -> None:
+    """`aims rates` took 25 s on 32 runs after an upgrade and said nothing until its answer.
+    Each command says it once, from the first store it opens, as `aims spend` does through
+    the history."""
+    runs = tmp_path / "runs"
+
+    async def make() -> str:
+        async with await LocalEventStore.open(runs) as store:
+            run_id = await store.create_run(
+                RunStarted(scenario="demo", oversight="observe", agents=["a"])
+            )
+            await store.append(run_id, [Draft(RunFinished(status="completed"))])
+            return run_id
+
+    run = asyncio.run(make())
+    for args in (["verify", run], ["rates"], ["spend"], ["report", run, "--json"]):
+        with contextlib.closing(sqlite3.connect(runs / "index.sqlite")) as db:
+            db.execute(f"pragma user_version = {INDEX_VERSION - 1}")
+            db.commit()
+        r = CliRunner().invoke(app, [*args, "--runs-dir", str(runs)])
+        assert r.exit_code == 0, (args, r.output)
+        assert r.stderr.startswith("indexing 1 run, once after an upgrade\n"), (args, r.stderr)
+        assert r.stderr.count("indexing") == 1, (args, r.stderr)
+
+
 def test_a_data_dir_on_a_file_system_without_locks_is_used_with_a_warning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

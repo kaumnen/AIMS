@@ -2,12 +2,15 @@ import contextlib
 import inspect
 from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Annotated, Any, NoReturn
+from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 
 import typer
 from typer.core import TyperArgument, TyperCommand, TyperGroup, TyperOption
 
 from aims import __version__
+
+if TYPE_CHECKING:
+    from aims.events import LocalEventStore
 
 
 def _shown_usage(e: typer.TyperException) -> None:
@@ -98,6 +101,15 @@ ConfigOption = Annotated[
 RunsDirOption = Annotated[
     Path, typer.Option(file_okay=False, help="Directory that holds the runs.")
 ]
+
+
+async def _open_runs(root: Path, *, reads: bool = False) -> LocalEventStore:
+    """The store of a runs folder here. It says when it indexes the runs again, which took
+    25 s for 32 runs after an upgrade, before the command printed anything."""
+    from aims.events import LocalEventStore
+    from aims.terminal import say_reindex
+
+    return await LocalEventStore.open(root, reads=reads, on_reindex=say_reindex)
 
 
 def _keys(given: list[str] | None) -> list[str] | None:
@@ -307,7 +319,7 @@ def verify(
     import asyncio
     import sqlite3
 
-    from aims.events import LocalEventStore, Verification, verify_run
+    from aims.events import Verification, verify_run
     from aims.events.store import INDEX, is_run_id
 
     # resolved, so `.` inside a run's folder has the run's id for its name
@@ -317,7 +329,7 @@ def verify(
         """What the store says of the run, as the server and a report say it. None when the
         index does not open."""
         try:
-            store = await LocalEventStore.open(path.parent, reads=True)
+            store = await _open_runs(path.parent, reads=True)
         except (OSError, sqlite3.Error) as e:
             _echo(
                 f"note: the index in {path.parent} did not open, so it was not checked: {e}",
@@ -357,12 +369,11 @@ def check_plants(
     """Report which plants each agent of a sealed run took, from its log and truth file."""
     import asyncio
 
-    from aims.events import LocalEventStore
     from aims.run.score import CheckError, check_run, gaps_of
     from aims.terminal import json_text
 
     async def main() -> tuple[list[Any], list[str]]:
-        async with await LocalEventStore.open(runs_dir, reads=True) as store:
+        async with await _open_runs(runs_dir, reads=True) as store:
             return await check_run(store, run), await gaps_of(store, run)
 
     try:
@@ -899,13 +910,12 @@ async def _check(
     there gives a warning. Returns the checks."""
     import asyncio
 
-    from aims.events import LocalEventStore
     from aims.models.check import record_check
 
     def show(c: Any) -> None:
         _echo(f"{c.verdict:4}  {c.profile}  {c.name}: {c.detail}", err=err)
 
-    async with await LocalEventStore.open(runs_dir) as store:
+    async with await _open_runs(runs_dir) as store:
         try:
             with _stoppable():
                 await _seal_left(store, lambda text: typer.echo(text, err=True))
@@ -1155,7 +1165,6 @@ def _selftest(settings: Any, bundle: Any, keep: Path | None) -> int:
     import shutil
     import tempfile
 
-    from aims.events import LocalEventStore
     from aims.run import selftest as st
     from aims.run.runner import Bench
     from aims.sandbox import DockerBackend
@@ -1181,7 +1190,7 @@ def _selftest(settings: Any, bundle: Any, keep: Path | None) -> int:
             )
         except Exception as e:
             return f"the self-test needs Docker and the kernel tracer: {e}"
-        async with backend, await LocalEventStore.open(root) as store:
+        async with backend, await _open_runs(root) as store:
             await _seal_left(store, lambda text: typer.echo(text, err=True))
             bench = Bench(
                 store,
@@ -1230,7 +1239,7 @@ def _echo_estimate(
     from aims.prompts import TextError
     from aims.run.estimate import Estimate, estimate_runs, load_history, priced_runs
     from aims.scenario.budget import BudgetError
-    from aims.terminal import json_text
+    from aims.terminal import json_text, say_reindex
 
     async def main() -> Estimate:
         laid, listing = await priced_runs(
@@ -1243,7 +1252,7 @@ def _echo_estimate(
             score=score,
         )
         return await estimate_runs(
-            await load_history(runs_dir),
+            await load_history(runs_dir, on_reindex=say_reindex),
             laid,
             bundles,
             profile=profile,
@@ -1559,7 +1568,7 @@ async def _run(**o: Any) -> int:
 
     from aims.aio import every, in_turn
     from aims.channels import archives
-    from aims.events import LocalEventStore, Series
+    from aims.events import Series
     from aims.models import KeyRefused, ProfileError
     from aims.models.listprice import PriceLists
     from aims.monitor.config import MonitorConfigError
@@ -1630,7 +1639,7 @@ async def _run(**o: Any) -> int:
     def say(text: str) -> None:
         err.print(shown(text, "yellow"))
 
-    async with await LocalEventStore.open(o["runs_dir"]) as store:
+    async with await _open_runs(o["runs_dir"]) as store:
         await _ship_sealed(store, await _seal_left(store, say), o["link"], say)
         origin = None
         fork_base: Fork | None = None
@@ -2674,11 +2683,10 @@ def _push_hello(name: str) -> Any:
 async def _push(
     root: Path, only: list[str] | None, url: str, token: str, *, quiet: bool = False
 ) -> int:
-    from aims.events import LocalEventStore
     from aims.node.client import ControlClient
     from aims.node.shipper import Shipper
 
-    async with await LocalEventStore.open(root, reads=True) as store:
+    async with await _open_runs(root, reads=True) as store:
         client = ControlClient(url, token, runner=f"push@{_hostname()}")
         try:
             await client.hello(_push_hello(client.runner))
@@ -2814,7 +2822,6 @@ async def _monitor_runs(**o: Any) -> int:
 
     from aims.config import ConfigError
     from aims.config import load as load_settings
-    from aims.events import LocalEventStore
     from aims.models import ProfileError
     from aims.models.listprice import PriceLists
     from aims.monitor.config import MonitorConfigError
@@ -2870,7 +2877,7 @@ async def _monitor_runs(**o: Any) -> int:
     def say(text: str) -> None:
         err.print(shown(text, "yellow"))
 
-    async with await LocalEventStore.open(o["runs_dir"]) as store:
+    async with await _open_runs(o["runs_dir"]) as store:
         await _ship_sealed(store, await _seal_left(store, say), o["link"], say)
         planned = []
         costs = []
@@ -3839,7 +3846,6 @@ def score_cmd(
     import sys
     import uuid
 
-    from aims.events import LocalEventStore
     from aims.models.listprice import PriceLists
     from aims.run.estimate import ask_why, scores_confirm
     from aims.run.runner import RunError
@@ -3860,7 +3866,7 @@ def score_cmd(
 
     async def main() -> ScoreResult | str:
         nonlocal cost
-        async with await LocalEventStore.open(runs_dir) as store:
+        async with await _open_runs(runs_dir) as store:
             try:
                 with _stoppable():
                     await _seal_left(store, lambda text: typer.echo(text, err=True))
@@ -4017,14 +4023,14 @@ def label_cmd(
     import getpass
     from typing import cast, get_args
 
-    from aims.events import LabelKind, LocalEventStore
+    from aims.events import LabelKind
 
     if label not in get_args(LabelKind):
         raise typer.BadParameter("pick real, false_alarm or unclear", param_hint="label")
     kind = cast(LabelKind, label)
 
     async def main() -> None:
-        async with await LocalEventStore.open(runs_dir) as store:
+        async with await _open_runs(runs_dir) as store:
             await store.add_label(run, flag, kind, by=by or getpass.getuser(), note=note)
 
     try:
@@ -4050,12 +4056,11 @@ def rates_cmd(
     plant-free runs the ROC area and true positive rates at 1% and 5% false positives."""
     import asyncio
 
-    from aims.events import LocalEventStore
     from aims.run.rates import Rates, gather
     from aims.terminal import json_text
 
     async def main() -> Rates:
-        async with await LocalEventStore.open(runs_dir, reads=True) as store:
+        async with await _open_runs(runs_dir, reads=True) as store:
             origins: list[str] | None = None
             if runs or series or group:
                 picked = set(runs or [])
@@ -4115,7 +4120,6 @@ def report_cmd(
     import asyncio
     import sys
 
-    from aims.events import LocalEventStore
     from aims.report.build import ReportError, base_url_problem, build
     from aims.report.markdown import render
     from aims.report.model import RunReport
@@ -4130,7 +4134,7 @@ def report_cmd(
         raise typer.BadParameter("--out and --html name the same file", param_hint="--html")
 
     async def main() -> RunReport:
-        async with await LocalEventStore.open(runs_dir, reads=True) as store:
+        async with await _open_runs(runs_dir, reads=True) as store:
             return await build(store, run, source=source, base_url=base_url)
 
     try:
@@ -4234,10 +4238,10 @@ def spend_cmd(
     import asyncio
 
     from aims.run.estimate import load_history, spend, spend_lines
-    from aims.terminal import json_text
+    from aims.terminal import json_text, say_reindex
 
     settings = _settings(config)
-    credits = spend(asyncio.run(load_history(runs_dir)), settings.credits)
+    credits = spend(asyncio.run(load_history(runs_dir, on_reindex=say_reindex)), settings.credits)
     if json_out:
         typer.echo(json_text([c.model_dump(mode="json") for c in credits]))
         return
