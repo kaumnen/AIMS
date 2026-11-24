@@ -34,6 +34,7 @@ from aims.events import (
 from aims.events.blobs import Ends, Part
 from aims.events.index import FlagInfo
 from aims.models import DeltaBus, Limiters, ModelClient, ModelsConfig, Profile, Prompt
+from aims.models.profiles import problems
 from aims.models.replay import Recording
 from aims.monitor.config import MonitorConfig, MonitorConfigError, Preset, layer, merge
 from aims.monitor.core import HumanRequest, Monitor
@@ -96,7 +97,7 @@ def offline_config(
         if judge_only:
             merged = merge(merged.model_dump(mode="json"), {"sweeps": []})
     except ValidationError as e:
-        raise MonitorConfigError(str(e)) from None
+        raise MonitorConfigError(f"monitor: {problems(e)}") from None
     if merged.preset == "off":
         raise MonitorConfigError("the monitor is off; name a preset")
     if judge_only and merged.judge is None:

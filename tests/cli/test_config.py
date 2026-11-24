@@ -173,6 +173,20 @@ def test_an_amount_is_finite(tmp_path: Path, text: str, problem: str) -> None:
         load(project, {"AIMS_CONFIG_DIR": str(tmp_path / "none")})
 
 
+def test_a_bad_monitor_table_says_each_problem_in_one_line(tmp_path: Path) -> None:
+    """The error was the validation library's own text: three lines for each problem, one a
+    link to its docs."""
+    project = tmp_path / "aims.toml"
+    project.write_text('[monitor]\npreset = "bogus"\n[monitor.sweeps]\nevery = "x"\n')
+    with pytest.raises(ConfigError) as e:
+        load(project, {"AIMS_CONFIG_DIR": str(tmp_path / "none")})
+    assert str(e.value) == (
+        f"{project}: [monitor]: preset: Input should be 'off', 'signals', 'standard' or"
+        " 'research'; sweeps.0.every: Input should be a valid integer, unable to parse string"
+        " as an integer"
+    )
+
+
 def test_a_config_file_that_is_not_utf8_is_a_config_error(tmp_path: Path) -> None:
     env = {"AIMS_CONFIG_DIR": str(tmp_path / "none")}
     project = tmp_path / "aims.toml"

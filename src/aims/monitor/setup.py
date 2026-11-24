@@ -10,7 +10,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 from aims import __version__
 from aims.events import Oversight
 from aims.models import ModelsConfig, Profile, ProfileError
-from aims.models.profiles import check_weights
+from aims.models.profiles import check_weights, problems
 from aims.monitor.config import (
     JUDGE_MIN_OUTPUT,
     MonitorConfig,
@@ -194,7 +194,7 @@ def resolve_config(
     try:
         return merge(*tops)
     except ValidationError as e:
-        raise MonitorConfigError(str(e)) from None
+        raise MonitorConfigError(f"monitor: {problems(e)}") from None
 
 
 def resolve_monitor(

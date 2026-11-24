@@ -23,7 +23,7 @@ from pydantic import (
 )
 
 from aims.events import Category, ExecPhase, SweepPart
-from aims.models.profiles import Effort, Profile
+from aims.models.profiles import Effort, Profile, problems
 from aims.stored import STORED, Known, cut_stored
 
 Preset = Literal["off", "signals", "standard", "research"]
@@ -366,7 +366,7 @@ def layer(value: Mapping[str, Any], where: str) -> dict[str, Any]:
     try:
         parsed = MonitorConfig.model_validate(value)
     except ValidationError as e:
-        raise MonitorConfigError(f"{where}: {e}") from None
+        raise MonitorConfigError(f"{where}: {problems(e)}") from None
     return parsed.model_dump(mode="json", exclude_unset=True)
 
 

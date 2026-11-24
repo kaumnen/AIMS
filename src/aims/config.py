@@ -35,7 +35,7 @@ from pydantic import ValidationError
 
 from aims.channels import default_tools
 from aims.models import ModelsConfig, ProfileError, load_models
-from aims.models.profiles import ROLES, Role
+from aims.models.profiles import ROLES, Role, problems
 from aims.monitor.config import MonitorConfigError, layer, merge
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts, TextError, load_prompts
@@ -191,7 +191,7 @@ def load_layers(found: Layers) -> Settings:
     try:
         merged = merge(*monitor)
     except ValidationError as e:
-        raise ConfigError(f"[monitor]: {e}") from None
+        raise ConfigError(f"[monitor]: {problems(e)}") from None
     models = load_models(*files)
     models.check_structured(merged.extract, "[monitor] extract")
     return Settings(
