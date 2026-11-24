@@ -1,6 +1,6 @@
 {
   "firstPaint": { "raw": 716, "gzip": 222 },
-  "total": { "raw": 1624, "gzip": 541 },
+  "total": { "raw": 1626, "gzip": 542 },
   "chunk": 16,
   "chunks": { "code-editor.js": 153, "runs._runId.js": 34, "scrubber.js": 28 }
 }
