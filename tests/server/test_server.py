@@ -3117,6 +3117,71 @@ async def test_a_logged_response_drops_its_deltas_while_the_index_is_behind(
     assert cp.state.inflight.of({run_id}) == []
 
 
+async def test_a_retry_keeps_its_deltas_when_a_later_batch_lands_while_the_index_is_behind(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed attempt is logged with `retry`, then the server's index stops taking batches.
+    The retry streams under the same call id: a later batch must not read the old response
+    again and drop the retry's deltas."""
+    started = RunStarted(scenario="control", oversight="observe", agents=["a"])
+    run_id = await local.create_run(started)
+    failed = ModelResponse(
+        call_id="m1", attempt=1, status="error", latency_ms=1, error="overloaded", retry=True
+    )
+    await local.append(run_id, [Draft(failed, "a")])
+    await local.append(run_id, [Draft(ToolCall(call_id="c1", name="shell", arguments="{}"), "a")])
+    lines = split_lines((local.root / run_id / "events.jsonl").read_bytes())
+    assert (await raw_events(cp, fake.name, run_id, lines[:1])).status_code == 200
+    real = Index.add
+
+    async def add(index: Index, events: Sequence[Event], head: Any, **kw: Any) -> None:
+        if any(e.seq >= 1 for e in events):
+            raise sqlite3.OperationalError("database is locked")
+        await real(index, events, head, **kw)
+
+    monkeypatch.setattr(Index, "add", add)
+    assert (await raw_events(cp, fake.name, run_id, lines[1:2])).status_code == 200
+    delta = WireDelta(run_id=run_id, agent_id="a", call_id="m1", attempt=2, kind="text", text="x")
+    cp.state.inflight.add([delta])
+    assert (await raw_events(cp, fake.name, run_id, lines[2:])).status_code == 200
+    indexed = await cp.state.store.head(run_id)
+    assert indexed is not None
+    assert indexed.seq == 0
+    assert [(d.call_id, d.attempt) for d in cp.state.inflight.of({run_id})] == [("m1", 2)]
+
+
+async def test_a_batch_drops_the_deltas_of_its_responses_far_past_an_index_behind(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server's index lags by a full batch of responses: the next batch's responses still
+    drop their calls' deltas."""
+    started = RunStarted(scenario="control", oversight="observe", agents=["a"])
+    run_id = await local.create_run(started)
+    count = 1100
+    replies = [
+        Draft(ModelResponse(call_id=f"m{i}", attempt=1, status="completed", latency_ms=1), "a")
+        for i in range(count)
+    ]
+    for first in range(0, count, 500):
+        await local.append(run_id, replies[first : first + 500])
+    lines = split_lines((local.root / run_id / "events.jsonl").read_bytes())
+    assert (await raw_events(cp, fake.name, run_id, lines[:1])).status_code == 200
+    real = Index.add
+
+    async def add(index: Index, events: Sequence[Event], head: Any, **kw: Any) -> None:
+        if any(e.type == "model.response" for e in events):
+            raise sqlite3.OperationalError("database is locked")
+        await real(index, events, head, **kw)
+
+    monkeypatch.setattr(Index, "add", add)
+    assert (await raw_events(cp, fake.name, run_id, lines[1:1001])).status_code == 200
+    last = f"m{count - 1}"
+    delta = WireDelta(run_id=run_id, agent_id="a", call_id=last, attempt=1, kind="text", text="x")
+    cp.state.inflight.add([delta])
+    assert (await raw_events(cp, fake.name, run_id, lines[1001:])).status_code == 200
+    assert cp.state.inflight.of({run_id}) == []
+
+
 async def sse_inflight(cp: CP, run_id: str) -> list[Any]:
     async with cp.client(cp.viewer) as c:
         return await sse(c, {"deltas": run_id}, want=1)

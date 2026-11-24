@@ -562,7 +562,8 @@ async def ingest_events(
         raise ProblemException(413, "Too large", f"a batch is at most {MAX_EVENTS} events")
     store = state.store
     try:
-        before = await store.head(run_id)
+        # the log's head, also past an index that is behind it: what the log held before
+        before = await store.log_head(run_id)
         head = await store.ingest(run_id, lines)
     except MissingBlobs as e:
         raise ProblemException(
@@ -591,9 +592,16 @@ async def ingest_events(
     moved = False
     if job is not None and job.state == "claimed":
         moved = await state.db.set_job(run_id, "running")
+    # only the responses this batch logged: an older one with `retry` would drop a retry's
+    # deltas that stream now
     after = -1 if before is None else before.seq
     for event in await logged_events(
-        store, run_id, after=after, types=["model.response"], limit=1000
+        store,
+        run_id,
+        after=after,
+        before=head.seq + 1,
+        types=["model.response"],
+        limit=MAX_EVENTS,
     ):
         call_id = event.data.get("call_id")
         if isinstance(call_id, str):
