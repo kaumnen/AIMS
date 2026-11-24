@@ -567,6 +567,44 @@ async def test_score_counts_the_cost_of_an_answer_it_cannot_use(run: Run) -> Non
         assert failed.value.cost_usd == pytest.approx(0.00012)
 
 
+def thinking(made: int, reasoning: int | None = None, finish: str = "length") -> dict[str, Any]:
+    """An answer of no text that wrote `made` output tokens, `reasoning` of them reasoning."""
+    usage: dict[str, Any] = {"prompt_tokens": 100, "completion_tokens": made}
+    if reasoning is not None:
+        usage["completion_tokens_details"] = {"reasoning_tokens": reasoning}
+    return {"text": "", "reasoning": "Let me think.", "finish": finish, "usage": usage}
+
+
+async def test_an_answer_cut_at_its_output_cap_says_what_gives_it_room(run: Run) -> None:
+    """A model that reasons spent the whole cap before it wrote its answer."""
+    p = profile(max_output_tokens=500)
+    lanes = [EVIDENCE_LANE.model_dump()]
+
+    async def error(turn: dict[str, Any]) -> str | None:
+        s = sweeper(run, Script(turn), p=p, lanes=lanes, window=False)
+        sweeps, _ = await written(await s.sweep("every"))
+        return sweeps[0].error
+
+    assert await error(thinking(500, 500)) == (
+        "sweep_extract: the answer stopped at the output cap of 500 tokens, 500 of them"
+        " reasoning, so it is not JSON. Raise max_output_tokens or lower effort in"
+        " monitor.sweeps, or use a model that reasons less."
+    )
+    assert await error(thinking(500)) == (
+        "sweep_extract: the answer stopped at the output cap of 500 tokens, so it is not JSON."
+        " Raise max_output_tokens in monitor.sweeps."
+    )
+    # Cut short below the cap, or with no token counts: the cap is not named.
+    for turn in (thinking(200, 200, "content_filter"), thinking(500) | {"usage": {}}):
+        assert await error(turn) == (
+            f"sweep_extract: the incomplete answer is not JSON (finish reason {turn['finish']})"
+        )
+    # The review calls its own profile, which sets its cap.
+    s = sweeper(run, Script(thinking(500, 500)), p=p)
+    with pytest.raises(SweepError, match="lower effort in profile scripted, or use"):
+        await s.score("ls")
+
+
 # A call of `PLANNED` is planned at its output cap alone: 500 tokens at $2 per million, $0.001.
 PLANNED = profile(
     max_output_tokens=500,

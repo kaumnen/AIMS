@@ -280,6 +280,40 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+def at_cap(reply: Reply, cap: int | None) -> str | None:
+    """How an answer that stopped at its output cap `cap` spent it, as its token counts tell,
+    such as "stopped at the output cap of 8192 tokens, 8192 of them reasoning". None when it
+    did not stop there or its counts do not say."""
+    made = reply.usage.output_tokens
+    if reply.status != "incomplete" or cap is None or made is None or made < cap:
+        return None
+    thought = reply.usage.reasoning_tokens
+    spent = f", {thought} of them reasoning" if thought else ""
+    return f"stopped at the output cap of {cap} tokens{spent}"
+
+
+def more_room(reply: Reply, setting: str) -> str:
+    """What gives an answer that stopped at its output cap more room, set in `setting`."""
+    if reply.usage.reasoning_tokens:
+        return (
+            f"Raise max_output_tokens or lower effort in {setting},"
+            " or use a model that reasons less."
+        )
+    return f"Raise max_output_tokens in {setting}."
+
+
+def not_json(reply: Reply, cap: int | None, setting: str) -> str:
+    """Why `reply` is not JSON. One that stopped at its output cap `cap` says how to give it
+    more room in `setting`."""
+    stopped = at_cap(reply, cap)
+    if stopped is not None:
+        return f"the answer {stopped}, so it is not JSON. {more_room(reply, setting)}"
+    why = ""
+    if reply.status == "incomplete" and reply.finish_reason:
+        why = f" (finish reason {reply.finish_reason})"
+    return f"the {reply.status} answer is not JSON{why}"
+
+
 async def ask(
     client: ModelClient,
     profile: Profile,
@@ -288,12 +322,13 @@ async def ask(
     schema: OutputSchema,
     calls: _Calls,
     *,
+    setting: str,
     role: ModelRole = "sweep",
     purse: Purse | None = None,
 ) -> dict[str, Any]:
     """One structured call: `system` then `body`, answered as a JSON object, sent only when
-    `purse` has room for it and tried again only while it has room. Raises SweepError, and
-    NoRoom when there is no room."""
+    `purse` has room for it and tried again only while it has room. `setting` names where the
+    call's output cap is set. Raises SweepError, and NoRoom when there is no room."""
     prompt = Prompt(
         items=[Message(role="system", content=system), Message(role="user", content=body)],
         output_schema=schema,
@@ -332,7 +367,8 @@ async def ask(
     try:
         value = scrub(json.loads(reply.text))
     except ValueError:
-        raise SweepError(f"{schema.name}: the {reply.status} answer is not JSON") from None
+        why = not_json(reply, profile.max_output_tokens, setting)
+        raise SweepError(f"{schema.name}: {why}") from None
     if not isinstance(value, dict):
         raise SweepError(f"{schema.name}: the answer is not a JSON object")
     return value
@@ -465,7 +501,11 @@ class Sweeper:
             raise SweepError(f"unknown model role {role!r}")
         try:
             schema = self._schemas["proposal"]
-            value = await self._ask(body, schema, calls, role=cast(ModelRole, role))
+            # The review calls its own profile, which sets its own output cap.
+            setting = f"profile {self.profile.name}"
+            value = await self._ask(
+                body, schema, calls, role=cast(ModelRole, role), setting=setting
+            )
             parsed = _parse(_Proposal, value)
         except (SweepError, NoRoom) as e:
             raise type(e)(str(e), cost_usd=calls.cost_usd) from None
@@ -673,10 +713,19 @@ class Sweeper:
         *,
         role: ModelRole = "sweep",
         profile: Profile | None = None,
+        setting: str = "monitor.sweeps",
     ) -> dict[str, Any]:
         profile = profile or self.profile
         return await ask(
-            self.client, profile, self._system, body, schema, calls, role=role, purse=self.purse
+            self.client,
+            profile,
+            self._system,
+            body,
+            schema,
+            calls,
+            setting=setting,
+            role=role,
+            purse=self.purse,
         )
 
 

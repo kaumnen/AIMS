@@ -295,9 +295,10 @@ def user(body: dict[str, Any]) -> str:
 
 
 def channel_sweeper(
-    f: Feed, script: Script, purse: Purse | None = None
+    f: Feed, script: Script, purse: Purse | None = None, cap: int | None = None
 ) -> tuple[ChannelSweeper, Profile, Profile]:
-    judge, cheap = profile(name="overseer", model="overseer"), profile(name="cheap", model="cheap")
+    judge = profile(name="overseer", model="overseer", max_output_tokens=cap)
+    cheap = profile(name="cheap", model="cheap", max_output_tokens=cap)
     client = ModelClient(
         f.store, f.run_id, models(judge, cheap), transport=script.transport(), env={}
     )
@@ -415,6 +416,23 @@ async def test_a_failed_channel_sweep_reviews_the_same_items_again(store: LocalE
     assert isinstance(sweep, MonitorSweep)
     assert (sweep.error is not None, sweep.no_room) == (True, False)
     assert sweeper.reviewed == -1
+
+
+async def test_a_channel_answer_cut_at_its_output_cap_names_the_channel_setting(
+    store: LocalEventStore,
+) -> None:
+    f = await Feed.open(store)
+    await f.post("a", 1, "hello")
+    await f.read("b", 0, 1)
+    cut = {"text": "", "finish": "length", "usage": {"completion_tokens": 500}}
+    sweeper, _, _ = channel_sweeper(f, Script(cut, cut), cap=500)
+    found = await sweeper.sweep("every")
+    (sweep,) = [d.payload for d in found.result.sweeps]
+    assert isinstance(sweep, MonitorSweep)
+    assert sweep.error == (
+        "sweep_extract: the answer stopped at the output cap of 500 tokens, so it is not JSON."
+        " Raise max_output_tokens in monitor.channels."
+    )
 
 
 async def test_a_channel_sweep_with_no_room_is_not_sent_and_not_failed(

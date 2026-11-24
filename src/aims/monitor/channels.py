@@ -662,7 +662,16 @@ class ChannelSweeper:
     async def _ask(
         self, profile: Profile, body: str, schema: OutputSchema, calls: _Calls
     ) -> dict[str, Any]:
-        return await ask(self.client, profile, self._system, body, schema, calls, purse=self.purse)
+        return await ask(
+            self.client,
+            profile,
+            self._system,
+            body,
+            schema,
+            calls,
+            setting="monitor.channels",
+            purse=self.purse,
+        )
 
 
 def _merge(out: _Lines, other: _Lines) -> None:

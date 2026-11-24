@@ -70,6 +70,7 @@ from aims.models import (
 from aims.models.types import CHARS_PER_TOKEN
 from aims.monitor import judge_texts
 from aims.monitor.config import CATEGORIES, JUDGE_MIN_OUTPUT, JudgeConfig
+from aims.monitor.sweep import at_cap, more_room
 from aims.monitor.texts import MonitorTexts
 
 log = logging.getLogger("aims.monitor")
@@ -1209,6 +1210,8 @@ class Judge:
         cap = self.config.max_tool_calls
         forced = full = False
         tries = 0
+        # Why the last answer stopped at its output cap, None when it did not.
+        cut: str | None = None
         # A forced call after an exploring call reads its tool results, the force message and
         # the schema the exploring call did not send.
         explored = RESULT_TOKENS + self._tokens(self._force()) + self._format_tokens
@@ -1227,6 +1230,8 @@ class Judge:
             if forced:
                 if tries >= FORCE_TRIES:
                     r.error = f"no valid verdict after {tries} forced calls"
+                    if cut is not None:
+                        r.error += f": {cut}"
                     return
                 later = FORCE_TRIES - tries - 1
                 plan = partial(self._room, context=context, later=later, grow=self._refusal())
@@ -1259,10 +1264,12 @@ class Judge:
                     raise
                 # No room to try the call again: what is left goes to the verdict.
                 r.charge(e.reply)
+                cut = None
                 if not forced:
                     forced = True
                     items.append(self._force())
                 continue
+            cut = self._cut(reply, out if capped else limit, budget=capped)
             at = len(items)
             completed = reply.status == "completed"
             items.append(reply.turn if completed else Turn(text=reply.text))
@@ -1303,6 +1310,21 @@ class Judge:
                 del items[at + 1 :]
                 items[at] = Turn(text=reply.text)
                 r.seen, r.tool_calls, full = seen, used, True
+
+    @staticmethod
+    def _cut(reply: Reply, cap: int | None, *, budget: bool) -> str | None:
+        """Why `reply` stopped at its output cap `cap` and what gives it more room; None when
+        it did not stop there. With `budget` the judge's budget set the cap."""
+        stopped = at_cap(reply, cap)
+        if stopped is None:
+            return None
+        if not budget:
+            return f"the last answer {stopped}. {more_room(reply, 'monitor.judge')}"
+        less = " or use a model that reasons less" if reply.usage.reasoning_tokens else ""
+        return (
+            f"the last answer {stopped}, the most the judge budget had room for."
+            f" Raise the monitor budget{less}."
+        )
 
     async def _call(
         self,

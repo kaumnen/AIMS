@@ -71,7 +71,8 @@ def respond(status: int, value: Any) -> httpx2.Response:
 
 class Script:
     """Answers each request with the next turn. `fail` turns answer with an HTTP error. A
-    `finish` turn ends with that finish reason, such as "error" for an answer that failed."""
+    `finish` turn ends with that finish reason, such as "error" for an answer that failed. A
+    `reasoning` turn carries that reasoning text."""
 
     def __init__(self, *turns: Turn | Callable[[dict[str, Any]], Turn]) -> None:
         self.turns = list(turns)
@@ -91,6 +92,8 @@ class Script:
         if "status" in turn:
             return respond(turn["status"], {"error": {"message": turn["error"]}})
         message: dict[str, Any] = {"role": "assistant", "content": turn.get("text", "")}
+        if "reasoning" in turn:
+            message["reasoning"] = turn["reasoning"]
         finish = "stop"
         if "tool" in turn or "calls" in turn:
             message["tool_calls"] = [

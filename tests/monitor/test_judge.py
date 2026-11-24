@@ -1138,6 +1138,47 @@ async def test_flags_tool_lists_given_flags(store: LocalEventStore) -> None:
 # The loop.
 
 
+def thinking(body: dict[str, Any]) -> dict[str, Any]:
+    """An answer of no text that spent the whole output cap of `body` on reasoning."""
+    made = body["max_tokens"]
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": made,
+        "completion_tokens_details": {"reasoning_tokens": made},
+    }
+    return {"text": "", "reasoning": "Let me think.", "finish": "length", "usage": usage}
+
+
+async def test_answers_cut_at_their_output_cap_say_what_gives_them_room(
+    store: LocalEventStore,
+) -> None:
+    """A model that reasons spent each call's whole cap before it wrote its answer."""
+    run = await make_run(store)
+    script = Script(*[thinking] * 40)
+    judge = make_judge(store, run, script, p=profile(max_output_tokens=2048))
+    result = await judge.run(flags=[], sweeps=[])
+    assert result.verdict is None
+    assert result.error == (
+        "every judge rollout failed: judge.1: no valid verdict after 2 forced calls: the last"
+        " answer stopped at the output cap of 2048 tokens, 2048 of them reasoning. Raise"
+        " max_output_tokens or lower effort in monitor.judge, or use a model that reasons less."
+    )
+    # A budget with room for less than the profile's cap set the cap of the forced calls. No
+    # sampled steps, so the brief and the room it leaves are the same each time.
+    script = Script(*[thinking] * 40)
+    p = profile(max_output_tokens=16_384)
+    tight = make_judge(store, run, script, p=p, budget=0.05, max_tool_calls=1, sample_unflagged=0)
+    result = await tight.run(flags=[], sweeps=[])
+    cap = script.requests[-1]["max_tokens"]
+    assert cap < 16_384
+    assert result.error == (
+        "every judge rollout failed: judge.1: no valid verdict after 2 forced calls: the last"
+        f" answer stopped at the output cap of {cap} tokens, {cap} of them reasoning, the most"
+        " the judge budget had room for. Raise the monitor budget or use a model that reasons"
+        " less."
+    )
+
+
 async def test_verdict_alone_gives_a_verdict(store: LocalEventStore) -> None:
     run = await make_run(store)
     script = Script(call("verdict", **verdict()))
