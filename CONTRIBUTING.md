@@ -12,6 +12,8 @@ cd web && bun install && bun run build && cd ..   # writes the UI into src/aims/
 uv run aims ui                                    # serves that build; restart it after a new build
 ```
 
+The build is not tracked. Run `bun run build` again after a pull that changes `web/`, or `aims ui` serves the old UI.
+
 The repository has no `aims.toml`, so a checkout has no models until you add some.
 
 ## Before a push
