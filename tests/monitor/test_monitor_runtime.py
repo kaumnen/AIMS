@@ -558,6 +558,54 @@ async def test_pause_and_inject_are_refused_once_every_agent_finished(
     assert await of(store, result.run_id, OperatorAction, "operator.action") == []
 
 
+LATE = (
+    SCENARIO
+    + """\
+  - id: b
+    role: confederate
+    start: {{delay_s: 3600}}
+"""
+)
+
+
+@pytest.mark.parametrize("hook", ["agents_done", "judge"])
+async def test_pause_and_inject_are_refused_once_the_agents_stopped(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor], hook: str
+) -> None:
+    """Agent b's start had not come when the subject finished, so it was cancelled before its
+    loop ran and never finished. A resume with inject is an inject too."""
+    path = tmp_path / "scenario.yaml"
+    path.write_text(LATE.format(oversight="observe", verifier=""))
+    script = Script(call("submit", answer="ok"))
+    runner = Runner(bench(store, script), load(path), Options(), monitor=watched())
+    refused: list[str] = []
+
+    async def ask(**_: Any) -> None:
+        asks = (
+            lambda: runner.operate("pause"),
+            lambda: runner.operate("pause", agent="b"),
+            lambda: runner.operate("inject", agent="b", text="look again"),
+            lambda: runner.operate("resume", then="inject", text="look again"),
+            lambda: runner.operate("resume", agent="a", then="inject", text="look again"),
+        )
+        for a in asks:
+            try:
+                await a()
+            except RunError as e:
+                refused.append(str(e))
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], hook, ask)
+    result = await runner.run()
+    assert result.status == "completed", result.reason
+    assert not runner._done("b")
+    assert refused == [
+        *["the agents have stopped"] * 4,
+        "agent a has finished",
+    ]
+    assert result.run_id is not None
+    assert await of(store, result.run_id, OperatorAction, "operator.action") == []
+
+
 async def test_verifier_flags_taint_the_score(
     store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
 ) -> None:

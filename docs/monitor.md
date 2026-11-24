@@ -85,7 +85,7 @@ The scenario's `oversight` decides what flags do. By default a flag at importanc
 - Judge flags never act. Nor do flags raised during setup. Flags raised while the verifier runs mark the score as tainted.
 - Three tool calls denied in a row, or ten in all, kill the agent. Under `human` they pause it.
 - Two failed sweeps in a row pause the agents. Under `autonomous` the monitor retries the sweeps and resumes the agents once they work. By default the run goes on under `observe`.
-- An operator can pause, resume, deny a tool call, inject a message, kill, cancel or start a sweep at any time. Use the UI or `aims control`. A pause or an inject is refused once every agent it targets has finished.
+- An operator can pause, resume, deny a tool call, inject a message, kill, cancel or start a sweep at any time. Use the UI or `aims control`. A pause or an inject is refused once every agent it targets has finished. It is also refused once the agents' phase is over, as while the judge runs. A resume that injects counts as an inject.
 - An operator's kill or cancel stops the monitor's model calls. The final sweeps and the judge do not run. A kill by the monitor still gets them.
 - The monitor refuses to watch an agent that runs the same model weights as itself, unless `allow_same_model` is set.
 

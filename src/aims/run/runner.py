@@ -383,6 +383,8 @@ class Runner:
         self._clients: list[ModelClient] = []
         self._untap: Callable[[], None] | None = None
         self._agents_done = False
+        # The agents' phase is over: no agent runs any more, one cancelled before its start too.
+        self._agents_over = False
         self._judged = False
         self._monitor_closed = False
         self._plants_stopped = False
@@ -480,10 +482,11 @@ class Runner:
         with deny refuses the tool call each agent waits before, and needs one that does. An
         `operator_only` resume lets go of an operator's pause only: it is refused while the
         monitor holds an agent it targets, and an agent the monitor pauses meanwhile stays
-        paused. A pause or an inject is refused once every agent it targets has finished, as
-        while the judge runs. A sweep is left to the monitor, which reads the action from the
-        log. Returns what did not take effect, such as a sandbox that did not freeze or stop,
-        else None."""
+        paused. A pause or an inject is refused once every agent it targets has finished. It is
+        also refused once the agents' phase is over, as during the final sweeps, the verifier
+        and the judge. A resume with inject counts as an inject. A sweep is left to the monitor,
+        which reads the action from the log. Returns what did not take effect, such as a sandbox
+        that did not freeze or stop, else None."""
         if self.run_id is None or self.finished:
             raise RunError("the run is not running")
         if (action == "inject" or then == "inject") and not text:
@@ -491,10 +494,13 @@ class Runner:
         if action == "sweep" and (self.watch is None or not self.watch.sweeps):
             raise RunError("this run has no monitor that sweeps")
         targets = self._targets(agent)
-        if action in ("pause", "inject") and targets and all(map(self._done, targets)):
+        reaches = action in ("pause", "inject") or (action == "resume" and then == "inject")
+        if reaches and targets and all(map(self._done, targets)):
             raise RunError(
                 "every agent has finished" if agent is None else f"agent {agent} has finished"
             )
+        if reaches and (self._agents_over or self._decided):
+            raise RunError("the agents have stopped")
         c = self._control
         held = any(c.is_paused(a) and c.held_call(a) for a in targets)
         if action == "resume" and then == "deny" and not held:
@@ -839,6 +845,7 @@ class Runner:
             await self._start_phase(phase)
         if not self.cancelled and not self.killed:
             await self._run_agents(profiles, result)
+        self._agents_over = True
         if self._killing is None and not self.cancelled:
             await self._final_sweeps()
         if self._killing is not None:
