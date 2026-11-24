@@ -3,6 +3,7 @@ run seals, read by operators only, the variant and series they put in the run li
 rows that keep the history from reading every log again, and the live projection."""
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 import stat
@@ -33,7 +34,7 @@ from aims.events import store as store_module
 from aims.events.blobs import decode
 from aims.events.chain import Head as LogHead
 from aims.events.store import INDEX, TruthRefused
-from aims.node.client import ControlClient
+from aims.node.client import ApiError, ControlClient
 from aims.run import truth
 from aims.run.estimate import history, projection
 from aims.run.job import Job
@@ -287,6 +288,43 @@ async def test_a_refused_truth_file_does_not_hold_the_shipper(
     assert shipper.truth_refused is not None
     assert "422" in shipper.truth_refused
     assert not cp.state.store.truth_path(run_id).exists()
+
+
+async def test_a_truth_file_with_a_lone_surrogate_is_refused_for_good(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """The index cannot write a lone surrogate, so such a truth file was answered 500 at each
+    try and its shipper sent it again without end. AIMS writes none: RFC 8785 refuses one."""
+    data = b'{"plants": {}, "variant": "\\ud800"}\n'
+    started = RunStarted(
+        scenario="pushed",
+        oversight="observe",
+        agents=["a1"],
+        truth=hashlib.sha256(data).hexdigest(),
+    )
+    run_id = await local.create_run(started)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    await FakeRunner(cp, "pusher").client.hello(FakeRunner(cp, "pusher").hello_body())
+    client = ControlClient(cp.url, cp.runner, runner="pusher")
+    try:
+        # no truth file here yet, so the log ships alone
+        assert (await ship(local, client, run_id)).done
+        for _ in range(2):
+            with pytest.raises(ApiError) as caught:
+                await client.put_truth(run_id, data)
+            refused = caught.value
+            assert (refused.status, refused.code, refused.retryable) == (422, "truth", False)
+            assert "lone surrogate" in str(refused)
+        local.truth_path(run_id).write_bytes(data)
+        shipper = await ship(local, client, run_id)
+    finally:
+        await client.aclose()
+    assert (shipper.done, shipper.truthful) == (True, True)
+    assert shipper.truth_refused is not None
+    assert "422" in shipper.truth_refused
+    assert not cp.state.store.truth_path(run_id).exists()
+    async with cp.client(cp.operator) as op:
+        assert (await op.get(f"/api/runs/{run_id}")).status_code == 200
 
 
 # The history's cost rows.

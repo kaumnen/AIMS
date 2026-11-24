@@ -66,7 +66,7 @@ from aims.events.schema import (
     is_sha256,
     now,
 )
-from aims.text import scrub
+from aims.text import LONE, lone_at, scrub
 
 log = logging.getLogger("aims.events")
 
@@ -1276,6 +1276,9 @@ class LocalEventStore:
             raise TruthRefused("the truth file is not JSON", status=422) from None
         if not isinstance(truth, dict):
             raise TruthRefused("the truth file is not a JSON object", status=422)
+        # the index cannot write one, so each try would fail the same way
+        if lone_at(truth) is not None:
+            raise TruthRefused(f"the truth file {LONE}", status=422)
         target = self.truth_path(run_id)
         variant = _variant(truth)
         if await asyncio.to_thread(_same_file, target, data):
