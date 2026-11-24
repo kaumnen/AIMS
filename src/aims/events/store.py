@@ -1432,7 +1432,9 @@ class LocalEventStore:
         scenario: str | None = None,
         skip_kinds: Sequence[str] = (),
     ) -> list[RunInfo]:
-        """Runs newest first, filtered as `Index.runs` describes."""
+        """Runs newest first, filtered as `Index.runs` describes. A run held here that a
+        reset elsewhere left out is indexed again, as `_reset_elsewhere` says."""
+        await self._reset_elsewhere()
         return await self._index.runs(
             scenario=scenario,
             group=group,
@@ -1485,7 +1487,7 @@ class LocalEventStore:
         query: str | None = None,
         execs: Sequence[str] = (),
     ) -> list[Event]:
-        return await self._index.events(
+        found = await self._index.events(
             run_id,
             after=after,
             before=before,
@@ -1495,6 +1497,9 @@ class LocalEventStore:
             query=query,
             execs=execs,
         )
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def steps(
         self,
@@ -1505,7 +1510,10 @@ class LocalEventStore:
         agent_id: str | None = None,
     ) -> list[StepInfo]:
         """A page of a run's agent steps with their tool calls, in seq order."""
-        return await self._index.steps(run_id, after=after, limit=limit, agent_id=agent_id)
+        found = await self._index.steps(run_id, after=after, limit=limit, agent_id=agent_id)
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
         """What each exec left in the log, counted per event type and file op."""
@@ -1584,6 +1592,8 @@ class LocalEventStore:
                     break
                 floor = head
                 if not page:
+                    if not out:
+                        await self._missed(run_id)
                     return out
                 out.extend(page)
                 cursor = page[-1].seq
@@ -1906,12 +1916,17 @@ class LocalEventStore:
         return lag
 
     async def _missed(self, run_id: str) -> None:
-        """Note a read of the index that found no run `run_id`. Another process that resets
-        the index, as one with another index VERSION does at its open, indexes every run again
-        but those whose log a writer holds, which it leaves to that writer. When a writer or
-        sink here holds this run and the index's generation changed, every run held here is
-        indexed again from its log, at once."""
-        if not self._open(run_id):
+        """Note a read of the index that found no run `run_id`. When a writer or sink here
+        holds this run, the index may have been reset elsewhere: see `_reset_elsewhere`."""
+        if self._open(run_id):
+            await self._reset_elsewhere()
+
+    async def _reset_elsewhere(self) -> None:
+        """Another process that resets the index, as one with another index VERSION does at
+        its open, indexes every run again but those whose log a writer holds, which it leaves
+        to that writer. When the index's generation changed, every run a writer or sink here
+        holds is indexed again from its log, at once. With none held here nothing is read."""
+        if not any(self._open(r) for r in {*self._writers, *self._sinks}):
             return
         generation = await self._index.generation()
         if generation == self._generation:

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from aims.events import (
+    AgentStep,
     Draft,
     Event,
     LocalEventStore,
@@ -2259,6 +2260,46 @@ async def test_a_run_held_here_is_indexed_again_after_another_process_reset_the_
             assert info is not None
             assert (info.status, info.events) == ("running", 3)
             assert (await store.verify(run_id)).ok
+
+
+@pytest.mark.parametrize("held", ["writer", "sink"])
+@pytest.mark.parametrize("read", ["runs", "events", "steps", "every"])
+async def test_a_list_read_brings_back_a_run_held_here_after_another_process_reset_the_index(
+    tmp_path: Path, held: str, read: str
+) -> None:
+    """A list of runs, or a read that finds no event or step of a run held here, indexes the
+    run again after another process reset the index, as a read by id does."""
+    root = tmp_path / "runs"
+    step = AgentStep(n=1, call_id="m1", status="completed", tool_calls=["c1"])
+    drafts = [call(1), Draft(step, "a1")]
+    async with await LocalEventStore.open(root, ingest_only=held == "sink") as store:
+        if held == "writer":
+            run_id = await store.create_run(STARTED)
+            await store.append(run_id, drafts)
+        else:
+            async with await LocalEventStore.open(tmp_path / "source") as source:
+                run_id = await source.create_run(STARTED)
+                await source.append(run_id, drafts)
+            await store.ingest(run_id, split_lines((source.root / run_id / LOG).read_bytes()))
+        reset_index(root)
+        async with await LocalEventStore.open(root) as other:
+            assert await other.run(run_id) is None
+
+        async def seen() -> int:
+            if read == "runs":
+                return [r.run_id for r in await store.runs()].count(run_id)
+            if read == "events":
+                return len(await store.events(run_id))
+            if read == "steps":
+                return len(await store.steps(run_id))
+            return len(await store.every(run_id))
+
+        async def whole() -> bool:
+            return await seen() == {"runs": 1, "events": 3, "steps": 1, "every": 3}[read]
+
+        # the read that finds the run missing starts its catch-up, which tells of a change
+        assert await seen() == 0
+        await eventually(store, whole)
 
 
 @pytest.mark.parametrize("stays", [False, True])
