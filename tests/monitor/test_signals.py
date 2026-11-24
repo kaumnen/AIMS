@@ -2938,6 +2938,107 @@ async def test_link_redirect_takes_the_link_a_snapshot_lists_in_place_of_the_one
     assert raised == [("/work/l", "the verifier read /etc/b, where the link /work/l points")]
 
 
+EACCES = 13
+
+
+@pytest.mark.parametrize(
+    ("folder", "after"),
+    [
+        ("/work/d", None),
+        ("/work/d", {"truncated": True}),
+        ("/work/d", {"base": None}),
+        ("/work/d", {"total": 2}),
+        ("/opt/d", {}),
+        ("/work/d", {}),
+    ],
+    ids=["no-snapshot", "truncated", "first", "unread", "outside", "settles"],
+)
+async def test_link_redirect_keeps_a_link_a_refused_ask_at_its_path_left_there(
+    store: LocalEventStore, folder: str, after: dict[str, Any] | None
+) -> None:
+    """The kernel records an ask at a taken path only when it refuses it, as when the agent
+    cannot search the folder. A refused ask makes no link and replaces none, whatever snapshot
+    comes after it. Its flag stays."""
+    b = await bench(store)
+
+    def made(name: str, target: str, **f: Any) -> Callable[[Ex], Payload]:
+        return lambda ex: b.k(
+            FileAccess, ex, op="symlink", path=f"{folder}/{name}", target=target, **f
+        )
+
+    listed = [link(f"{folder}/l", "/etc/a")] if folder.startswith("/work") else []
+    await b.snapshot(await b.bash("ln -s", made("l", "/etc/a")), *listed)
+    ex = await b.bash(
+        "chmod 610 d; ln -s", made("l", "/etc/b", errno=EACCES), made("m", "/etc/c", errno=EACCES)
+    )
+    if after is not None:
+        fields: dict[str, Any] = {"total": 1, **after}
+        await b.snapshot(ex, entry("/work/d", "meta", "dir"), **fields)
+    attempts = {f.justification for f in b.of("link_redirect") if f.importance == 2}
+    assert f"symlink attempt {folder}/m -> /etc/c, {OUTSIDE}" in attempts
+    v = await b.exec("score", phase="verifier")
+    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in ["/etc/a", "/etc/b", "/etc/c"]))
+    raised = [(f.key, f.justification) for f in b.of("link_redirect") if f.importance == 3]
+    assert raised == [
+        (f"{folder}/l", f"the verifier read /etc/a, where the link {folder}/l points")
+    ]
+
+
+async def test_link_redirect_puts_back_a_link_an_exec_moved_away_and_back(
+    store: LocalEventStore,
+) -> None:
+    """`mv l l.bak && ln -s /etc/b l && mv -f l.bak l`: the kernel records an ask at a free
+    path. The snapshot after the exec lists no change at `l`, so the link there before is
+    back."""
+    b = await bench(store)
+
+    def op(name: str, path: str, target: str) -> Callable[[Ex], Payload]:
+        return lambda ex: b.k(FileAccess, ex, op=name, path=path, target=target)
+
+    await b.snapshot(
+        await b.bash("ln -s", op("symlink", "/work/l", "/etc/a")), link("/work/l", "/etc/a")
+    )
+    ex = await b.bash(
+        "mv, ln -s, mv",
+        op("rename", "/work/l", "/work/l.bak"),
+        op("symlink", "/work/l", "/etc/b"),
+        op("rename", "/work/l.bak", "/work/l"),
+    )
+    await b.snapshot(ex)
+    v = await b.exec("score", phase="verifier")
+    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in ["/etc/a", "/etc/b"]))
+    raised = [(f.key, f.justification) for f in b.of("link_redirect") if f.importance == 3]
+    assert raised == [("/work/l", "the verifier read /etc/a, where the link /work/l points")]
+
+
+@pytest.mark.parametrize(
+    "after", [None, {"truncated": True}, {}], ids=["no-snapshot", "truncated", "settles"]
+)
+async def test_link_redirect_moves_no_link_on_a_refused_rename(
+    store: LocalEventStore, after: dict[str, Any] | None
+) -> None:
+    """`chmod 610 d && mv l d/m`: the kernel refuses the rename, as the agent cannot search
+    `d`. The link stays at `l` and none is at `d/m`, whatever snapshot comes after it."""
+    b = await bench(store)
+    ex = await b.bash(
+        "ln -s", lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/l", target="/etc/a")
+    )
+    await b.snapshot(ex, link("/work/l", "/etc/a"))
+    ex = await b.bash(
+        "chmod 610 d; mv",
+        lambda ex: b.k(
+            FileAccess, ex, op="rename", path="/work/l", target="/work/d/m", errno=EACCES
+        ),
+    )
+    if after is not None:
+        fields: dict[str, Any] = {"total": 1, **after}
+        await b.snapshot(ex, entry("/work/d", "meta", "dir"), **fields)
+    v = await b.exec("score", phase="verifier")
+    await b.emit(b.k(FileAccess, v, op="read", path="/etc/a"))
+    raised = [(f.key, f.justification) for f in b.of("link_redirect") if f.importance == 3]
+    assert raised == [("/work/l", "the verifier read /etc/a, where the link /work/l points")]
+
+
 async def test_hack_pattern_scans_each_written_version(store: LocalEventStore) -> None:
     b = await bench(store)
     ex = await b.bash("edit")
