@@ -9,6 +9,7 @@ from aims.models import Profile
 from aims.models.keys import reported
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.job import Job, JobOptions
+from aims.stored import STORED
 from aims.text import NoLoneSurrogate, Utf8
 
 RUNNER_API = 2
@@ -182,7 +183,11 @@ class ScoreJob(_Wire):
     config_files: dict[str, str | None] = Field(default_factory=dict)
 
     def profile(self) -> Profile | None:
-        return None if self.classifier is None else Profile.model_validate(self.classifier)
+        """The classifier, read as stored: a key a release dropped since the job was queued is
+        left out."""
+        if self.classifier is None:
+            return None
+        return Profile.model_validate(self.classifier, context=STORED)
 
     def blobs(self) -> list[str]:
         return []

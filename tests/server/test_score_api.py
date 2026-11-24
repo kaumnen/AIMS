@@ -464,6 +464,36 @@ async def test_a_score_job_carries_its_checks_and_the_plants_a_scenario_adds(
         await scorer.close()
 
 
+async def test_a_score_job_queued_before_a_release_that_dropped_a_profile_key_still_loads(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    """The classifier of a score job is a profile as a run job's are. The runner reads it as
+    stored, so a key Profile takes no more is left out, as it is from a run job's profiles."""
+    origin = await planted(cp, local, fake)
+    scorer = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
+    await scorer.connect()
+    try:
+        async with cp.client(cp.operator) as c:
+            r = await c.post(f"/api/runs/{origin}/score", json={})
+            assert r.status_code == 202, r.text
+            (score_id,) = r.json()["run_ids"]
+        row = await cp.state.db.job(score_id)
+        assert row is not None
+        payload = row.payload
+        payload["classifier"]["removed_since"] = 1
+        sql = "update jobs set payload = ? where run_id = ?"
+        await cp.state.db._write(sql, (json.dumps(payload), score_id))
+        assert (await scorer.next(OfferMessage)).run_id == score_id
+        job = await scorer.client.claim(score_id)
+    finally:
+        await scorer.close()
+    assert isinstance(job, ScoreJob)
+    profile = job.profile()
+    assert profile is not None
+    assert profile.name == "classify"
+    assert job.keys() == ["MODEL_API_KEY=http://model.invalid/v1"]
+
+
 async def test_a_runner_scores_a_job_with_the_checks_and_plants_it_carries(
     cp: CP,
     local: LocalEventStore,
