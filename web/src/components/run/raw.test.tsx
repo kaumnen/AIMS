@@ -285,3 +285,69 @@ test.each([
   await rest(box);
   expect(reads).toEqual(["before=2000"]);
 });
+
+// A browser after an input that scrolls up by `px`: the list moves as far as it can. A scroll
+// comes only when it moved.
+function scrollUp(box: HTMLElement, px: number) {
+  const to = Math.max(0, box.scrollTop - px);
+  if (to === box.scrollTop) return;
+  box.scrollTop = to;
+  fireEvent.scroll(box);
+}
+
+test.each([
+  [
+    "a touch drag",
+    (list: HTMLElement, box: HTMLElement) => {
+      const row = list.firstElementChild as HTMLElement;
+      fireEvent.pointerDown(row, { pointerType: "touch" });
+      fireEvent.touchStart(row, { touches: [{ clientY: 100 }] });
+      fireEvent.touchMove(row, { touches: [{ clientY: 300 }] });
+      scrollUp(box, 200);
+      fireEvent.touchEnd(row);
+    },
+  ],
+  [
+    "a scrollbar drag",
+    (_: HTMLElement, box: HTMLElement) => {
+      fireEvent.pointerDown(box, { pointerType: "mouse" });
+      scrollUp(box, 400);
+      fireEvent.pointerUp(box, { pointerType: "mouse" });
+    },
+  ],
+  [
+    "a PageUp",
+    (list: HTMLElement, box: HTMLElement) => {
+      fireEvent.keyDown(list, { key: "PageUp" });
+      scrollUp(box, 600);
+    },
+  ],
+  [
+    "a Shift+Space",
+    (list: HTMLElement, box: HTMLElement) => {
+      fireEvent.keyDown(list, { key: " ", shiftKey: true });
+      scrollUp(box, 600);
+    },
+  ],
+  [
+    "a scroll down and back up",
+    (_: HTMLElement, box: HTMLElement) => {
+      box.scrollTop = 5 * ROW;
+      fireEvent.scroll(box);
+      scrollUp(box, 5 * ROW);
+    },
+  ],
+])("%s at the top of a list that let its first pages go reads them back", async (_, move) => {
+  log = range(0, 2399);
+  const qc = new QueryClient();
+  heldFrom(qc, 2000, 2399);
+  const list = await show(qc);
+  const box = list.parentElement as HTMLElement;
+  await rest(box);
+  expect(reads).toEqual([]);
+  move(list, box);
+  await waitFor(() => expect(reads).toEqual(["before=2000"]));
+  await waitFor(() => expect(box.scrollTop).toBe(200 * ROW));
+  await rest(box);
+  expect(reads).toEqual(["before=2000"]);
+});

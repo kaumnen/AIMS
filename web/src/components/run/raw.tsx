@@ -222,13 +222,12 @@ function EventList({
     getItemKey: (i) => events[i]?.seq ?? i,
   });
   const items = v.getVirtualItems();
-  const first = items[0]?.index ?? 0;
   const last = items.at(-1)?.index ?? -1;
   // Rows read in above, or let go above as a live list grows, keep the rows on screen where
   // they were.
   const before = useRef(events);
-  // Where the reader was when the list last looked for its start. A read back waits for the
-  // reader to move up, so a list that shows both its ends does not read on and back without end.
+  // Where the reader was at the last scroll. A read back waits for the reader to move up, so a
+  // list that shows both its ends does not read on and back without end.
   const seen = useRef(0);
   useLayoutEffect(() => {
     const was = before.current;
@@ -273,20 +272,22 @@ function EventList({
   }, [selected, events, v]);
   const at = events.findIndex((e) => e.seq === selected);
   const shown = items.some((it) => it.index === at);
-  useEffect(() => {
-    const top = scroller.current?.scrollTop ?? 0;
-    const up = top < seen.current;
-    seen.current = top;
-    if (up && first < 40 && top < 40 * ROW) onNearStart();
-  }, [first, onNearStart]);
+  // At the top no scroll comes, so a wheel up, a press or a key that scrolls up reads back there.
+  const atTop = (e: React.UIEvent<HTMLElement>) => {
+    if (e.currentTarget.scrollTop === 0) onNearStart();
+  };
   return (
     <div
       ref={scroller}
       className="has-[[role=listbox]:focus-visible]:ring-ring/50 min-h-0 flex-1 overflow-auto rounded-sm border has-[[role=listbox]:focus-visible]:ring-2"
-      // at the top no scroll comes, so a wheel up there reads back
-      onWheel={(e) => {
-        if (e.deltaY < 0 && e.currentTarget.scrollTop === 0) onNearStart();
+      onScroll={(e) => {
+        const top = e.currentTarget.scrollTop;
+        if (top < seen.current && top < 40 * ROW) onNearStart();
+        seen.current = top;
       }}
+      onWheel={(e) => e.deltaY < 0 && atTop(e)}
+      onPointerDown={atTop}
+      onKeyDown={(e) => (e.key === "PageUp" || (e.key === " " && e.shiftKey)) && atTop(e)}
     >
       <div
         role="listbox"
