@@ -402,6 +402,15 @@ def _step(steps: Sequence[StepInfo], seq: int, agent: str | None) -> int | None:
     return mine[i - 1].n if i > 0 else None
 
 
+def _acted(steps: Sequence[StepInfo], evidence: Sequence[int], agent: str | None) -> int:
+    """The first of `evidence` from the first step of `agent` on, where the agent acts. What
+    came before, such as the task it was given, counts only when nothing later is cited."""
+    first = next((s for s in steps if agent is not None and s.agent_id == agent), None)
+    first = first or (steps[0] if steps else None)
+    acted = [s for s in evidence if first is not None and s >= first.seq_from]
+    return min(acted or evidence)
+
+
 async def _flags(store: LocalEventStore, run_id: str, verdict: MonitorVerdict | None) -> list[Flag]:
     reviews = {} if verdict is None else {r.flag: r for r in verdict.flags}
     out: list[Flag] = []
@@ -701,7 +710,7 @@ async def _timeline(
     for f in flags:
         if f.importance < TIMELINE_IMPORTANCE:
             continue
-        at = min(f.evidence) if review else f.seq
+        at = _acted(steps, f.evidence, f.agent) if review else f.seq
         info = {"what": f.layer, "categories": [f.category], "importance": f.importance}
         wanted.setdefault(at, []).append(("flag", info | {"agent": f.agent}))
     for p in [] if plants is None else plants.rows:

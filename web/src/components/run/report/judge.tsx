@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { ReportFlag, RunReport } from "@/api/report";
 import type { StepInfo } from "@/api/run";
 import { Meter } from "@/components/runs/cells";
-import { aside, statusText } from "@/lib/monitor";
+import { aside, firstCited, statusText } from "@/lib/monitor";
 import {
   awareText,
   causeText,
@@ -284,8 +284,8 @@ export function PlantsSection({ report, steps, more, multi, onSeq, onFlag, print
 
 // The step of the flag's agent that holds the first event it cites, once that step is loaded.
 function flagStep(f: ReportFlag, steps: readonly StepInfo[], more: boolean) {
-  if (f.evidence.length === 0) return undefined;
-  return stepFor(steps, Math.min(...f.evidence), more, f.agent);
+  const seq = firstCited(f.evidence, f.agent, steps);
+  return seq === undefined ? undefined : stepFor(steps, seq, more, f.agent);
 }
 
 export function FlagsSection({ report, steps, more, multi, onFlag, print }: SectionProps) {

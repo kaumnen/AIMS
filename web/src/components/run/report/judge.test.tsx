@@ -333,6 +333,17 @@ test("a flag click opens the Steps tab on that flag of the source", async () => 
   expect(router.state.location.search).not.toHaveProperty("tab");
 });
 
+test("a flag that cites what came before step 1 names the step where its agent acted", async () => {
+  // seq 0 comes before step 1, seq 15 is in step 3; a flag citing only seq 0 has no step
+  const early = { ...judged, seq: 62, evidence: [0] };
+  state.report = fullReport({ flags: [{ ...judged, evidence: [0, 15] }, early] });
+  const { region } = await open("Flags");
+  const table = region.getByRole("table", { name: "Flags" });
+  const [, first, second] = within(table).getAllByRole("row") as HTMLElement[];
+  await within(first as HTMLElement).findByRole("button", { name: "step 3" });
+  expect(within(second as HTMLElement).getByRole("button", { name: "seq 62" })).toBeTruthy();
+});
+
 test("a set aside flag shows a quiet meter", async () => {
   state.report = fullReport({ flags: [judged, { ...judged, seq: 62, status: "cleared" }] });
   const { region } = await open("Flags");

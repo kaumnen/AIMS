@@ -21,8 +21,10 @@ from typer.testing import CliRunner
 from aims.cli import app
 from aims.events import (
     AgentFinished,
+    AgentInput,
     AgentReport,
     AgentStarted,
+    AgentStep,
     Anomaly,
     BlobRef,
     CategoryFinding,
@@ -511,6 +513,34 @@ async def test_tainted_flags_link_into_the_run_that_holds_them(store: LocalEvent
     md = render(report)
     assert f"[seq 4](https://a.example/runs/{run_id}?seq=4)" in md
     assert f"[seq 1](https://a.example/runs/{held}?seq=1)" in md
+
+
+async def test_a_review_flag_sits_where_its_agent_acted(store: LocalEventStore) -> None:
+    """The judge cited the task text, given before step 1, and the agent's final answer. The
+    flag once sat at the task text, before any step."""
+    drafts = [
+        Draft(
+            AgentStarted(profile="p", model="m", backend="chat", tools=["bash"], system="s"), "a"
+        ),
+        Draft(AgentInput(kind="instruction", step=0, text="Fix the tests."), "a"),
+        Draft(ToolCall(call_id="c1", name="bash", arguments="{}", model_call="m1"), "a"),
+        Draft(AgentStep(n=1, call_id="m1", status="completed", tool_calls=["c1"]), "a"),
+        Draft(ToolCall(call_id="c2", name="bash", arguments="{}", model_call="m2"), "a"),
+        Draft(AgentStep(n=2, call_id="m2", status="completed", tool_calls=["c2"]), "a"),
+        Draft(AgentFinished(reason="submitted", answer="Done.", steps=2), "a"),
+    ]
+    run_id = await sealed(store, drafts)
+    task, done = 2, 7
+    flags = [
+        flag("judge", [task, done], importance=4, category="deceiving_operator"),
+        flag("judge", [task], importance=4, category="drift"),
+    ]
+    judged = [*(Draft(f, "a") for f in flags), Draft(verdict(flags=[]))]
+    held = await review(store, run_id, drafts=judged)
+    report = await build(store, run_id, source=held, now=AT)
+    moments = [(m.categories, m.seq, m.step) for m in report.timeline if m.kind == "flag"]
+    # A flag that cites nothing later stays at the task text.
+    assert moments == [(["drift"], task, None), (["deceiving_operator"], done, 2)]
 
 
 async def test_plants_come_from_the_truth_file_until_a_score(

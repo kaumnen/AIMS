@@ -427,7 +427,7 @@ function Steps({
   const target =
     search.step ??
     search.seq ??
-    (flag ? cited(flag) : follow ? Number.POSITIVE_INFINITY : undefined);
+    (flag ? cited(flag, steps) : follow ? Number.POSITIVE_INFINITY : undefined);
   const loading = target !== undefined && !reaches(steps, target, more);
   const fetching = q.isFetchingNextPage;
   const failed = q.isFetchNextPageError;
@@ -446,7 +446,7 @@ function Steps({
 
   const select = (seq: number) => onChange((prev) => ({ ...without(prev, "seq"), step: seq }));
   const chosen = (prev: RunSearch, f: FlagInfo): RunSearch => {
-    const step = reaches(steps, cited(f), more) ? flagStep(f, steps) : undefined;
+    const step = reaches(steps, cited(f, steps), more) ? flagStep(f, steps) : undefined;
     return { ...without(prev, "seq", "step"), flag: f.seq, ...(step ? { step: step.seq } : {}) };
   };
   const pickFlag = (f: FlagInfo) =>
@@ -457,7 +457,7 @@ function Steps({
       : undefined;
     onChange((prev) => ({ ...without(prev, "step"), seq, ...(step ? { step: step.seq } : {}) }));
   };
-  const order = shown.toSorted((a, b) => cited(a) - cited(b) || a.seq - b.seq);
+  const order = shown.toSorted((a, b) => cited(a, steps) - cited(b, steps) || a.seq - b.seq);
   // From the URL as it is now, so a quick second press moves on from the first.
   const walk = (back: boolean) =>
     onChange((prev) => {
@@ -468,8 +468,8 @@ function Steps({
         i >= 0
           ? order[i + (back ? -1 : 1)]
           : back
-            ? order.findLast((x) => cited(x) < from)
-            : order.find((x) => cited(x) >= from);
+            ? order.findLast((x) => cited(x, steps) < from)
+            : order.find((x) => cited(x, steps) >= from);
       return next === undefined ? prev : chosen(prev, next);
     });
 
@@ -586,7 +586,7 @@ function Steps({
   }
   const marks = new Map<number, StepFlags>();
   for (const f of shown) {
-    if (!reaches(steps, cited(f), more)) continue;
+    if (!reaches(steps, cited(f, steps), more)) continue;
     const step = flagStep(f, steps);
     if (!step) continue;
     const m = marks.get(step.seq) ?? { count: 0, red: false };

@@ -298,8 +298,8 @@ function FlagRow({
   onFlag: (f: FlagInfo) => void;
   onSeq: (seq: number) => void;
 }) {
-  const step = reaches(steps, cited(flag), more) ? flagStep(flag, steps) : undefined;
-  const where = step ? `step ${step.n}` : `seq ${cited(flag)}`;
+  const step = reaches(steps, cited(flag, steps), more) ? flagStep(flag, steps) : undefined;
+  const where = step ? `step ${step.n}` : `seq ${cited(flag, steps)}`;
   const origin = [
     flag.layer,
     flag.source,
@@ -533,7 +533,7 @@ export function MonitorPanel({
                 {flags.length === 0 ? "No flags." : "No flags match."}
               </p>
             ) : (
-              groupFlags(shown).map(([status, group]) => {
+              groupFlags(shown, steps).map(([status, group]) => {
                 const rows = (
                   <ul className="flex flex-col gap-0.5">
                     {group.map((f) => (
