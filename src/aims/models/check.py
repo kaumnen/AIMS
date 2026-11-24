@@ -18,7 +18,15 @@ from aims.events import (
 )
 from aims.models.client import ModelCallError, ModelClient
 from aims.models.profiles import ModelsConfig, Overrides, Profile, ProfileError
-from aims.models.types import Message, OutputSchema, Prompt, Reply, ToolOutput, ToolSpec
+from aims.models.types import (
+    Message,
+    OutputSchema,
+    Prompt,
+    Reply,
+    ToolOutput,
+    ToolSpec,
+    at_cap,
+)
 
 Verdict = Literal["ok", "warn", "fail"]
 
@@ -112,11 +120,26 @@ async def check_profile(
     async def call(p: Profile, prompt: Prompt) -> Reply:
         return await client.call(p, prompt, overrides=small)
 
+    def failed(r: Reply, detail: str) -> str:
+        """`detail`, or why `r` holds no answer when it stopped at the check's output cap."""
+        sent = profile.apply(small)
+        stopped = at_cap(r, sent.max_output_tokens)
+        if stopped is None:
+            return detail
+        if sent.effort is None:
+            change = (
+                f"Profile {profile.name} sets no effort. With one set, the check asks for low"
+                " or less."
+            )
+        else:
+            change = f"It reasoned that long at effort {sent.effort}."
+        return f"the answer {stopped}, the most the check allows. {change}"
+
     async def plain() -> tuple[Verdict, str]:
         r = await call(profile, _prompt("What is 17 + 25? Reply with the number only."))
         seen.append(r.reasoning_kind)
         if r.status != "completed" or "42" not in r.text:
-            return "fail", f"status {r.status}, text {r.text[:80]!r}"
+            return "fail", failed(r, f"status {r.status}, text {r.text[:80]!r}")
         u = r.usage
         missing = [k for k, v in u.model_dump().items() if v is None]
         if missing:
@@ -129,13 +152,15 @@ async def check_profile(
         r = await call(p, _prompt("What is 6 times 7? Reply with the number only."))
         ok = r.status == "completed" and "42" in r.text
         mode = "streamed" if p.stream else "not streamed"
-        return ("ok", mode) if ok else ("fail", f"{mode}: status {r.status}, {r.text[:80]!r}")
+        if ok:
+            return "ok", mode
+        return "fail", f"{mode}: {failed(r, f'status {r.status}, {r.text[:80]!r}')}"
 
     async def tools() -> tuple[Verdict, str]:
         prompt = _prompt("What is the weather in Paris and in Rome? Use the tool.", tools=[WEATHER])
         r = await call(profile, prompt)
         if r.status != "completed" or not r.tool_calls:
-            return "fail", f"status {r.status}, no tool call, text {r.text[:80]!r}"
+            return "fail", failed(r, f"status {r.status}, no tool call, text {r.text[:80]!r}")
         first = r.tool_calls[0]
         try:
             json.loads(first.arguments)
@@ -145,7 +170,7 @@ async def check_profile(
         items += [ToolOutput(call_id=c.id, output="18C and sunny") for c in r.tool_calls]
         r2 = await call(profile, prompt.model_copy(update={"items": items}))
         if r2.status != "completed":
-            return "fail", f"round trip status {r2.status}"
+            return "fail", f"round trip {failed(r2, f'status {r2.status}')}"
         calls = len(r.tool_calls)
         if profile.parallel_tool_calls is False and calls > 1:
             return "warn", f"{calls} calls in one turn with parallel_tool_calls off"
@@ -159,7 +184,7 @@ async def check_profile(
         try:
             value = json.loads(r.text)
         except ValueError:
-            return "fail", f"not JSON: {r.text[:80]!r}"
+            return "fail", failed(r, f"not JSON: {r.text[:80]!r}")
         if not isinstance(value, dict) or set(value) != {"answer", "sure"}:
             return "fail", f"does not match the schema: {r.text[:80]!r}"
         return ("ok", r.text) if value["answer"] == 42 else ("warn", f"wrong answer {r.text}")

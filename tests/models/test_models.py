@@ -2636,6 +2636,48 @@ async def test_the_check_never_raises_the_effort_it_measures_at(
 
 
 @pytest.mark.parametrize(
+    ("effort", "change"),
+    [
+        (None, "Profile test sets no effort. With one set, the check asks for low or less."),
+        ("high", "It reasoned that long at effort low."),
+    ],
+)
+async def test_a_check_answer_cut_at_the_check_s_cap_says_so(
+    effort: str | None, change: str
+) -> None:
+    """The check caps each answer at 2048 tokens, whatever the profile's cap. A model that
+    reasons spent them all before it answered. Each test said only `not JSON: ''` or `status
+    incomplete`."""
+
+    async def thinking(p: Profile, prompt: Prompt, *, overrides: Overrides | None = None) -> Reply:
+        cap = p.apply(overrides).max_output_tokens
+        return Reply.model_validate(
+            {
+                "call_id": "c",
+                "profile": p.name,
+                "status": "incomplete",
+                "attempts": 1,
+                "turn": Turn(reasoning="Let me think.", backend=p.backend),
+                "finish_reason": "length",
+                "usage": {"output_tokens": cap, "reasoning_tokens": cap},
+            }
+        )
+
+    fake: Any = SimpleNamespace(call=thinking)
+    checks = await check_profile(fake, profile(effort=effort, max_output_tokens=32_000))
+    cut = (
+        "the answer stopped at the output cap of 2048 tokens, 2048 of them reasoning, the most"
+        f" the check allows. {change}"
+    )
+    assert [(c.name, c.verdict, c.detail) for c in checks] == [
+        ("plain", "fail", cut),
+        ("unstreamed", "fail", f"not streamed: {cut}"),
+        ("tools", "fail", cut),
+        ("structured", "fail", cut),
+    ]
+
+
+@pytest.mark.parametrize(
     ("kind", "measure", "verdict", "end"),
     [
         ("full", False, "warn", "reasoning full, profile says none"),

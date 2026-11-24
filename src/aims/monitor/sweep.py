@@ -39,6 +39,7 @@ from aims.models import (
     Reply,
 )
 from aims.models.purse import Purse
+from aims.models.types import at_cap
 from aims.monitor.config import Lane, SweepConfig
 from aims.monitor.render import Rendered, Trajectory, escape, glossary
 from aims.monitor.texts import MonitorTexts
@@ -278,18 +279,6 @@ def check(quotes: list[_Quote], rendered: Rendered) -> tuple[list[Quote], int]:
 
 def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
-
-
-def at_cap(reply: Reply, cap: int | None) -> str | None:
-    """How an answer that stopped at its output cap `cap` spent it, as its token counts tell,
-    such as "stopped at the output cap of 8192 tokens, 8192 of them reasoning". None when it
-    did not stop there or its counts do not say."""
-    made = reply.usage.output_tokens
-    if reply.status != "incomplete" or cap is None or made is None or made < cap:
-        return None
-    thought = reply.usage.reasoning_tokens
-    spent = f", {thought} of them reasoning" if thought else ""
-    return f"stopped at the output cap of {cap} tokens{spent}"
 
 
 def more_room(reply: Reply, setting: str) -> str:

@@ -67,10 +67,10 @@ from aims.models import (
     ToolSpec,
     Turn,
 )
-from aims.models.types import CHARS_PER_TOKEN
+from aims.models.types import CHARS_PER_TOKEN, at_cap
 from aims.monitor import judge_texts
 from aims.monitor.config import CATEGORIES, JUDGE_MIN_OUTPUT, JudgeConfig
-from aims.monitor.sweep import at_cap, more_room
+from aims.monitor.sweep import more_room
 from aims.monitor.texts import MonitorTexts
 
 log = logging.getLogger("aims.monitor")
