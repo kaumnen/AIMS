@@ -14,6 +14,7 @@ from cp import CP, control_plane, start, stop
 from scripted import Script, call, models, profile
 
 from aims.events import LocalEventStore, OperatorAction
+from aims.models import Subscription
 from aims.node.client import ControlClient
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
@@ -149,16 +150,28 @@ def same_log(cp: CP, node: Node, run_id: str) -> bool:
     return ours.read_bytes() == theirs.read_bytes()
 
 
+def relayed(sub: Subscription) -> set[tuple[str, str]]:
+    """The run and kind of each live delta the control plane sent its viewers."""
+    out: set[tuple[str, str]] = set()
+    while not sub.queue.empty():
+        d = sub.queue.get_nowait()
+        out.add((d.run_id, d.kind))
+    return out
+
+
 async def test_a_run_started_from_the_api_runs_on_the_runner_and_ships(
     cp: CP, backend: DockerBackend, tmp_path: Path
 ) -> None:
     script = Script(call("bash", command="echo hello"), call("submit", answer="done"))
-    async with running_node(cp, backend, tmp_path / "node", script) as node:
-        (run_id,) = await start_control(cp)
-        run = await until_status(cp, run_id, "completed", "failed")
-        assert run["status"] == "completed", run
-        assert run["runner"] == "n1"
-        await until(lambda: same_log(cp, node, run_id), 10)
+    with cp.state.bus.subscribe() as sub:
+        async with running_node(cp, backend, tmp_path / "node", script) as node:
+            (run_id,) = await start_control(cp)
+            run = await until_status(cp, run_id, "completed", "failed")
+            assert run["status"] == "completed", run
+            assert run["runner"] == "n1"
+            await until(lambda: same_log(cp, node, run_id), 10)
+        # the live text of the job's model calls reached the viewers
+        assert {(run_id, "start"), (run_id, "end")} <= relayed(sub)
     job = await cp.state.db.job(run_id)
     assert job is not None
     assert (job.state, job.reason) == ("done", "completed")
@@ -509,23 +522,27 @@ async def test_aims_run_ships_and_takes_commands(
         bench = Bench(
             store, backend, models(profile()), transport=script.transport(), gate=ControlGate()
         )
-        link = Link(ControlClient(cp.url, cp.runner, runner="run-test"), store, bench.bus)
-        await link.start()
-        runner = Runner(
-            bench, load(cp.project.parent / "scenarios/control/scenario.yaml"), Options()
-        )
-        link.track(runner)
-        task = asyncio.create_task(runner.run())
-        await until(lambda: runner.run_id is not None, 60)
-        run_id = runner.run_id
-        assert run_id is not None
-        await until(lambda: cp.state.store.run(run_id), 60)
-        await until_event(cp, run_id, "exec.started")
-        await post(cp, f"/api/runs/{run_id}/kill", {"reason": "from the ui"})
-        result = await task
-        assert (result.status, result.reason) == ("killed", "from the ui")
-        assert await link.drain(30)
-        await link.close()
+        with cp.state.bus.subscribe() as sub:
+            link = Link(ControlClient(cp.url, cp.runner, runner="run-test"), store, bench.bus)
+            await link.start()
+            runner = Runner(
+                bench, load(cp.project.parent / "scenarios/control/scenario.yaml"), Options()
+            )
+            link.track(runner)
+            task = asyncio.create_task(runner.run())
+            await until(lambda: runner.run_id is not None, 60)
+            run_id = runner.run_id
+            assert run_id is not None
+            await until(lambda: cp.state.store.run(run_id), 60)
+            await until_event(cp, run_id, "exec.started")
+            await post(cp, f"/api/runs/{run_id}/kill", {"reason": "from the ui"})
+            result = await task
+            assert (result.status, result.reason) == ("killed", "from the ui")
+            assert await link.drain(30)
+            await link.close()
+            # the live text of the first model call reached the viewers, though the run has no
+            # job: the run's first lines came before it
+            assert {(run_id, "start"), (run_id, "end")} <= relayed(sub)
         actions = await store.events(run_id, types=["operator.action"])
         payload = actions[0].payload()
         assert isinstance(payload, OperatorAction)

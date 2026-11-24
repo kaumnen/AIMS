@@ -117,6 +117,23 @@ async def _holds(state: ServerState, job: Job, conn: Connected) -> bool:
     return meta is None or meta.shipper in (None, conn.token)
 
 
+async def _streams(state: ServerState, run_id: str, conn: Connected) -> bool:
+    """Whether `conn` may send the live model text of a run. It must hold the run's job, or
+    have shipped the run under its name and token when the run has no job. Live text makes no
+    run a runner's own. A run nobody holds yet takes none of it. Only the process that runs a
+    run sends its text, so the name counts too."""
+    job = await state.db.job(run_id)
+    if job is not None:
+        return job.state in ("claimed", "running", "done") and await _holds(state, job, conn)
+    meta = await state.db.run_meta(run_id)
+    return (
+        meta is not None
+        and meta.source != "import"
+        and meta.runner == conn.name
+        and meta.shipper == conn.token
+    )
+
+
 async def reader(state: ServerState, run_id: str, conn: Connected) -> None:
     """Refuse unless `conn` owns the run or holds a fork, monitor or score job of it, or the
     job of the series run after it."""
@@ -637,14 +654,7 @@ async def post_deltas(
     keep = []
     for d in body.deltas:
         if d.run_id not in mine:
-            meta = await state.db.run_meta(d.run_id)
-            job = await state.db.job(d.run_id)
-            owner = (job.runner if job is not None else None) or (meta.runner if meta else None)
-            imported = meta is not None and meta.source == "import"
-            shipper = meta.shipper if meta is not None else None
-            mine[d.run_id] = (
-                not imported and owner in (None, conn.name) and shipper in (None, conn.token)
-            )
+            mine[d.run_id] = await _streams(state, d.run_id, conn)
         if mine[d.run_id]:
             keep.append(d)
     state.publish(keep)

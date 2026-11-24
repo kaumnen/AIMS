@@ -59,7 +59,7 @@ from aims.events.blobs import ZSTD_MAGIC, decode, decoded
 from aims.events.chain import MAX_LINE
 from aims.events.index import Index
 from aims.events.schema import blob_refs
-from aims.models import DeltaBus, Profile
+from aims.models import Delta, DeltaBus, Profile
 from aims.models.keys import KeysError, parse
 from aims.node import shipper as shipper_module
 from aims.node.client import FEED, ApiError, BadReply, ControlClient
@@ -3100,8 +3100,11 @@ async def test_a_stream_ends_when_its_token_is_revoked(
 async def test_deltas_reach_the_stream_and_a_slow_one_is_told_it_lost_some(
     cp: CP, fake: FakeRunner
 ) -> None:
-    # a viewer gets the deltas of a run whose kind is known, here by its job
+    # a viewer gets the deltas of a run whose kind is known, here by its job, from the runner
+    # that claimed the job
     (run_id,) = await start_run(cp)
+    offer = await fake.next(OfferMessage)
+    assert await fake.client.claim(offer.run_id) is not None
     cp.state.bus.maxsize = 4
 
     def delta(i: int) -> WireDelta:
@@ -3120,6 +3123,108 @@ async def test_deltas_reach_the_stream_and_a_slow_one_is_told_it_lost_some(
     late = await sse_inflight(cp, run_id)
     assert late[0][0] == "delta"
     assert [d["text"] for d in late[0][1]["deltas"]][:3] == ["0", "1", "2"]
+
+
+async def post_text(
+    cp: CP, runner: FakeRunner, run_id: str, text: str
+) -> tuple[list[str], list[str]]:
+    """Post one text delta of `run_id` as `runner`. Gives the texts the viewers' streams got
+    and the run's texts the control plane keeps in flight."""
+    delta = WireDelta(run_id=run_id, agent_id="a", call_id="m1", attempt=1, kind="text", text=text)
+    with cp.state.bus.subscribe() as sub:
+        await runner.client.post_deltas(Deltas(deltas=[delta]))
+        sent = [sub.queue.get_nowait().text for _ in range(sub.queue.qsize())]
+    return sent, [d.text for d in cp.state.inflight.of({run_id})]
+
+
+async def test_a_runner_streams_no_text_for_a_run_it_does_not_hold(cp: CP) -> None:
+    """Live text of a job comes only from the runner that claimed it. A queued job, one only
+    offered and one another runner claimed take none from a runner. Neither does an id the
+    control plane does not know."""
+    # said hello with no stream open, so no job is offered to it
+    other = FakeRunner(cp, "other")
+    await other.client.hello(other.hello_body())
+    fake = FakeRunner(cp)
+    try:
+        (run_id,) = await start_run(cp)
+        job = await cp.state.db.job(run_id)
+        assert job is not None
+        assert (job.state, job.runner) == ("queued", None)
+        assert await post_text(cp, other, run_id, "forged") == ([], [])
+        ghost = str(uuid.uuid7())
+        assert await post_text(cp, other, ghost, "ghost") == ([], [])
+        assert await cp.state.db.run_meta(ghost) is None
+        await fake.connect()
+        await fake.next(OfferMessage)
+        job = await cp.state.db.job(run_id)
+        assert job is not None
+        assert (job.state, job.runner) == ("offered", "fake")
+        assert await post_text(cp, fake, run_id, "offered") == ([], [])
+        assert await fake.client.claim(run_id) is not None
+        assert await post_text(cp, other, run_id, "forged") == ([], [])
+        assert await post_text(cp, fake, run_id, "mine") == (["mine"], ["mine"])
+    finally:
+        await fake.close()
+        await other.client.aclose()
+
+
+async def test_a_run_with_no_job_takes_text_only_from_the_runner_that_shipped_it(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """A run with no job, as from `aims run`, is a runner's once it ships the run's first
+    lines. Only that runner, by name and token, sends the run's live text. Another runner on
+    the same token does not, since only the process that runs a run sends its text."""
+    run_id = await local.create_run(STARTED)
+    lines = split_lines((local.root / run_id / "events.jsonl").read_bytes())
+    runner, other = FakeRunner(cp, "run-a"), FakeRunner(cp, "run-b")
+    try:
+        for r in (runner, other):
+            await r.client.hello(r.hello_body())
+        assert await post_text(cp, runner, run_id, "early") == ([], [])
+        assert (await raw_events(cp, runner.name, run_id, lines)).status_code == 200
+        assert await post_text(cp, other, run_id, "forged") == ([], [])
+        assert await post_text(cp, runner, run_id, "live") == (["live"], ["live"])
+    finally:
+        await runner.client.aclose()
+        await other.client.aclose()
+
+
+async def test_a_links_text_of_its_job_and_of_a_run_it_ships_reaches_a_viewer(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through a real link: the text of a job it claimed and of a run with no job it ships,
+    as `aims run` ships one, reaches a viewer's stream."""
+    # no status comes in the test's time to tell the control plane the link holds no job
+    monkeypatch.setattr("aims.node.link.HEARTBEAT_S", 60)
+    bus = DeltaBus()
+    link = Link(
+        ControlClient(cp.url, cp.runner, runner="live"),
+        local,
+        bus,
+        slots=2,
+        tracer=lambda: TracerHealth(alive=True),
+    )
+    await link.start()
+    try:
+        async with asyncio.timeout(10):
+            await link.connected.wait()
+        (job_run,) = await start_run(cp)
+        await until(lambda: job_state(cp, job_run), "offered")
+        assert await link.client.claim(job_run) is not None
+        shipped = await local.create_run(STARTED)
+        link.ship(shipped, seen=True)
+        # the stream sends a viewer the text of a run once it knows the run's kind
+        await until(lambda: cp.state.store.run(shipped), lambda info: info is not None)
+        for run_id in (job_run, shipped):
+            async with cp.client(cp.viewer) as c:
+                reader = asyncio.create_task(sse(c, {"deltas": run_id}, want=1))
+                await asyncio.sleep(0.3)
+                bus.publish(Delta(run_id, "a", "m1", 1, "text", f"text of {run_id}"))
+                got = await reader
+            texts = [d["text"] for kind, m, _ in got if kind == "delta" for d in m["deltas"]]
+            assert texts == [f"text of {run_id}"]
+    finally:
+        await link.close()
 
 
 def test_a_finished_call_keeps_no_deltas_that_come_after_its_response() -> None:
