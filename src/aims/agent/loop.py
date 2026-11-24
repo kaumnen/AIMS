@@ -782,7 +782,7 @@ class Agent:
         self._replayed = client is not self.client
         u = reply.usage
         if u.input_tokens is not None:
-            self.last_tokens = u.input_tokens + (u.output_tokens or 0)
+            self.last_tokens = min(u.input_tokens + (u.output_tokens or 0), MAX_INT)
         self.marks[self.steps] = len(self.items)
         turn = reply.turn if reply.status == "completed" else Turn(text=reply.text)
         self.items.append(turn)
@@ -1156,7 +1156,9 @@ class Agent:
                 bytes_before=bytes_before,
                 bytes_after=bytes_after,
                 tokens_before=self.last_tokens,
-                tokens_after_est=int(self.last_tokens * bytes_after / max(1, bytes_before)),
+                tokens_after_est=min(
+                    int(self.last_tokens * bytes_after / max(1, bytes_before)), MAX_INT
+                ),
                 call_id=call_id,
                 summary=None if summary is None else await self.store.content(self.run_id, summary),
             )

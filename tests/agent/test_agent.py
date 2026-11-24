@@ -3,7 +3,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from scripted import Script, call, models, profile, raw_call, say
@@ -790,6 +790,33 @@ async def test_summary_compaction_rewrites_the_history(store: LocalEventStore) -
     assert compacted.summary == "I listed files twice."
     steps = await payloads(store, run_id, AgentStep)
     assert [s.n for s in steps] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    ("strategy", "made", "summary"),
+    [
+        # input and output counts that each fit the log sum past it
+        ("trim", MAX_INT, []),
+        # a summary longer than the steps it replaces raises the estimate after it
+        ("summary", 0, [say("x" * 5000)]),
+    ],
+    ids=["trim", "summary"],
+)
+async def test_a_compaction_logs_token_counts_the_log_holds(
+    store: LocalEventStore, strategy: Literal["trim", "summary"], made: int, summary: list[Any]
+) -> None:
+    big = call("bash", command="true") | counts(MAX_INT, made)
+    script = Script(big, big, *summary, call("submit", answer="done"))
+    compaction = Compaction(at=0.5, strategy=strategy, keep_recent=1)
+    p = profile(price=None, context_tokens=1000)
+    agent, run_id = await make_agent(store, script, p=p, compaction=compaction)
+    finished = await agent.run()
+    assert (finished.reason, finished.steps) == ("submitted", 3), finished.detail
+    (compacted,) = await payloads(store, run_id, AgentCompacted)
+    assert compacted.tokens_before == MAX_INT
+    est = compacted.tokens_after_est
+    assert est is not None
+    assert 0 < est <= MAX_INT
 
 
 async def summary_fork(
