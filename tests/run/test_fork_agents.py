@@ -17,7 +17,7 @@ from scripted import Script, call, models, profile
 from test_agent import FakeSandbox, echo
 from test_fork_whole import PAIR
 
-from aims.agent import Agent, ChannelVersions, RunBudget, Turnstile, Verdict
+from aims.agent import Agent, ChannelVersions, ReplayPlan, RunBudget, Turnstile, Verdict
 from aims.events import AgentStep, Draft, Event, LocalEventStore, RunFinished, RunStarted
 from aims.models import ModelClient
 from aims.monitor.render import Trajectory
@@ -26,6 +26,8 @@ from aims.prompts import AgentTexts, Prompts
 from aims.run.estimate import _ceiling, step_usd
 from aims.run.fork import (
     CutAt,
+    Origin,
+    _holds,
     cut_at,
     fork_profiles,
     fork_schedules,
@@ -35,6 +37,7 @@ from aims.run.fork import (
 )
 from aims.run.job import monitor_for
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, resolve_texts
+from aims.run.script import ScriptedAgent, Watch
 from aims.sandbox import AuditedSandbox, DockerBackend
 from aims.sandbox.audit import ExecResult
 from aims.scenario import AgentConfig, Budget, Limits, SandboxConfig, load, parse
@@ -442,6 +445,63 @@ async def test_an_agent_does_not_wait_for_one_that_starts_once_it_finished(
         ("submitted", 2),
     ]
     assert len(live_a.requests) == 2
+
+
+async def test_a_scripted_agent_goes_live_once_the_others_replayed_their_steps(
+    store: LocalEventStore,
+) -> None:
+    """In the origin s took its step 1 (seq 20), then a took a call (seq 30), and the cut came
+    before s's step 2. In a fork after s's step 1 and a's, s's step 2 waits for a's replayed
+    call, as a model-driven agent's first live step does."""
+    text = PAIR.replace(
+        "  - id: b\n",
+        "  - id: s\n    role: confederate\n    script:\n      - run: one\n      - run: two\n",
+    )
+    parsed = parse(text)
+    origin = Origin("o", Bundle(scenario=parsed, text=text.encode()), {}, {})
+    fork = Fork("o", 1, steps={"a": 1, "s": 1}, cut=40)
+    holds = _holds(origin, fork, {"a": [30], "s": [20]})
+    assert holds["s"] == [30]
+
+    waits = asyncio.Event()
+    turnstile = Watched([20, 30], waits)
+
+    def run(command: str, stdin: bytes | None) -> tuple[bytes, int]:
+        if command == "two":
+            waits.set()  # the live step ran without waiting
+        return echo(command, stdin)
+
+    sandbox = FakeSandbox(run)
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    config = parsed.agent("s")
+    s = ScriptedAgent(
+        config=config,
+        sandbox_config=SandboxConfig(),
+        instruction="",
+        profile=P,
+        sandbox=cast(AuditedSandbox, sandbox),
+        store=store,
+        run_id=run_id,
+        watch=Watch(store, run_id, parsed),
+        run_budget=RunBudget(Limits()),
+        replay=ReplayPlan(
+            client=cast(ModelClient, None),
+            fork_at=1,
+            schedule=[(None, P)],
+            outputs={},
+            turnstile=turnstile,
+            actions=[20],
+            after=holds["s"],
+        ),
+    )
+    task = asyncio.create_task(s.run())
+    async with asyncio.timeout(10):
+        await waits.wait()
+        assert sandbox.commands == ["one"]
+        assert turnstile.holds(30)
+        await turnstile.done(30)
+        finished = await task
+    assert (finished.reason, sandbox.commands) == ("no_submit", ["one", "two"])
 
 
 @pytest.mark.docker

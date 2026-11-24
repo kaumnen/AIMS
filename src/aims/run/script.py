@@ -252,16 +252,18 @@ class ScriptedAgent:
     """One scripted agent: log its start, take its steps, log its finish. Its steps are its
     own script, a confederate's, unless `steps` gives others; a call of `submit` ends it. In a
     fork it takes its first `replay.fork_at` steps again without their triggers, each when the
-    origin's order reaches it at the turnstile, then goes on with the rest as written.
+    origin's order reaches it at the turnstile, then goes on with the rest as written. Its first
+    step after them waits until the other agents' replayed actions in `replay.after` were taken
+    or given up, as a model-driven agent's does.
 
     Before each step it checks its gate, as a model-driven agent does before a tool call, so a
     paused agent holds there with its sandbox frozen until it is resumed. Its own wall limit
     and the run's end it as they end that agent; of its budget only `wall_s` applies. Like the
     wall limits, a step's `after_s` does not count the time the agent is paused on `clock`.
-    While a step waits on its `on` event, or in a fork for its turn, the agent does not keep
-    the run's wall limit going when the others are paused, and its own limit stands still
-    while the run's does. Its tool calls take their error outputs and their cut marker from
-    `texts`, as a model-driven agent's do."""
+    While a step waits on its `on` event, or in a fork for its turn or the others' replayed
+    actions, the agent does not keep the run's wall limit going when the others are paused,
+    and its own limit stands still while the run's does. Its tool calls take their error
+    outputs and their cut marker from `texts`, as a model-driven agent's do."""
 
     def __init__(
         self,
@@ -358,6 +360,7 @@ class ScriptedAgent:
             if self.replay is not None and n <= self.replay.fork_at:
                 end = await self._again(n, step)
             else:
+                await self._await_replays()
                 if step.on is not None:
                     with self.run_budget.waiting(self.id):
                         await self.watch.wait_trigger(step.on)
@@ -406,6 +409,16 @@ class ScriptedAgent:
             await settle(self._finish(start, "killed", self.killed))
         else:
             await settle(self._finish(start, "cancelled", None))
+
+    async def _await_replays(self) -> None:
+        """Before the agent's first step after its fork step, wait for the others' replayed
+        actions it holds for, counted as waiting on them."""
+        r = self.replay
+        if r is None or r.turnstile is None or not r.after:
+            return
+        seqs, r.after = r.after, []
+        with self.run_budget.waiting(self.id):
+            await r.turnstile.cleared(seqs)
 
     async def _again(self, n: int, step: ScriptStep) -> End | None:
         """Take step `n` again where the origin's order has it."""

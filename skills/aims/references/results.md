@@ -121,7 +121,7 @@ aims run --replay <run> --fork-at agent:12 --samples 5
 
 The live steps call each agent's profile as the run recorded it. The config needs a profile of that name with the same backend, URL and key variable. `--profile` gives every agent another one.
 
-In a fork of several agents, an agent takes its first step after the cut only once the others have replayed theirs. It does not wait for an agent whose `start` waits on it. A replayed command that in the run waited on another agent's later action runs until its command timeout. It then gives the recorded output and logs a divergence. With `--strict` the agent ends. An agent waiting for another agent's replayed turn counts as waiting. The wall limits stand still while one agent is paused and the others are paused or waiting.
+In a fork of several agents, an agent takes its first step after the cut only once the others have replayed theirs. It does not wait for an agent whose `start` waits on it. A replayed command that in the run waited on another agent's later action runs until its command timeout. An agent that calls a model then gives it the recorded output and logs a divergence. With `--strict` it ends. A scripted agent goes on. An agent waiting for another agent's replayed turn counts as waiting. The wall limits stand still while one agent is paused and the others are paused or waiting.
 
 ## The UI
 
