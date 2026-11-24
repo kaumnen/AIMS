@@ -12,6 +12,7 @@ import {
   scoreEstimateQuery,
   scoreQuery,
   scoresQuery,
+  scoreStartQuery,
   startScore,
 } from "@/api/score";
 import { isProblem } from "@/api/session";
@@ -90,26 +91,26 @@ export function ScoreTab({
   const scoresQ = useQuery(scoresQuery(runId));
   const reviews = useQuery(reviewsQuery(runId));
   const scores = scoresQ.data?.items ?? [];
-  const reads = useQueries({
-    queries: scores.map((s) => ({ ...scoreQuery(s.run_id, s.status), enabled: sealed(s) })),
+  // the select names each score by its start; only the chosen one is read in full
+  const starts = useQueries({
+    queries: scores.map((s) => ({ ...scoreStartQuery(s.run_id), enabled: sealed(s) })),
   });
-  const read = new Map<string, Score>();
-  const unread = new Set<string>();
-  scores.forEach((s, i) => {
-    const events = reads[i]?.data;
-    if (events) read.set(s.run_id, readScore(events));
-    else if (reads[i]?.isError) unread.add(s.run_id);
+  const current = scores.find((s) => s.run_id === scoreId) ?? defaultScore(scores);
+  const full = useQuery({
+    ...scoreQuery(current?.run_id ?? "", current?.status ?? ""),
+    enabled: current !== undefined && sealed(current),
   });
+  const shown = full.data && readScore(full.data);
   const [asking, setAsking] = useState(false);
 
   if (scoresQ.isPending) return <p className="text-muted-foreground">Loading scores</p>;
   if (scoresQ.isError) return <p className="text-muted-foreground">Scores did not load.</p>;
-  const current = scores.find((s) => s.run_id === scoreId) ?? defaultScore(scores);
   const reviewOf = (id: string | null) =>
     id === null ? undefined : (reviews.data?.items ?? []).find((r) => r.run_id === id);
-  const label = (s: RunSummary) => {
-    const score = read.get(s.run_id);
-    const of = score ? scoredText(score.monitor, reviewOf(score.monitor)) : null;
+  const label = (s: RunSummary, i: number) => {
+    const start = starts[i]?.data;
+    const by = start ? readScore(start).monitor : undefined;
+    const of = by === undefined ? null : scoredText(by, reviewOf(by));
     return [
       "Score",
       of,
@@ -125,7 +126,7 @@ export function ScoreTab({
       <div className="flex flex-wrap items-center gap-2">
         {scores.length > 0 && current && (
           <Select
-            items={scores.map((s) => ({ value: s.run_id, label: label(s) }))}
+            items={scores.map((s, i) => ({ value: s.run_id, label: label(s, i) }))}
             value={current.run_id}
             onValueChange={(v) => v && onScore(String(v))}
           >
@@ -133,9 +134,9 @@ export function ScoreTab({
               <SelectValue />
             </SelectTrigger>
             <SelectContent alignItemWithTrigger={false} align="start">
-              {scores.map((s) => (
+              {scores.map((s, i) => (
                 <SelectItem key={s.run_id} value={s.run_id}>
-                  {label(s)}
+                  {label(s, i)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -173,18 +174,18 @@ export function ScoreTab({
                 ? ": waiting for a runner that scores."
                 : "."}
         </p>
-      ) : unread.has(current.run_id) ? (
-        <p className="text-muted-foreground">The score did not load.</p>
-      ) : read.get(current.run_id) ? (
+      ) : shown ? (
         <ScoreView
           key={current.run_id}
           runId={runId}
           detail={detail}
           run={current}
-          score={read.get(current.run_id) as Score}
-          review={reviewOf(read.get(current.run_id)?.monitor ?? null)}
+          score={shown}
+          review={reviewOf(shown.monitor)}
           onSteps={onSteps}
         />
+      ) : full.isError ? (
+        <p className="text-muted-foreground">The score did not load.</p>
       ) : (
         <p className="text-muted-foreground">Loading score</p>
       )}

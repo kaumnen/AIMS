@@ -56,6 +56,22 @@ export function scoreQuery(scoreId: string, status: string) {
   });
 }
 
+// A score run's start alone, which names what it scored; it never changes.
+export function scoreStartQuery(scoreId: string) {
+  return queryOptions({
+    queryKey: ["runs", "score-start", scoreId] as const,
+    queryFn: async ({ signal }): Promise<Event[]> => {
+      const { data, error } = await client.GET("/api/runs/{run_id}/events", {
+        params: { ...path(scoreId), query: { types: ["run.started"], limit: 1 } },
+        signal,
+      });
+      if (error) throw error;
+      return data.items;
+    },
+    staleTime: Infinity,
+  });
+}
+
 // The latest label of each labelled flag of the run that holds the flags.
 export function labelsQuery(runId: string) {
   return queryOptions({

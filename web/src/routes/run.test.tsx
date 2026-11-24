@@ -8,7 +8,7 @@ import type { Event } from "@/api/events";
 import { REOPEN_MS } from "@/api/live";
 import type { CallCost, Dependents, FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
 import type { RunSummary } from "@/api/runs";
-import type { Label } from "@/api/score";
+import { type Label, scoreTypes } from "@/api/score";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
@@ -507,7 +507,16 @@ beforeEach(() => {
       return Response.json(labelsOf[holder] ?? []);
     }
     const scored = scoreEvents[path.split("/")[3] ?? ""];
-    if (scored && path.endsWith("/events")) return Response.json({ items: scored, next: null });
+    if (scored && path.endsWith("/events")) {
+      const types = q.getAll("types");
+      const limit = Number(q.get("limit") ?? 100);
+      const items = scored
+        .filter((e) => e.seq > Number(q.get("after") ?? -1))
+        .filter((e) => types.length === 0 || types.includes(e.type))
+        .slice(0, limit);
+      const next = items.length === limit ? String(items.at(-1)?.seq) : null;
+      return Response.json({ items, next });
+    }
     if (path === "/api/runs") {
       const mine = q.get("kind") === "monitor" && q.get("origin") === BEE5;
       return Response.json({ items: mine ? reviews : [], next: null });
@@ -1590,9 +1599,10 @@ test("a score shows each plant taken and what each monitor layer caught of it", 
   const kinds = fetch.mock.calls
     .map(([r]) => new URL(r.url))
     .filter((u) => u.pathname === `/api/runs/${SCORE}/events`)
-    .map((u) => u.searchParams.getAll("types"));
-  expect(kinds[0]).toContain("plant.triggered");
-  expect(kinds[0]).not.toContain("model.request");
+    .map((u) => u.searchParams.getAll("types"))
+    .find((t) => t.join() !== "run.started");
+  expect(kinds).toContain("plant.triggered");
+  expect(kinds).not.toContain("model.request");
 
   await waitFor(() => expect(flagRequests(REVIEW).length).toBeGreaterThan(0));
   fireEvent.click(within(rows[1]!).getAllByRole("button", { name: /Located/ })[0]!);
@@ -1664,6 +1674,33 @@ test("an older score without its plants' own matches shows one row per agent", a
   expect(screen.getByRole("combobox", { name: "Score" }).textContent).toContain(
     "Score · review, standard",
   );
+});
+
+const scoreReads = (scoreId: string) =>
+  fetch.mock.calls
+    .map(([r]) => new URL(r.url))
+    .filter((u) => u.pathname === `/api/runs/${scoreId}/events`)
+    .map((u) => ({ types: u.searchParams.getAll("types"), limit: u.searchParams.get("limit") }));
+
+test("the select names each score from its start; only the chosen score is read in full", async () => {
+  withScore();
+  // the older score scored the live flags
+  scoreEvents[OLD_SCORE] = scoreLog(OLD_SCORE, false).map((e) =>
+    e.type === "run.started" ? { ...e, data: { ...e.data, config: {} } } : e,
+  );
+  renderAt(`/runs/${BEE5}?tab=score`);
+  await screen.findByRole("region", { name: "Plants" });
+  fireEvent.click(screen.getByRole("combobox", { name: "Score" }));
+  await waitFor(async () =>
+    expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual([
+      expect.stringContaining("Score · review, standard · "),
+      expect.stringContaining("Score · live flags · "),
+    ]),
+  );
+  const start = { types: ["run.started"], limit: "1" };
+  expect(scoreReads(OLD_SCORE)).toEqual([start]);
+  expect(scoreReads(SCORE)).toContainEqual(start);
+  expect(scoreReads(SCORE)).toContainEqual({ types: scoreTypes, limit: "1000" });
 });
 
 test("a label goes to the run that holds the flag", async () => {
