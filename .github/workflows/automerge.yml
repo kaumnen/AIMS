@@ -1,7 +1,8 @@
 name: automerge
 
 # A Dependabot PR for a minor or patch update merges itself once the required checks pass.
-# A major update waits for a person.
+# A major update waits for a person. So does a PR that changes a shipped scenario, such as a new
+# digest for its base image: that changes the scenario's digest, which runs record.
 on: pull_request
 
 permissions: {}
@@ -17,7 +18,17 @@ jobs:
     steps:
       - id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+      # The files the PR changes say it, whatever Dependabot calls the update.
+      - id: files
+        run: |
+          if gh pr diff "$PR" --name-only | grep -qE '^(src/aims/scenarios|skills)/'; then
+            echo "held=true" >> "$GITHUB_OUTPUT"
+            echo "changes a shipped scenario: left for a person"
+          fi
+        env:
+          PR: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
+      - if: steps.files.outputs.held != 'true' && steps.meta.outputs.update-type != 'version-update:semver-major'
         run: gh pr merge --auto --squash "$PR"
         env:
           PR: ${{ github.event.pull_request.html_url }}

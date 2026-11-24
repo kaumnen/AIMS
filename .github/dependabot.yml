@@ -1,5 +1,6 @@
 # Weekly update PRs for the pinned versions. A release is taken once it is 3 days old. Minor and
 # patch PRs merge on their own once CI passes (workflows/automerge.yml); majors wait for a person.
+# So does a PR that moves the base image of a shipped scenario.
 # Not covered, so bumped by hand: the setup-uv, node and bun versions in the workflows, zizmor,
 # pip-audit and the BuildKit and SBOM images in release.yml. The weekly pins job opens an issue
 # when one of those is behind.
@@ -19,7 +20,7 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
-  # The app image and the sandbox helper images. Scenario images are templates people copy.
+  # The app image and the sandbox helper images.
   - package-ecosystem: docker
     directories:
       - /
@@ -38,6 +39,26 @@ updates:
       images:
         patterns: ["*"]
         update-types: [minor, patch]
+
+  # The base image of the built-in scenarios and of the skill's starter scenario. A new digest
+  # changes each built-in scenario's digest, so these PRs never merge on their own.
+  - package-ecosystem: docker
+    directories:
+      - /src/aims/scenarios/*/env
+      - /skills/aims/assets/scenario/env
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: chore
+    ignore:
+      # The scenarios move to a new Python by hand.
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]
+    groups:
+      scenario-images:
+        patterns: ["*"]
 
   - package-ecosystem: docker-compose
     directory: /
