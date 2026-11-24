@@ -840,7 +840,7 @@ class LinkOptions(Options):
 class Link:
     """A flagged link: the event that made it, `symlink` or `link`, its target as given and
     resolved, why it is flagged and the path a read through it is logged under. `exec_id` is
-    the exec that made it there and `kept` says the same link was there before that exec."""
+    the exec that made it there."""
 
     seq: int
     op: str
@@ -849,21 +849,21 @@ class Link:
     why: str
     read: str
     exec_id: str | None = None
-    kept: bool = False
 
 
 @dataclass(slots=True)
 class Pending:
     """A whole file snapshot whose changes are still coming in, as `fs.change` events of its
-    seq: the links its exec made that it has not listed yet, the hard links and targets it
-    walks, and the sha256 of each of those it lists as modified. `left` counts the changes
-    still to come: one the monitor could not read leaves it above zero, and then the snapshot
-    settles nothing, since a link it did list would look unlisted."""
+    seq: the paths its exec asked for a link at that it has not listed yet, each with the link
+    there before the exec, the hard links and targets it walks, and the sha256 of each of those
+    it lists as modified. `left` counts the changes still to come: one the monitor could not
+    read leaves it above zero, and then the snapshot settles nothing, since a link it did list
+    would look unlisted."""
 
     seq: int
     agent: str | None
     left: int
-    unlisted: dict[str, None]
+    unlisted: dict[str, Link | None]
     watched: frozenset[str] = frozenset()
     modified: dict[str, str | None] = field(default_factory=dict)
 
@@ -893,7 +893,9 @@ class LinkRedirect(Base):
 
     A link made again at the same path drops its old target. A link a snapshot finds removed,
     or replaced by a file of another kind, is dropped. So is a link that the snapshot after
-    the exec that made it does not list, as the exec removed it again. A hard link shares its
+    the exec that made it does not list, as the exec removed it again. When that snapshot
+    lists no change at a path the exec asked for a link at, the link there before the exec
+    is back, as after an `ln -s` that failed since the path was taken. A hard link shares its
     target's file, so a snapshot that walks both lists a change of one as a change of the
     other. One it lists as modified while its target is not modified to the same content was
     replaced by another file and is dropped. The kernel's delete and rename records are
@@ -901,7 +903,7 @@ class LinkRedirect(Base):
     keeps it at the old one until a snapshot finds it gone there."""
 
     name = "link_redirect"
-    version = "6"
+    version = "7"
     types = frozenset({"file.access", "fs.change", "fs.snapshot"})
     Opts = LinkOptions
 
@@ -924,6 +926,8 @@ class LinkRedirect(Base):
         # is logged under.
         self.links: dict[tuple[str | None, str], Link] = {}
         self.reads: dict[tuple[str | None, str], dict[str, None]] = {}
+        # The flagged link at a path before the exec that first asked for another link there.
+        self.before: dict[tuple[str | None, str], tuple[str | None, Link]] = {}
         self.pending: Pending | None = None
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
@@ -999,27 +1003,29 @@ class LinkRedirect(Base):
         return Link(seq, op, target, resolved, why, resolved if op == "symlink" else path)
 
     def _pend(self, event: Event, snapshot: FsSnapshot) -> Pending | None:
-        """What to settle once the changes of a snapshot are in: the links made by its exec
-        under its roots, other than one the same as before, and the hard links whose targets
-        are under its roots too. A first or truncated snapshot may leave a change out, so it
-        settles nothing. One between execs has no exec to have made a link."""
+        """What to settle once the changes of a snapshot are in: the paths under its roots its
+        exec asked for a link at, each with the link there before, and the hard links whose
+        targets are under its roots too. A first or truncated snapshot may leave a change out,
+        so it settles nothing. One between execs has no exec to have made a link."""
+        agent = event.agent_id
+        exec_id = snapshot.exec_id
+        asked = [k for k, (ex, _) in self.before.items() if k[0] == agent and ex == exec_id]
+        before = {path: self.before.pop((a, path))[1] for a, path in asked}
         if snapshot.base is None or snapshot.truncated:
             return None
-        agent = event.agent_id
         roots = [_resolve("/", r) for r in snapshot.roots]
         walked = {
             path: link
             for (a, path), link in self.links.items()
             if a == agent and any(_under(path, r) for r in roots)
         }
-        made = {
+        made: dict[str, Link | None] = {
             path: None
             for path, link in walked.items()
-            if snapshot.exec_id is not None
-            and link.exec_id == snapshot.exec_id
-            and link.seq < event.seq
-            and not link.kept
+            if exec_id is not None and link.exec_id == exec_id and link.seq < event.seq
         }
+        if exec_id is not None:
+            made |= {p: link for p, link in before.items() if any(_under(p, r) for r in roots)}
         hard = [
             (path, link.resolved)
             for path, link in walked.items()
@@ -1029,16 +1035,16 @@ class LinkRedirect(Base):
         return Pending(event.seq, agent, snapshot.total, made, watched)
 
     def _settle(self, pending: Pending) -> None:
-        """Drops each link of `pending` its snapshot did not list, as the exec that made it left
-        the path as it found it, and each hard link it lists as modified to other content than
-        its target. A file the snapshot did not hash tells nothing, and neither does a snapshot
-        with a change that did not come in."""
+        """Puts back the link there before at each path of `pending` its snapshot did not list,
+        or drops the link there, as the exec left the path as it found it. Drops each hard link
+        it lists as modified to other content than its target. A file the snapshot did not hash
+        tells nothing, and neither does a snapshot with a change that did not come in."""
         if pending.left != 0:
             return
-        for path in pending.unlisted:
+        for path, before in pending.unlisted.items():
             link = self.links.get((pending.agent, path))
-            if link is not None and link.seq < pending.seq:
-                self._put(pending.agent, path, None)
+            if link is None or link.seq < pending.seq:
+                self._put(pending.agent, path, before)
         modified = pending.modified
         for path, sha in modified.items():
             link = self.links.get((pending.agent, path))
@@ -1080,13 +1086,14 @@ class LinkRedirect(Base):
         attempt: bool = False,
     ) -> list[Hit]:
         link = self._link(event.seq, path, op, target)
+        key = (event.agent_id, path)
+        old = self.links.get(key)
+        if attempt and old is not None and old.exec_id != exec_id:
+            # The ask can fail, as it does when the path is taken: the snapshot after this
+            # exec tells.
+            self.before[key] = (exec_id, old)
         if link is not None:
-            old = self.links.get((event.agent_id, path))
-            kept = False
-            if old is not None and (old.op, old.resolved) == (op, link.resolved):
-                # A link this exec asked for before was not there before the exec.
-                kept = old.kept if old.exec_id == exec_id else True
-            link = replace(link, exec_id=exec_id, kept=kept)
+            link = replace(link, exec_id=exec_id)
         self._put(event.agent_id, path, link)
         if link is None:
             return []
