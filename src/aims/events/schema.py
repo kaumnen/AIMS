@@ -142,23 +142,17 @@ def blob_refs(kind: object, data: Any) -> Iterator[str]:
         yield sha256
 
 
-# The keys of a profile as `Profile.snapshot` records it, in the config of run.started. Its
-# `extra` table and its `headers` are what the person wrote in aims.toml. Either may be shaped
-# as a blob reference.
-PROFILE_KEYS = frozenset({"name", "backend", "model", "weights", "extra"})
-PROFILE_WRITTEN = frozenset({"extra", "headers"})
-# The keys of a scenario as `Bundle.snapshot` records it there. `resolved` is the scenario as the
-# person wrote it, such as a plugin's options. The references to its inputs sit beside it.
-SCENARIO_KEYS = frozenset({"name", "digest", "file", "resolved"})
-SCENARIO_WRITTEN = frozenset({"resolved"})
-NOTHING: frozenset[str] = frozenset()
+# The inputs of a scenario as `Bundle.snapshot` records them, each a blob reference or None.
+SCENARIO_INPUTS = frozenset({"file", "files", "verifier", "context"})
 
 
 def blob_sizes(kind: object, data: Any) -> Iterator[tuple[str, Any]]:
     """The sha256 and the stated size of each blob reference in `data`, the data of an event of
-    type `kind`. Its Opaque fields hold none, nor do the `extra` table and `headers` of a
-    profile or the resolved scenario. A sha256 or a size of a hand-made log may be any JSON
-    value."""
+    type `kind`. Its Opaque fields hold none. A run.started holds only those AIMS made there;
+    see `_started`. A sha256 or a size of a hand-made log may be any JSON value."""
+    if kind == "run.started":
+        yield from _started(data)
+        return
     skip = opaque_fields(kind)
     if skip and isinstance(data, Mapping) and not is_blob_ref(data):
         for key, value in data.items():
@@ -168,27 +162,37 @@ def blob_sizes(kind: object, data: Any) -> Iterator[tuple[str, Any]]:
         yield from _refs(data)
 
 
+def _started(data: Any) -> Iterator[tuple[str, Any]]:
+    """The blob references in the data of a run.started, in the order they appear: the inputs
+    of `config.scenario` and the `restored` archive of each of `channels`. AIMS makes no other.
+    The rest is the run's config, much of it what a person wrote: the scenario as resolved, a
+    plugin's options in it or in its monitor config, a profile's `extra` table and `headers`.
+    Any of it may be shaped as a reference."""
+    if not isinstance(data, Mapping):
+        return
+    for key, value in data.items():
+        if key == "config" and isinstance(value, Mapping):
+            scenario = value.get("scenario")
+            if isinstance(scenario, Mapping):
+                for name, ref in scenario.items():
+                    if name in SCENARIO_INPUTS and is_blob_ref(ref):
+                        yield ref["sha256"], ref["size"]
+        elif key == "channels" and isinstance(value, list):
+            for channel in value:
+                ref = channel.get("restored") if isinstance(channel, Mapping) else None
+                if ref is not None and is_blob_ref(ref):
+                    yield ref["sha256"], ref["size"]
+
+
 def _refs(value: Any) -> Iterator[tuple[str, Any]]:
     if is_blob_ref(value):
         yield value["sha256"], value["size"]
     elif isinstance(value, Mapping):
-        written = _written(value)
-        for key, item in value.items():
-            if key not in written:
-                yield from _refs(item)
+        for item in value.values():
+            yield from _refs(item)
     elif isinstance(value, list):
         for item in value:
             yield from _refs(item)
-
-
-def _written(value: Mapping[str, Any]) -> frozenset[str]:
-    """The keys of `value` that hold what a person wrote, when it is a profile or a scenario
-    AIMS recorded."""
-    if "extra" in value and value.keys() >= PROFILE_KEYS:
-        return PROFILE_WRITTEN
-    if "resolved" in value and value.keys() >= SCENARIO_KEYS:
-        return SCENARIO_WRITTEN
-    return NOTHING
 
 
 def text_of(value: Any, kind: object = None) -> str:

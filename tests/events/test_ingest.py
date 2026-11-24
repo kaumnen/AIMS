@@ -820,6 +820,50 @@ async def test_a_blob_reference_where_a_payload_holds_one_is_still_needed(
     assert caught.value.missing == [body.sha256, other]
 
 
+def test_a_run_started_names_only_the_blobs_aims_made_there() -> None:
+    """run.started records the run's config, much of it as a person wrote it. Its references
+    are the scenario's inputs and each channel's restored archive, in the order they appear. A
+    mapping shaped as one anywhere else in it is data."""
+    from aims.events.schema import blob_sizes
+
+    def ref(n: int) -> dict[str, Any]:
+        return {"sha256": f"{n:02x}" * 32, "size": n}
+
+    forged = ref(9)
+    data: dict[str, Any] = {
+        "agents": ["a1"],
+        "channels": [
+            {"name": "c", "kind": "folder", "members": ["a1"], "restored": ref(5)},
+            {"name": "d", "kind": "folder", "members": ["a1"], "restored": None},
+            forged,
+        ],
+        "config": {
+            "agents": {"a1": {"profile": {"extra": forged, "headers": forged}}},
+            "kept": forged,
+            "monitor": {"config": {"signals": {"plugin": {"options": {"file": forged}}}}},
+            "scenario": {
+                "context": ref(1),
+                "digest": "d",
+                "file": ref(2),
+                "files": None,
+                "other": forged,
+                "resolved": {"monitor": forged},
+                "verifier": ref(3),
+            },
+        },
+        "kind": "scenario",
+        "oversight": "observe",
+        "scenario": "s",
+    }
+    sizes = [(r["sha256"], r["size"]) for r in (ref(5), ref(1), ref(2), ref(3))]
+    assert list(blob_sizes(RunStarted.type, data)) == sizes
+    # a hand-made run.started of other shapes names none
+    assert list(blob_sizes(RunStarted.type, {"config": [forged], "channels": forged})) == []
+    assert list(blob_sizes(RunStarted.type, forged)) == []
+    # in an event of another type the same mapping is a reference
+    assert list(blob_sizes("x.custom", {"kept": forged})) == [(forged["sha256"], 9)]
+
+
 @pytest.mark.parametrize("sha256", ["x" * 64, "A" * 64, 5, ["a"], {"k": 1}])
 async def test_an_ingested_reference_that_names_no_sha256_is_invalid(
     copy: LocalEventStore, sha256: object

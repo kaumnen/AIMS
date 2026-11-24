@@ -449,7 +449,7 @@ async def test_a_viewer_reads_no_blob_the_job_carried_for_its_runner_alone(
             scenario="planted",
             oversight="observe",
             agents=["a"],
-            config={"shown": {"sha256": shown, "size": len(data)}},
+            config={"scenario": {"file": {"sha256": shown, "size": len(data)}}},
         )
         await local.create_run(started, blobs=[data], run_id=run_id)
         await local.append(run_id, [Draft(RunFinished(status="completed"))])

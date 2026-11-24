@@ -566,6 +566,44 @@ async def test_a_plugin_option_shaped_as_a_blob_reference_does_not_stop_shipping
     assert (await cp.state.store.verify(run_id)).ok
 
 
+async def test_a_plugin_signal_option_shaped_as_a_blob_reference_does_not_stop_shipping(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """run.started records the scenario's monitor block in the scenario as resolved and again
+    merged into the monitor's config. A plugin signal takes its options as a person wrote
+    them. One shaped as a blob reference once stopped the run's shipping for good."""
+    from aims.monitor.setup import resolve_config
+
+    ref = '{sha256: "' + "ef" * 32 + '", size: 2}'
+    signal = "    my_plugin:\n      options: {known_file: " + ref + "}\n"
+    text = SCENARIO + "monitor:\n  signals:\n" + signal
+    scenario = parse_scenario(text)
+    bundle = Bundle(scenario, text.encode())
+    monitor = {"config": resolve_config([], scenario).model_dump(mode="json")}
+    config = {"scenario": bundle.snapshot(), "monitor": monitor}
+    run_id = await local.create_run(
+        STARTED.model_copy(update={"config": config}), blobs=bundle.blobs()
+    )
+    [line] = (local.root / run_id / "events.jsonl").read_bytes().splitlines()
+    first = json.loads(line)
+    signals = first["data"]["config"]["monitor"]["config"]["signals"]
+    assert signals["my_plugin"]["options"] == {"known_file": {"sha256": "ef" * 32, "size": 2}}
+    assert list(blob_refs(first["type"], first["data"])) == [
+        hashlib.sha256(text.encode()).hexdigest()
+    ]
+    await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+    client = ControlClient(cp.url, cp.runner, runner="pusher")
+    try:
+        await client.hello(FakeRunner(cp, "pusher").hello_body())
+        shipper = await ship(local, client, run_id)
+    finally:
+        await client.aclose()
+    assert (shipper.done, shipper.refused) == (True, None)
+    copy = cp.state.store.root / run_id / "events.jsonl"
+    assert copy.read_bytes() == (local.root / run_id / "events.jsonl").read_bytes()
+    assert (await cp.state.store.verify(run_id)).ok
+
+
 async def raw_events(
     cp: CP, runner: str, run_id: str, lines: list[bytes], token: str | None = None
 ) -> httpx2.Response:
