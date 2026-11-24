@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from aims.agent import ChannelVersions, RecordedOutput, ReplayPlan, Turnstile
+from aims.agent import ChannelVersions, RecordedOutput, ReplayPlan, Totals, Turnstile
 from aims.events import (
     MAX_INT,
     AgentInput,
@@ -55,6 +55,8 @@ class Origin:
     steps: dict[str, int] = field(default_factory=dict)
     outputs: dict[str, dict[tuple[int, int], RecordedOutput]] = field(default_factory=dict)
     injects: dict[str, dict[int, list[str]]] = field(default_factory=dict)
+    totals: dict[str, dict[int, Totals]] = field(default_factory=dict)
+    """What each agent had counted after each of its steps, from its `agent.step` events."""
     full_bundle: Bundle | None = None
     truth: dict[str, Any] | None = None
     step_seqs: dict[str, list[int]] = field(default_factory=dict)
@@ -260,6 +262,7 @@ async def load_origin(
     steps: dict[str, int] = defaultdict(int)
     outputs: dict[str, dict[tuple[int, int], RecordedOutput]] = defaultdict(dict)
     injects: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
+    totals: dict[str, dict[int, Totals]] = defaultdict(dict)
     # the place of each agent's next tool result among its step's calls
     places: dict[str, int] = defaultdict(int)
     types = ("agent.step", "tool.result", "agent.input", "agent.finished")
@@ -275,6 +278,8 @@ async def load_origin(
             if event.type == "agent.step":
                 steps[agent] += 1
                 places[agent] = 0
+                if replay and isinstance(payload, AgentStep):
+                    totals[agent][steps[agent]] = Totals.of(payload)
             elif not replay:
                 continue
             elif isinstance(payload, ToolResult):
@@ -288,6 +293,7 @@ async def load_origin(
     origin.steps = dict(steps)
     origin.outputs = dict(outputs)
     origin.injects = {a: dict(v) for a, v in injects.items()}
+    origin.totals = dict(totals)
     ids = [a.id for a in bundle.scenario.agents]
     origin.replayable = await replayable_steps(store, run_id, ids)
     origin.running = info.status == "running"
@@ -738,6 +744,7 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
                 actions=actions.get(agent.id, []),
                 budget=caps[agent.id],
                 limits=ran.limits,
+                totals=origin.totals.get(agent.id, {}),
             )
         return out
 

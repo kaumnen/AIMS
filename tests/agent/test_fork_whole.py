@@ -10,11 +10,12 @@ from typing import Any, cast
 
 import pytest
 from scripted import Script, call, calls, models, profile
-from test_agent import FakeSandbox, Gate, echo, payloads
+from test_agent import BILLED, FULL, FakeSandbox, Gate, echo, payloads, retrying
 
-from aims.agent import Agent, ReplayPlan, RunBudget, Verdict
+from aims.agent import Agent, ReplayPlan, RunBudget, Totals, Verdict
 from aims.events import (
     AgentFinished,
+    AgentInput,
     AgentStep,
     Draft,
     LocalEventStore,
@@ -25,7 +26,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
-from aims.models import ModelClient
+from aims.models import ModelClient, Profile, Reply
 from aims.prompts import AgentTexts, Prompts
 from aims.run.fork import (
     CutAt,
@@ -69,10 +70,10 @@ async def store(tmp_path: Path) -> AsyncIterator[LocalEventStore]:
         yield store
 
 
-async def started(store: LocalEventStore, text: str) -> str:
-    """A run of the scenario `text` as `aims run` starts it, before its agents act."""
+async def started(store: LocalEventStore, text: str, on: Profile | None = None) -> str:
+    """A run of the scenario `text` as `aims run` starts it on `on`, before its agents act."""
     bundle = Bundle(scenario=parse(text), text=text.encode())
-    p = profile().snapshot()
+    p = (on or profile()).snapshot()
     agents: dict[str, Any] = {
         a.id: {
             "profile": p,
@@ -100,10 +101,13 @@ def agent(
     gate: Any = None,
     replay: ReplayPlan | None = None,
     sandbox: FakeSandbox | None = None,
+    config: AgentConfig | None = None,
+    p: Profile | None = None,
 ) -> Agent:
-    p = profile()
+    p = p or profile()
+    config = config or AgentConfig()
     return Agent(
-        config=AgentConfig(),
+        config=config,
         sandbox_config=SandboxConfig(),
         instruction="do the task",
         texts=AgentTexts(),
@@ -112,7 +116,7 @@ def agent(
         sandbox=cast(AuditedSandbox, sandbox or FakeSandbox(echo)),
         store=store,
         run_id=run_id,
-        tools=load_tools(AgentConfig().tool_names),
+        tools=load_tools(config.tool_names),
         run_budget=RunBudget(Limits()),
         gate=gate,
         replay=replay,
@@ -458,3 +462,102 @@ async def test_a_step_without_tool_calls_is_whole(store: LocalEventStore) -> Non
         ],
     )
     assert await replayable_steps(store, run_id, ["agent", "nobody"]) == {"agent": 2, "nobody": 0}
+
+
+@pytest.mark.parametrize("keep", [False, True], ids=["cut", "kept"])
+@pytest.mark.parametrize("warn_at", [None, 0.6], ids=["no-warning", "warning"])
+async def test_a_replay_stops_and_warns_where_its_origin_did(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, warn_at: float | None, keep: bool
+) -> None:
+    """The origin counted only each answer's tokens, as runs did before the tokens of a failed
+    attempt counted. Its first call failed once with 500 output tokens billed. A fork counts
+    them, so by its own count the cap of 2000 falls a step early, and so does the warning at
+    1200. A fork after step 4 replays the 4 steps the origin took, with the origin's warning,
+    then goes live. A fork that keeps the recorded answers from step 1 ends where the origin
+    did."""
+    caps = "output_tokens: 2000" + ("" if warn_at is None else f", warn_at: {warn_at}")
+    text = ONE.replace("  - id: agent\n", f"  - id: agent\n    budget: {{{caps}}}\n")
+    config = parse(text).agent("agent")
+    p = retrying()
+    add = Totals.add
+
+    def answer_only(self: Totals, reply: Reply, *, step: bool) -> None:
+        add(self, reply.model_copy(update={"billed": reply.usage}), step=step)
+
+    origin_id = await started(store, text, p)
+    ok = call("bash", command="true") | {"usage": FULL}
+    with monkeypatch.context() as m:
+        m.setattr(Totals, "add", answer_only)
+        play = Script(BILLED, *[ok] * 5)
+        ended = await agent(store, origin_id, play, config=config, p=p).run()
+    assert (ended.reason, ended.steps) == ("budget_output_tokens", 4)
+    await store.append(origin_id, [Draft(RunFinished(status="completed"))])
+
+    origin = await load_origin(store, origin_id)
+    fork = Fork(origin=origin_id, step=1, keep_others=True) if keep else Fork(origin_id, 4)
+    bench = Bench(store, cast(Any, None), models(p))
+    fork_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    plan = (await planner(bench, origin, fork)(fork_id))["agent"]
+    own = config.model_copy(
+        update={"budget": config.budget.model_copy(update={"output_tokens": None})}
+    )
+    live = Script(call("submit", answer="forked"))
+    finished = await agent(store, fork_id, live, replay=plan, config=own, p=p).run()
+    steps = await payloads(store, fork_id, AgentStep)
+    if keep:
+        assert (finished.reason, finished.steps) == ("budget_output_tokens", 4), finished.detail
+        assert ([s.source for s in steps], live.requests) == (["replay"] * 4, [])
+    else:
+        assert (finished.reason, finished.steps, finished.answer) == ("submitted", 5, "forked"), (
+            finished.detail
+        )
+        assert [s.source for s in steps] == ["replay"] * 4 + ["live"]
+    # the fork's own count, which the caps did not go by while the steps replayed
+    assert [s.total.output_tokens for s in steps][:4] == [1000, 1500, 2000, 2500]
+
+    async def warned(run_id: str) -> list[tuple[int, str]]:
+        inputs = await payloads(store, run_id, AgentInput)
+        return [(i.step, str(i.text)) for i in inputs if i.kind == "budget_warning"]
+
+    told = [] if warn_at is None else [(3, "You have used 1500 of your 2000 output tokens.")]
+    assert await warned(origin_id) == told
+    assert await warned(fork_id) == told
+
+
+@pytest.mark.parametrize("keep", [False, True], ids=["cut", "kept"])
+async def test_a_replay_warns_of_its_cost_and_stops_where_its_origin_did(
+    store: LocalEventStore, keep: bool
+) -> None:
+    """Each answer costs $2. The origin is told of its cost after step 3 and stops at its cap
+    of $10 after step 5. A replayed answer costs the fork nothing, so by its own count the
+    warning never falls. A fork after step 4 replays the warning, then goes live. A fork that
+    keeps the recorded answers from step 1 ends where the origin did, having spent nothing."""
+    text = ONE.replace(
+        "  - id: agent\n", "  - id: agent\n    budget: {cost_usd: 10, warn_at: 0.5}\n"
+    )
+    config = parse(text).agent("agent")
+    p = retrying(price={"input": 1000.0, "cached": 100.0, "output": 2000.0})
+    origin_id = await started(store, text, p)
+    ok = call("bash", command="true") | {"usage": FULL}
+    ended = await agent(store, origin_id, Script(*[ok] * 6), config=config, p=p).run()
+    assert (ended.reason, ended.steps, ended.cost_usd) == ("budget_cost", 5, 10.0)
+    await store.append(origin_id, [Draft(RunFinished(status="completed"))])
+
+    origin = await load_origin(store, origin_id)
+    fork = Fork(origin=origin_id, step=1, keep_others=True) if keep else Fork(origin_id, 4)
+    bench = Bench(store, cast(Any, None), models(p))
+    fork_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    plan = (await planner(bench, origin, fork)(fork_id))["agent"]
+    live = Script(call("submit", answer="forked"))
+    finished = await agent(store, fork_id, live, replay=plan, config=config, p=p).run()
+    if keep:
+        assert (finished.reason, finished.steps) == ("budget_cost", 5), finished.detail
+        assert (finished.cost_usd, live.requests) == (0.0, [])
+    else:
+        assert (finished.reason, finished.steps, finished.answer) == ("submitted", 5, "forked"), (
+            finished.detail
+        )
+    warnings = [i for i in await payloads(store, fork_id, AgentInput) if i.kind == "budget_warning"]
+    assert [(i.step, str(i.text)) for i in warnings] == [
+        (3, "You have spent 6.00 of your 10.00 USD.")
+    ]

@@ -122,6 +122,19 @@ class Totals:
         answers with no token counts count at."""
         return self.cost_usd + self.unseen_usd + self.sized_usd
 
+    @classmethod
+    def of(cls, step: AgentStep) -> Totals:
+        """What an agent had counted after `step`, as its `agent.step` event records it."""
+        t = step.total
+        return cls(
+            steps=step.n,
+            input_tokens=t.input_tokens or 0,
+            cached_tokens=t.cached_tokens or 0,
+            output_tokens=t.output_tokens or 0,
+            reasoning_tokens=t.reasoning_tokens or 0,
+            cost_usd=step.total_cost_usd,
+        )
+
     def usage(self) -> ModelUsage:
         """The token counts, each at most MAX_INT so the log can hold it."""
         return ModelUsage(
@@ -439,7 +452,10 @@ class ReplayPlan:
     `fork_at` until a request of its own is not in the recording, then goes live. `actions`
     are the origin seqs of a scripted agent's steps. `budget` and `limits` are the caps the
     origin ran under, which hold while its steps replay so the replayed requests match; the
-    fork's own caps hold from the cut."""
+    fork's own caps hold from the cut. `totals` holds what the origin's agent had counted
+    after each of its steps, from its `agent.step` events: while the answers come from the
+    recording, the agent's caps and budget warnings count those, so they fall where the
+    origin's did, though the fork counts the same answers another way."""
 
     def profile_for(self, step: int) -> Profile:
         for until, profile in self.schedule:
@@ -462,6 +478,7 @@ class ReplayPlan:
     actions: list[int] = field(default_factory=list)
     budget: Budget | None = None
     limits: Limits | None = None
+    totals: dict[int, Totals] = field(default_factory=dict)
 
 
 class Agent:
@@ -836,9 +853,23 @@ class Agent:
         as it retried. A cut attempt reports no cost; that leaves the agent's cost complete."""
         self._charge(reply.model_copy(update={"cost_usd": reply.cost_usd or 0.0}), step=False)
 
+    def _counts(self) -> Totals:
+        """What the agent's own caps count now: while its answers come from the recording, what
+        the origin had counted after this step, else its own totals."""
+        r = self.replay
+        if r is not None and (self._replaying() or self._kept()):
+            recorded = r.totals.get(self.steps)
+            if recorded is not None:
+                return recorded
+        return self.totals
+
     def _over_budget(self) -> tuple[AgentEnd, str] | None:
+        """Which cap ends the agent before its next call. None while the call replays a step
+        the origin took, as the origin's log shows the step fit its caps."""
+        if self._replaying():
+            return None
         b = self._budget()
-        own = _over(self.totals, b.steps, b.output_tokens, b.cost_usd, "agent")
+        own = _over(self._counts(), b.steps, b.output_tokens, b.cost_usd, "agent")
         limits = self._limits()
         run = _over(
             self.run_budget.totals,
@@ -899,10 +930,11 @@ class Agent:
         b = self._budget()
         if b.warn_at is None:
             return
+        t = self._counts()
         used = {
-            "steps": (self.totals.steps, b.steps),
-            "output_tokens": (self.totals.output_tokens, b.output_tokens),
-            "cost_usd": (self.totals.counted_usd, b.cost_usd),
+            "steps": (t.steps, b.steps),
+            "output_tokens": (t.output_tokens, b.output_tokens),
+            "cost_usd": (t.counted_usd, b.cost_usd),
         }
         for name, (value, limit) in used.items():
             if limit is None or self.warned.get(name) == limit or value < b.warn_at * limit:
