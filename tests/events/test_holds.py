@@ -292,6 +292,24 @@ async def test_a_run_judges_from_its_judges_start_to_its_seal_in_any_batching(
             assert not await judging(store, run_id)
 
 
+async def test_an_index_from_before_the_judging_column_is_rebuilt(tmp_path: Path) -> None:
+    """An index of version 14 has no `judging` column in its runs table. A newer AIMS that took
+    it as current failed every runs read and every write of the index."""
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [Draft(MonitorJudging(timeout_s=600))])
+    index = sqlite3.connect(root / INDEX)
+    index.execute("alter table runs drop column judging")
+    index.execute("pragma user_version = 14")
+    index.commit()
+    index.close()
+    async with await LocalEventStore.open(root) as store:
+        assert [r.judging for r in await store.runs()] == [True]
+        await store.append(run_id, [Draft(MonitorVerdict())])
+        assert await judging(store, run_id)
+
+
 async def test_a_judge_start_sealed_in_the_same_batch_is_no_judge_phase(
     store: LocalEventStore,
 ) -> None:
