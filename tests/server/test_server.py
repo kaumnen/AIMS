@@ -4037,6 +4037,48 @@ async def test_a_runner_takes_only_the_offers_its_own_aims_keys_allows(tmp_path:
     assert claimed == ["ok", "old"]
 
 
+@pytest.mark.parametrize("reply", ["past its cap", "not JSON", "no job"])
+async def test_a_claim_whose_reply_does_not_load_frees_its_slot_and_hands_the_job_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str
+) -> None:
+    """The control plane gave the job to this runner, so the runner hands it back with the
+    reason. Once a slot was lost for good and the job stayed in the runner's jobs."""
+    monkeypatch.setattr("aims.node.client.REPLY_LIMIT", 1024)
+    body = {
+        "past its cap": b" " * 4096,
+        "not JSON": b"<html>proxy</html>",
+        "no job": b'{"job": {"kind": "other"}}',
+    }[reply]
+    claims: list[str] = []
+    released: list[tuple[str, str]] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        path = request.url.path
+        if path.endswith("/claim"):
+            claims.append(path)
+            return httpx2.Response(200, content=body)
+        released.append((path, json.loads(request.content)["reason"]))
+        return httpx2.Response(204)
+
+    client = ControlClient("http://cp", "t", runner="n", transport=httpx2.MockTransport(handle))
+    made = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path, slots=1))
+    made._open = cast(Any, SimpleNamespace(link=SimpleNamespace(client=client)))
+    try:
+        await made._offer(OfferMessage(run_id="r1"))
+        assert made.claimed == {}
+        [(path, reason)] = released
+        assert path == "/runner/v1/jobs/r1/release"
+        assert reason.startswith("the reply to its claim does not load: ")
+        if reply == "past its cap":
+            assert reason.endswith("passes 1024 bytes")
+        # the one slot is free for the next offer
+        await made._offer(OfferMessage(run_id="r2"))
+    finally:
+        await client.aclose()
+    assert claims == ["/runner/v1/jobs/r1/claim", "/runner/v1/jobs/r2/claim"]
+    assert made.claimed == {}
+
+
 async def test_closing_a_link_stops_its_shippers(local: LocalEventStore) -> None:
     run_id = await local.create_run(STARTED)
     client = ControlClient("http://127.0.0.1:9", "token", runner="r1")
@@ -4272,6 +4314,93 @@ async def test_a_link_says_when_it_cannot_reach_the_control_plane_and_when_it_ca
         "back": f"{to} works again after {fails} failures",
     }
     assert said(caplog) == [("WARNING", told[line]) for line in lines]
+
+
+async def set_or_ended(event: asyncio.Event, tasks: Sequence[asyncio.Task[None]]) -> None:
+    """Wait until `event` is set or one of `tasks` has ended."""
+    waiter = asyncio.create_task(event.wait())
+    try:
+        await asyncio.wait([waiter, *tasks], timeout=10, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        waiter.cancel()
+
+
+async def test_a_link_says_hello_again_after_a_reply_past_its_cap(
+    local: LocalEventStore, no_backoff: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As after a reply that is not JSON. Once such a reply ended the stream for good."""
+    monkeypatch.setattr("aims.node.client.REPLY_LIMIT", 1024)
+    hellos = 0
+
+    async def open_stream() -> AsyncIterator[bytes]:
+        await asyncio.Event().wait()
+        yield b""
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        nonlocal hellos
+        if request.url.path.endswith("/hello"):
+            hellos += 1
+            return httpx2.Response(200, content=b" " * 4096 if hellos <= 2 else b'{"name": "r1"}')
+        sse = {"content-type": "text/event-stream"}
+        return httpx2.Response(200, headers=sse, content=open_stream())
+
+    transport = httpx2.MockTransport(handle)
+    client = ControlClient("http://cp.test", "t", runner="r1", transport=transport)
+    link = Link(client, local, DeltaBus())
+    task = asyncio.create_task(link._stream())
+    try:
+        await set_or_ended(link.connected, [task])
+        assert not task.done(), task.exception()
+    finally:
+        task.cancel()
+        await asyncio.wait([task])
+        await client.aclose()
+    assert link.connected.is_set()
+    assert hellos == 3
+
+
+async def test_a_links_status_and_deltas_go_on_after_a_reply_past_its_cap(
+    local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once such a reply ended the loop that sends them for good."""
+    from aims.models import Delta
+
+    monkeypatch.setattr("aims.node.client.REPLY_LIMIT", 1024)
+    monkeypatch.setattr("aims.node.link.HEARTBEAT_S", 0.0)
+    sent = {"status": 0, "deltas": 0}
+    statuses, posted = asyncio.Event(), asyncio.Event()
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        path = request.url.path.rsplit("/", 1)[1]
+        sent[path] += 1
+        if path == "deltas":
+            posted.set()
+        elif sent["status"] >= 3:
+            statuses.set()
+        return httpx2.Response(200, content=b" " * 4096)
+
+    transport = httpx2.MockTransport(handle)
+    client = ControlClient("http://cp.test", "t", runner="r1", transport=transport)
+    bus = DeltaBus()
+    link = Link(client, local, bus)
+    loops = [asyncio.create_task(link._heartbeat()), asyncio.create_task(link._deltas())]
+    try:
+        # the deltas loop subscribes as it starts
+        await asyncio.sleep(0)
+        assert bus.subscribers
+        for n in range(3):
+            posted.clear()
+            bus.publish(Delta("r", None, "c", 1, "text", str(n)))
+            await set_or_ended(posted, loops)
+        await set_or_ended(statuses, loops)
+        assert not any(t.done() for t in loops), [t.exception() for t in loops if t.done()]
+    finally:
+        for t in loops:
+            t.cancel()
+        await asyncio.wait(loops)
+        await client.aclose()
+    assert sent["deltas"] == 3
+    assert sent["status"] >= 3
 
 
 async def test_the_end_of_a_ship_does_not_drop_the_ship_that_replaced_it(

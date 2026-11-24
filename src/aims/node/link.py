@@ -16,7 +16,7 @@ from aims.aio import shielded, stopped
 from aims.events import LocalEventStore, RunCorrupt
 from aims.models import Delta, DeltaBus
 from aims.models.keys import keys, reported
-from aims.node.client import FEED, ApiError, ControlClient
+from aims.node.client import FEED, ApiError, ControlClient, TooLarge
 from aims.node.shipper import Backoff, Shipper, Streak
 from aims.run.runner import RunError, Runner
 from aims.wire import (
@@ -318,7 +318,7 @@ class Link:
             await asyncio.sleep(HEARTBEAT_S)
             try:
                 await self.client.status(self.status())
-            except (ApiError, httpx2.TransportError, OSError) as e:
+            except (ApiError, TooLarge, httpx2.TransportError, OSError) as e:
                 log.debug("status not sent: %s", e)
 
     async def _command(self, message: CommandMessage) -> None:
@@ -402,5 +402,5 @@ class Link:
                     ],
                     dropped=dropped,
                 )
-                with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
+                with contextlib.suppress(ApiError, TooLarge, httpx2.TransportError, OSError):
                     await self.client.post_deltas(body)

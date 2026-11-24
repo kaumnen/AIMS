@@ -50,8 +50,9 @@ FEED_EVENT = 16 * 1024 * 1024
 8 MiB."""
 
 
-class TooLarge(Exception):
-    """A reply past the bytes the runner reads of it."""
+class TooLarge(ValueError):
+    """A reply past the bytes the runner reads of it. A caller that retries a reply it cannot
+    read, such as one that is not JSON, retries this one too."""
 
 
 class ApiError(Exception):

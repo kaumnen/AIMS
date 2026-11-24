@@ -323,11 +323,21 @@ class Node:
         ):
             return
         self.claimed[offer.run_id] = None
+        client = self.ctx.link.client
         try:
-            job = await self.ctx.link.client.claim(offer.run_id)
+            job = await client.claim(offer.run_id)
         except (ApiError, httpx2.TransportError, OSError) as e:
             log.debug("claim of %s failed: %s", offer.run_id, e)
             job = None
+        except ValueError as e:
+            # The control plane gave the job to this runner, but its reply does not load: it is
+            # past its cap, not JSON or no job. Hand the job back with the reason.
+            why = (str(e) or type(e).__name__).splitlines()[0]
+            log.warning("claim of %s: the reply does not load: %s", offer.run_id, why)
+            self.claimed.pop(offer.run_id, None)
+            with contextlib.suppress(ApiError, httpx2.TransportError, OSError, ValueError):
+                await client.release(offer.run_id, f"the reply to its claim does not load: {why}")
+            return
         if job is None:
             self.claimed.pop(offer.run_id, None)
             return
