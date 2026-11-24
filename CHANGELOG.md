@@ -10,6 +10,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 ### Added
 
 - `GET /api/runs/{id}/samples` takes `order=seq`. It lists windows in the order the run logged them, so a reader can read on from the last one it has.
+- `GET /api/runs/{id}/flags` gives `seq` and `hash`: the run's last event the index held before the read. With `since` and `hash` it lists only the flags an event past `since` made or changed. It answers 409 `moved` when the run's event at `since` has another hash, as after its log was cut and written again.
 - The glossary the monitor's models read can be changed in `[prompts.monitor.glossary]`, one entry per record type. An empty entry leaves that type out. Every record type a sweep may see has an entry, also one with no default text such as `run.finished`. The monitor's own record types have none.
 - Every text the monitor's models read can be changed in `[prompts.monitor]`: the judge's tool parameters and errors, the verdict and sweep schemas, the cut markers, the labels of quoted records, the notes for a cut-off answer or an unread blob and the headers of its prompts. The defaults are the texts as before. A monitor's identity changes only when one of these texts is set.
 - Every text an agent reads from its tools can be changed in the config, a scenario and the UI: the bash output labels, the edit tool's replies, each tool's parameter descriptions, the loop's tool errors and the cut marker `omitted`. The defaults are the texts as before. A runner refuses a job with a text it does not know, so runners need this version too.
@@ -78,9 +79,11 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The last step's Verifier section shows what the verifier ran and printed.
 - A run that ends with its page open reads again only the steps that can still change.
 - After an outage, a run's Raw tab and steps read on from where they were. They no longer read every page again.
+- The live run page reads only the flags that are new or changed since its last poll. A run with 2000 flags moved about 1.1 MB every 3 s for them. It now moves about 1 kB.
+- A tab of the run page you leave no longer stays a frame to be restyled. The Score tab of a run with 2000 flags opened in about 140 ms with a task of about 90 ms. It now opens in about 60 ms.
 - The live run page reads only the resource windows and monitor sweeps that are new since its last poll. A two hour run moved about 7 MB every 3 s before.
 - The Score tab reads only the start of each score to name it in the list. It read every event of every score before. It shows the flags no plant explains 100 at a time, with Show more, so a score with hundreds of them opens faster.
-- `link_redirect` moves to version 7, `credential_flow` and `joint_action` to version 4 and `deny_retry` to version 2.
+- `link_redirect` moves to version 9, `credential_flow` and `joint_action` to version 4 and `deny_retry` to version 2.
 
 ### Removed
 
@@ -172,7 +175,9 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A score whose verifier did not end on its own, such as one that timed out, says so in its error beside the reward file's own error, such as no reward written or a file cut for size.
 - A large `reward.json` is read off the event loop. The live view, the monitor and the agents still running no longer stall for up to most of a second while a score reads it.
 - An agent's `output_tokens` cap and its usage count the tokens of a failed attempt the provider billed, as its cost already did.
-- A fork stops and warns where its run did while it replays or keeps the run's answers. Its caps and budget warnings count what the run recorded after each step. A fork of a run with a budget warning before the cut failed its replay. A fork of a run an older AIMS recorded could stop on its output token cap during the replay.
+- A fork stops and warns where its run did while it replays or keeps the run's answers. It is given the budget warnings the run was given, in their order among the injected messages. A kept agent ends where one of its own caps ended the run's agent. A fork of a run with a budget warning before the cut failed its replay. So did a fork of a fork that replays such a warning. So did a fork of a run whose cost warning counted a failed call with no cost reported or an answer with no token counts. A fork of a run an older AIMS recorded could stop on its output token cap during the replay.
+- A fork of a run that got a budget warning and then an injected message after one step gives them in that order. It gave the message first and its replay failed.
+- A kept agent whose next request the recording lacks checks its own caps and the fork's run caps before it goes live. One it is already past ends it. It made one live call, or a live summary, past such a cap first.
 - A token count below 0 or past 2^53 in an answer counts as none. The call's answer and cost are logged. The agent goes on. An agent's token totals stop at 2^53, as do the counts a compaction logs.
 - A job queued before an upgrade that drops a profile field still runs, a score job's classifier too. The control plane and the runner read it as stored and leave the old key out.
 - A model call that a stop, a kill, the wall limit or the judge's timeout cancels keeps what its attempts cost, also an attempt being logged as the cancel lands. The cut attempt counts against the cost caps at what it was planned to cost, as a failed attempt with no cost does. The monitor's spend, a score's purse and an agent's cost no longer drop a billed failure before the cut.
@@ -181,7 +186,9 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `GET /api/runs/{id}/projection` counts what an agent's failed last call cost.
 - A fork of a run whose provider gave two tool calls of one reply the same id, or none, replays each call with its own output. A step with a result for only one of them no longer counts as whole.
 - `aims spend` and the estimate no longer count a recorded cost below 0, a token count below 0 or more cached tokens than input. They read each run's log again once to apply this.
-- `link_redirect` no longer keeps a link that one command asked for twice and then removed. A later verifier read of its target raised a false flag. It no longer forgets a link when a later command asks for another link at its path and the ask fails, as `ln -s` does on a path that is taken. A verifier read through it was then not raised.
+- `link_redirect` no longer keeps a link that one command asked for twice and then removed. A later verifier read of its target raised a false flag. It no longer forgets a link when a later command moves it away, asks for another link at its path and moves it back. It no longer forgets a link when the kernel refuses a later link ask at its path, as when the agent cannot search the folder. A verifier read through it was then not raised. A refused ask no longer counts as a link a verifier read can pass through.
+- `link_redirect` no longer moves a link on a rename the kernel refused. A verifier read of its target raised a false flag at the new path.
+- `link_redirect` drops a flagged link that a rename lands on, as `ln -sf` and `mv` over a link do. With no file snapshot to settle the path, a verifier read of the old target raised a false flag.
 - The judge's `file_history` tool reads a snapshot's change list of any size. A list over 4 MiB was skipped whole, about 17,000 changed files in one command.
 - `credential_flow` and `joint_action` count a read of a shared-folder file as an exchange however long after the write. A read more than 300 s after the write counted for nothing. A path keeps its writers while its last write is within the window or while it is among the 4096 paths written last.
 - `credential_flow` and `joint_action` keep the poster of every board message. A read of a message more than 4096 behind the newest exchanged with no one.
@@ -199,7 +206,15 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A linked `aims run` or `aims monitor` ships the runs it seals as failed when the control plane holds them, waiting at most 30 s. Before, the control plane showed such a run as running until `aims push`.
 - A control plane killed after it kept a run's truth file and before it queued the score the run asked for shows that score as not started, with the reason. It starts none by itself.
 - A run whose local copy lacks a blob its log names stops shipping with one error line. `aims push` goes on to the next run instead of ending in a traceback.
-- A value a person wrote that is shaped as a blob reference no longer stops a run from shipping. This covers a profile's `extra` table or `headers`, a plugin channel's options and a plugin signal's options in the monitor config. A run's start names blobs only for the scenario's inputs and a channel's restored files.
+- A value a person wrote that is shaped as a blob reference no longer stops a run from shipping. This covers a profile's `extra` table or `headers`, a plugin channel's options and a plugin signal's options in the monitor config. A run's start names blobs only for the scenario's inputs and a channel's restored files. The judge also shows such a value as it is. It showed as a missing blob.
+- `aims models check` and `aims models add` ship their check run to a running local `aims ui`, or to `--server`, as `aims run` and `aims monitor` do. The app then shows the check. Before, it said the model was never checked until `aims push`. `--no-server` keeps the run here. A check that does not reach the control plane only warns.
+- `aims push` against a control plane whose reply passes its cap or is not JSON ends in one error line and exits 1. It ended in a traceback. `aims monitor` warns of such a reply and keeps its runs.
+- `aims score` ships its score run to a running local `aims ui`, or to `--server`, as `aims monitor` does. `--no-server` keeps it here.
+- A run's labels file with a line that is not UTF-8 no longer stops the runs folder from opening. Such a line is skipped with a warning, as a line that does not read as a label is. Before, a runner, `aims run` or `aims ui` on that folder failed to start. `aims push` ended in a traceback. A label whose note holds a line separator such as U+2028 is read whole. It was lost.
+- A sweep or judge answer that reached its output cap says so. It names the cap, how many of its tokens went to reasoning and the setting to change: `max_output_tokens` or `effort` under `monitor.sweeps`, `monitor.channels` or `monitor.judge`. A sweep said only `the incomplete answer is not JSON`. A judge said `no valid verdict after 2 forced calls`.
+- The judge asks for its verdict once two answers in a row stop at their output cap. Such answers hold no tool call. A judge on a model that reasons past the cap made 32 calls before it failed, each at the full cap. It now makes 4.
+- `aims models check` and `aims models add` say when an answer stopped at the check's output cap of 2048 tokens, how much of it was reasoning and at what effort. A profile with no effort is told to set one. Each test said only `not JSON` or `status incomplete`.
+- A flag that cites the task an agent was given and something it did later sits where the agent acted. The judge's flag on an agent's final claim cited the task text first, so the run page showed it at step 1 and the report's flag table at no step. A review's report timeline put it before the first step.
 - The activity of one exec and the costs of a run read only their own rows of the index. One exec in a run of 200,000 events takes 0.1 ms, down from 40 ms.
 - A pause review of a run whose index is far behind reads the log from near the cited calls. A cancelled read stops reading the log.
 - The steps of a run keep their tool calls while another process drops the run or resets the index.
@@ -208,7 +223,9 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A score, report, estimate or self-test that reads a whole run reads it again once when the index changes under it. A second change stops it with an error.
 - A plant check or a score of a sealed run waits for an index that is behind its log. If the index stays behind, it fails with an error and makes no score. `aims score` and `aims run --score` could seal a score on part of the run.
 - A read the index changed under answers 503 with `Retry-After`, as for a run not indexed yet. It answered 500. Rates, a review's price estimate and a report's list of reviews leave out a run deleted while they read it. A monitor rerun whose origin changes while it reads it fails.
-- A run written or received here is indexed again at once when a read finds that another process reset the index of the folder, as another aims version does at its start. A list of runs and a read of a run's events or steps find this too.
+- A run written or received here is indexed again at once when a read finds that another process reset the index of the folder, as another aims version does at its start. A list of runs and each read of one run's events, steps, flags, resource windows or costs find this too.
+- A self-test case whose run cannot be checked fails with the reason, as when its index stays behind its log. The other cases still run. The self-test ended at that case with the error. `aims scenario check` printed a traceback.
+- `aims monitor` and a runner's monitor job wait for an index that is behind the sealed log of the run they review. If it stays behind, they say so. They said the run was not sealed yet.
 - The run's end and the next run of a series read the agents' ends and the folder archives from the log too while the index is behind it. So does the monitor table at the end of `aims run` and `aims monitor`.
 - The control plane drops a call's streamed text once its response is in the log, also while its index is behind.
 - The error of a run whose log lost an event the index recorded says how to build the index again. `docs/runs.md` says it too.
@@ -219,7 +236,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - An unsaved edit survives a session that ends under it if the same identity signs in again. It also survives a time the control plane is out of reach. While the sign-in form or the outage screen shows, a reload, a tab close or Back asks before it drops the edit. Someone else starts from nothing, with no glimpse of the last session.
 - A Raw tab left while a page loads no longer misses the run's last events when you come back.
 - A model check cancelled before it started no longer shows as checking when the stream misses its end. The page stops polling for it.
-- The Raw tab reads earlier events only once you scroll up. A list whose reads moved the view from end to end read without end. At the top of the list, a wheel up or ArrowUp reads them. First and Home read from the run's first event.
+- The Raw tab reads earlier events only once you scroll up. A list whose reads moved the view from end to end read without end. At the top of the list, a wheel up, a touch, a press on the scrollbar, PageUp, Shift+Space or ArrowUp reads them. A short scroll up near the top reads them too. First and Home read from the run's first event.
+- A model check of profiles whose price is 0 for input and output is no longer called paid. The New run form, the fork dialog and Settings > Models still say paid when a price is above 0 or not known. The Add a model dialog says the check may cost a little, as the CLI does.
 - A Raw tab search on a live run no longer goes blank after about 50 event batches.
 - The Raw tab no longer reads one extra page after it lets the oldest page go.
 - Completion and hover in a scenario file work on lines after a lone CR. The Problems list names each line as the editor numbers it.
@@ -246,7 +264,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `GET /api/openapi.json` needs a viewer or operator token. It answered without one and named the AIMS version. An API client that reads the schema now sends its token.
 - The image ships opentelemetry-api 1.45.2, a dependency of FastAPI. It fixes CVE-2026-126360, a denial of service through slow `traceparent` parsing.
 - The scenario page leaves out the scenario.yaml tag for viewers.
-- A runner does not fully trust its control plane. It reads at most 1 GiB of each job input, its scenario folder included. It reads no more of the reply than a file of that size. It reads at most 16 MiB of any other reply, error body or truth file. A job input or truth file past its cap fails the job with the reason. A hello reply past its cap is tried again. Status and deltas go on after one. A claim reply past its cap, or one that does not load, hands the job back with the reason.
+- A runner does not fully trust its control plane. It reads at most 1 GiB of each job input, its scenario folder included. It reads no more of the reply than a file of that size. It reads at most 16 MiB of any other reply, error body or truth file. A job input or truth file past its cap fails the job with the reason. A hello reply past its cap is tried again. Status and deltas go on after one. A claim reply past its cap, or one that does not load, hands the job back with the reason. A command ack or a job release whose reply passes its cap counts as sent. A job stopped before its run began went back twice, the second time with the cap error as its reason.
 
 ## [0.2.3] - 2026-11-14
 
