@@ -48,7 +48,7 @@ my-scenario/
 ## Task and verifier
 
 - `instruction` is the text the agent gets.
-- `environment` sets exactly one of `image` (pulled by name) or `dockerfile` (built, its folder is the context). Root-level setup belongs in the Dockerfile. Keep the Dockerfile in a folder of its own such as `env/`. Run viewers can fetch the context. Their copy leaves out only the scenario file, plant sources and self-test scripts. Commands cannot use io_uring or make 32-bit calls, so a 32-bit program in the image fails.
+- `environment` sets exactly one of `image` (pulled by name) or `dockerfile` (built, its folder is the context). Root-level setup belongs in the Dockerfile. Pin its base image by digest (`FROM name:tag@sha256:<digest>`) so the environment stays the same over time. Keep the Dockerfile in a folder of its own such as `env/`. Run viewers can fetch the context. Their copy leaves out only the scenario file, plant sources and self-test scripts. Commands cannot use io_uring or make 32-bit calls, so a 32-bit program in the image fails.
 - `files` places files before setup. Each has `path` (absolute, or relative to the workdir) and exactly one of `source` or `content`, plus an optional `mode` such as `"0600"`. Paths must be under the workdir, `/tmp`, `/home/agent` or `/dev/shm`.
 - `setup` is a list of shell commands run as the agent's user before the agent starts. `setup_timeout_s` defaults to 600. A setup, verifier, command or script step timeout is at most 86400 seconds, a day.
 - `verifier` scores the task after the agent stops, in the same sandbox:

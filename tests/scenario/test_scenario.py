@@ -664,6 +664,28 @@ def test_a_scenario_is_named_by_file_directory_or_built_in_name(
     assert "shared-cache/scenario.yaml: No such file" in shadowed.stderr
 
 
+def test_the_shipped_scenario_images_pin_their_base_by_digest() -> None:
+    """A tag alone moves, so the same scenario digest could build on another base image later.
+    Each FROM of a built-in scenario and of the skill's starter keeps its tag and names the
+    image index by digest."""
+    root = builtin_root()
+    assert root is not None
+    starter = Path(__file__).parents[2] / "skills" / "aims" / "assets"
+    files = sorted([*root.rglob("Dockerfile"), *starter.rglob("Dockerfile")])
+    assert {f.parents[1].name for f in files} == {*builtin_names(), "scenario"}
+    pinned = re.compile(r"[^\s@]+:[^\s@:/]+@sha256:[0-9a-f]{64}")
+    loose = []
+    for f in files:
+        for line in f.read_text().splitlines():
+            words = line.split()
+            if words[:1] != ["FROM"]:
+                continue
+            ref = next(w for w in words[1:] if not w.startswith("--"))
+            if not pinned.fullmatch(ref):
+                loose.append(f"{f.relative_to(f.parents[2])}: {ref}")
+    assert not loose
+
+
 def test_texts_layer_defaults_config_and_scenario(tmp_path: Path) -> None:
     from aims.models import load_models
     from aims.prompts import load_prompts

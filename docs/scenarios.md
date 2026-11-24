@@ -70,7 +70,7 @@ selftest:
 
 ## Sandbox
 
-Each agent gets its own sandbox from the image `task.environment` names. The `sandbox` block sets its workdir, its limits and its environment. The root filesystem is read-only.
+Each agent gets its own sandbox from the image `task.environment` names. Pin the Dockerfile's base image by digest (`FROM python:3.13-slim@sha256:<digest>`) so the scenario's environment stays the same over time. The `sandbox` block sets its workdir, its limits and its environment. The root filesystem is read-only.
 
 | Field | Default | What it does |
 | --- | --- | --- |
