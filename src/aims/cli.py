@@ -1306,7 +1306,9 @@ def run(
     json_out: Annotated[
         bool,
         typer.Option(
-            "--json", help="Print JSON lines: monitor flags, actions, sweeps, verdicts, results."
+            "--json",
+            help="Print JSON lines: monitor flags, actions, sweeps, the judge's start, verdicts,"
+            " results.",
         ),
     ] = False,
     replay: Annotated[str | None, typer.Option(help="Run id to replay and fork.")] = None,
@@ -2678,7 +2680,8 @@ def monitor_cmd(
         bool,
         typer.Option(
             "--json",
-            help="Print JSON lines: estimates, flags, actions, sweeps, verdicts, results.",
+            help="Print JSON lines: estimates, flags, actions, sweeps, the judge's start, verdicts,"
+            " results.",
         ),
     ] = False,
     yes: Annotated[

@@ -85,6 +85,14 @@ def test_each_help_paragraph_wraps_to_the_terminal() -> None:
     assert "\b" not in control
 
 
+@pytest.mark.parametrize("command", ["run", "monitor"])
+def test_the_json_help_names_the_judges_start(command: str) -> None:
+    """`--json` prints a line when the judge starts, so its help lists it."""
+    r = CliRunner().invoke(app, [command, "--help"], env={"COLUMNS": "1000"})
+    (line,) = [line for line in r.output.splitlines() if "Print JSON lines" in line]
+    assert "sweeps, the judge's start, verdicts, results." in line
+
+
 def test_help_shows_no_type_for_a_flag() -> None:
     """A flag takes no value, so no help page puts a type such as `<bool>` beside it."""
     pages = []
