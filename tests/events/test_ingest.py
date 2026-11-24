@@ -1,5 +1,8 @@
 import asyncio
 import hashlib
+import io
+import json
+import tarfile
 import uuid
 from collections.abc import AsyncIterator
 from compression import zstd
@@ -820,48 +823,71 @@ async def test_a_blob_reference_where_a_payload_holds_one_is_still_needed(
     assert caught.value.missing == [body.sha256, other]
 
 
-def test_a_run_started_names_only_the_blobs_aims_made_there() -> None:
+def tarred(name: str) -> bytes:
+    """A tar of one file `name` that holds its name."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tar:
+        info = tarfile.TarInfo(name)
+        info.size = len(name)
+        tar.addfile(info, io.BytesIO(name.encode()))
+    return out.getvalue()
+
+
+async def test_a_run_started_names_only_the_blobs_aims_made_there(
+    source: LocalEventStore,
+) -> None:
     """run.started records the run's config, much of it as a person wrote it. Its references
-    are the scenario's inputs and each channel's restored archive, in the order they appear. A
-    mapping shaped as one anywhere else in it is data."""
+    are the blobs the runner stores with it: the scenario's inputs and each channel's restored
+    archive, in the order its line has them. A mapping shaped as one anywhere else is data."""
+    from cp import SCENARIO
+    from scripted import profile
+
+    from aims.events import ChannelInfo
     from aims.events.schema import blob_sizes
+    from aims.monitor.setup import resolve_config
+    from aims.scenario import Bundle, parse
 
-    def ref(n: int) -> dict[str, Any]:
-        return {"sha256": f"{n:02x}" * 32, "size": n}
-
-    forged = ref(9)
-    data: dict[str, Any] = {
-        "agents": ["a1"],
-        "channels": [
-            {"name": "c", "kind": "folder", "members": ["a1"], "restored": ref(5)},
-            {"name": "d", "kind": "folder", "members": ["a1"], "restored": None},
-            forged,
-        ],
-        "config": {
-            "agents": {"a1": {"profile": {"extra": forged, "headers": forged}}},
+    sha = "09" * 32
+    forged = {"sha256": sha, "size": 9}
+    option = f'{{file: {{sha256: "{sha}", size: 9}}}}'
+    text = SCENARIO + f"monitor:\n  signals:\n    my_plugin:\n      options: {option}\n"
+    files, verifier, context = tarred("seed"), tarred("check"), tarred("build")
+    bundle = Bundle(parse(text), text.encode(), files, verifier, context)
+    archive = tarred("kept")
+    restored = BlobRef(sha256=hashlib.sha256(archive).hexdigest(), size=len(archive))
+    person = profile(extra={"file": forged}, headers={"sha256": sha, "size": "9"})
+    started = RunStarted(
+        scenario="control",
+        oversight="observe",
+        agents=["a"],
+        config={
+            "scenario": {**bundle.snapshot(), "other": forged},
+            "agents": {"a": {"profile": person.snapshot()}},
+            "monitor": {"config": resolve_config([], bundle.scenario).model_dump(mode="json")},
             "kept": forged,
-            "monitor": {"config": {"signals": {"plugin": {"options": {"file": forged}}}}},
-            "scenario": {
-                "context": ref(1),
-                "digest": "d",
-                "file": ref(2),
-                "files": None,
-                "other": forged,
-                "resolved": {"monitor": forged},
-                "verifier": ref(3),
-            },
         },
-        "kind": "scenario",
-        "oversight": "observe",
-        "scenario": "s",
-    }
-    sizes = [(r["sha256"], r["size"]) for r in (ref(5), ref(1), ref(2), ref(3))]
-    assert list(blob_sizes(RunStarted.type, data)) == sizes
+        channels=[
+            ChannelInfo(name="c", kind="folder", members=["a"], restored=restored),
+            ChannelInfo(name="d", kind="folder", members=["a"]),
+        ],
+    )
+    run_id = await source.create_run(started, blobs=[*bundle.blobs(), archive])
+    [line] = lines_of(source, run_id)
+    # the scenario as resolved, the monitor's config, the profile's extra and headers, another
+    # scenario key and another config key each hold one
+    assert line.count(sha.encode()) == 6
+    event = json.loads(line)
+    # a line's keys are sorted: the channels, then the scenario's context, file, files, verifier
+    held = [archive, context, text.encode(), files, verifier]
+    sizes = [(hashlib.sha256(b).hexdigest(), len(b)) for b in held]
+    assert list(blob_sizes(event["type"], event["data"])) == sizes
+    event["data"]["channels"].append(forged)
+    assert list(blob_sizes(event["type"], event["data"])) == sizes
     # a hand-made run.started of other shapes names none
     assert list(blob_sizes(RunStarted.type, {"config": [forged], "channels": forged})) == []
     assert list(blob_sizes(RunStarted.type, forged)) == []
     # in an event of another type the same mapping is a reference
-    assert list(blob_sizes("x.custom", {"kept": forged})) == [(forged["sha256"], 9)]
+    assert list(blob_sizes("x.custom", {"kept": forged})) == [(sha, 9)]
 
 
 @pytest.mark.parametrize("sha256", ["x" * 64, "A" * 64, 5, ["a"], {"k": 1}])
