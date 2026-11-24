@@ -288,10 +288,10 @@ class ModelClient:
                     cost,
                     unseen,
                     sized,
+                    logged,
                 )
             )
             spent, billed = reply.cost_usd, reply.billed
-            logged.append(reply)
             asked = limited or outcome.ratelimit.retry_after_ms is not None
             if account is not None and outcome.status == "error" and asked:
                 account.pause(wait)
@@ -493,11 +493,13 @@ class ModelClient:
         billed: ModelUsage,
         priced: tuple[float | None, CostSource | None],
         unseen: float,
-        sized: float = 0.0,
+        sized: float,
+        logged: list[Reply],
     ) -> Reply:
         """Log the attempt with its own `priced` cost; the reply adds `spent` and `billed`, what
         the attempts before it cost and the tokens they counted, and carries `unseen` and
-        `sized`."""
+        `sized`. The reply goes on `logged` once the attempt is in the log, here rather than in
+        the caller, so a cancel that lands meanwhile does not drop what the attempt cost."""
         a = o.assembled
         ex = o.exchange
         datas: list[bytes] = []
@@ -558,7 +560,7 @@ class ModelClient:
                 call = ToolCall(call_id=c.id, name=c.name, arguments=arguments, model_call=call_id)
                 drafts.append(Draft(call, agent_id))
         await self.store.append(self.run_id, drafts)
-        return Reply(
+        reply = Reply(
             call_id=call_id,
             profile=profile.name,
             status=o.status,
@@ -573,6 +575,8 @@ class ModelClient:
             sized_usd=sized,
             error=o.error,
         )
+        logged.append(reply)
+        return reply
 
     def _priced(self, profile: Profile, a: Assembled) -> tuple[float | None, CostSource | None]:
         """What one attempt cost and where the figure came from. A replayed answer was paid for

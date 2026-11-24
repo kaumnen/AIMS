@@ -919,6 +919,34 @@ async def test_a_cancel_while_the_answer_is_logged_waits_for_the_log(
     ]
 
 
+async def test_a_cancel_while_the_answer_is_logged_hands_its_cost_to_cut(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(lambda: stream(sse(CHAT_EVENTS)))
+    entered, hold = asyncio.Event(), asyncio.Event()
+    append = store.append
+
+    async def slow(run: str, drafts: Any) -> Any:
+        if any(isinstance(d.payload, ModelResponse) for d in drafts):
+            entered.set()
+            await hold.wait()
+        return await append(run, drafts)
+
+    monkeypatch.setattr(store, "append", slow)
+    got: list[Reply] = []
+    async with client(store, run_id, profile(), handler) as mc:
+        task = asyncio.create_task(mc.call("test", PROMPT, cut=got.append))
+        await entered.wait()
+        task.cancel()
+        hold.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    (response,) = payloads(await store.events(run_id, types=["model.response"]))
+    assert response.cost_usd is not None
+    assert [(r.status, r.cost_usd) for r in got] == [("completed", response.cost_usd)]
+
+
 async def test_lone_surrogates_in_an_answer_are_kept_as_text(store: LocalEventStore) -> None:
     events = [
         chunk({"role": "assistant"}),
