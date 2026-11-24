@@ -323,7 +323,7 @@ export function samplesQuery(runId: string) {
 }
 
 // Every event of these types; with `held`, the ones the cache holds, read on from the last.
-function everyEvent(
+export function everyEvent(
   runId: string,
   types: string[],
   signal: AbortSignal,

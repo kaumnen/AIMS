@@ -2,6 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 
 import { client, type Schemas } from "./client";
 import type { Event } from "./events";
+import { everyEvent } from "./run";
 
 export type Label = Schemas["Label-Output"];
 export type LabelKind = Label["label"];
@@ -40,18 +41,12 @@ export function scoresQuery(origin: string) {
   });
 }
 
-// A sealed score never changes; `status` in the key reads it again once it seals.
+// A sealed score never changes; `status` in the key reads it again once it seals. Its events
+// are read page by page to the last, which says how the score ended.
 export function scoreQuery(scoreId: string, status: string) {
   return queryOptions({
     queryKey: ["runs", "score", scoreId, status] as const,
-    queryFn: async ({ signal }): Promise<Event[]> => {
-      const { data, error } = await client.GET("/api/runs/{run_id}/events", {
-        params: { ...path(scoreId), query: { types: scoreTypes, limit: MAX_SCORES } },
-        signal,
-      });
-      if (error) throw error;
-      return data.items;
-    },
+    queryFn: ({ signal }) => everyEvent(scoreId, scoreTypes, signal),
     staleTime: Infinity,
   });
 }

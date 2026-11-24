@@ -1746,6 +1746,30 @@ test("a long list of unexplained flags shows a page at a time", async () => {
   expect(within(region).queryByRole("button", { name: "Show more" })).toBeNull();
 });
 
+test("a score of more than a page of events is read to its end", async () => {
+  withScore();
+  scoreEvents[SCORE] = manyUnexplained(SCORE, 1100);
+  renderAt(`/runs/${BEE5}?tab=score`);
+  const region = await screen.findByRole("region", { name: "Unexplained flags" });
+  expect(within(region).getByText("1100")).toBeTruthy();
+  const after = fetch.mock.calls
+    .map(([r]) => new URL(r.url))
+    .filter((u) => u.pathname === `/api/runs/${SCORE}/events`)
+    .filter((u) => u.searchParams.get("limit") === "1000")
+    .map((u) => u.searchParams.get("after"));
+  expect(after.slice(0, 2)).toEqual([null, "999"]);
+});
+
+test("a score that failed past its first page of events says so", async () => {
+  withScore();
+  const log = manyUnexplained(SCORE, 1100);
+  const last = log.at(-1)!;
+  log[log.length - 1] = { ...last, data: { status: "failed", reason: "the judge timed out" } };
+  scoreEvents[SCORE] = log;
+  renderAt(`/runs/${BEE5}?tab=score`);
+  expect(await screen.findByText("The score failed: the judge timed out")).toBeTruthy();
+});
+
 test("a label that was not saved says so on its own score only", async () => {
   withScore();
   const base = fetch.getMockImplementation()!;
