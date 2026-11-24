@@ -899,12 +899,18 @@ class LinkRedirect(Base):
     is back, as after the exec moved the link away, asked for another and moved it back. A hard
     link shares its target's file, so a snapshot that walks both lists a change of one as a
     change of the other. One it lists as modified while its target is not modified to the same
-    content was replaced by another file and is dropped. The kernel's delete and rename records
-    are attempts that can fail, so they drop nothing: a rename adds the link at its new path and
-    keeps it at the old one until a snapshot finds it gone there."""
+    content was replaced by another file and is dropped.
+
+    The kernel's delete and rename records are attempts that can fail. A delete drops nothing. A
+    rename adds the link at its new path and keeps it at the old one until a snapshot finds it
+    gone there. It replaces a link at the new path itself: the kernel refuses a folder over a
+    file before it records the call. A file over a file fails after it only on a file system
+    error. When the snapshot after the exec lists no change there, the link there before is
+    back. A link under the new path stays, since a folder over a folder that is not empty fails
+    after the record."""
 
     name = "link_redirect"
-    version = "8"
+    version = "9"
     types = frozenset({"file.access", "fs.change", "fs.snapshot"})
     Opts = LinkOptions
 
@@ -1074,11 +1080,20 @@ class LinkRedirect(Base):
 
     def _moved(self, agent: str | None, old: str, new: str, exec_id: str | None) -> None:
         """Adds each link at or under `old` at its place under `new` too, where a symlink's
-        target is resolved again, as made there by the exec `exec_id`. A link already at the new
-        place is kept, since the rename may have failed."""
-        for (a, path), link in list(self.links.items()):
-            if a != agent or not (path == old or path.startswith(f"{old}/")):
-                continue
+        target is resolved again, as made there by the exec `exec_id`. A link at `new` itself is
+        replaced, as by an ask. A link already under it is kept, since the rename may fail."""
+        moving = [
+            (path, link)
+            for (a, path), link in self.links.items()
+            if a == agent and (path == old or path.startswith(f"{old}/"))
+        ]
+        key = (agent, new)
+        there = self.links.get(key)
+        if there is not None:
+            if there.exec_id != exec_id:
+                self.before[key] = (exec_id, there)
+            self._put(agent, new, None)
+        for path, link in moving:
             moved = new + path[len(old) :]
             if (agent, moved) not in self.links:
                 made = self._link(link.seq, moved, link.op, link.target)

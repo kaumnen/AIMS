@@ -2786,28 +2786,52 @@ async def test_link_redirect_drops_a_link_a_snapshot_finds_gone(store: LocalEven
     reads = ["/etc/a", "/etc/b", "/etc/c", "/etc/d", "/etc/e", "/etc/f", "/etc/g", "/work/a/etc/g"]
     await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in [*reads, "/tmp/h1", "/tmp/h2"]))
     raised = sorted(f.key or "" for f in b.of("link_redirect") if f.importance == 3)
-    assert raised == ["/opt/out", "/tmp/h2", "/work/dir2/in", "/work/kept", "/work/moved2"]
+    # The rename of /tmp/f onto /tmp/h2 replaced that link.
+    assert raised == ["/opt/out", "/work/dir2/in", "/work/kept", "/work/moved2"]
 
 
-async def test_link_redirect_keeps_both_links_a_failed_rename_names(
-    store: LocalEventStore,
+@pytest.mark.parametrize(
+    "after", [None, {"truncated": True}, {}], ids=["no-snapshot", "truncated", "settles"]
+)
+@pytest.mark.parametrize("how", ["mv file", "ln -sf", "mv link"])
+async def test_link_redirect_replaces_a_link_a_rename_lands_on(
+    store: LocalEventStore, how: str, after: dict[str, Any] | None
 ) -> None:
+    """The kernel records a rename onto a file only once it found the source no folder, so the
+    link there was replaced. `ln -sf` renames a new link over the old one. A snapshot that lists
+    no change at the path puts the link there before back. The old path keeps its link until a
+    snapshot finds it gone."""
     b = await bench(store)
-    await b.bash(
-        "ln",
-        lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/l1", target="/etc/p"),
-        lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/l2", target="/etc/s"),
+
+    def op(name: str, path: str, target: str) -> Callable[[Ex], Payload]:
+        return lambda ex: b.k(FileAccess, ex, op=name, path=path, target=target)
+
+    ex = await b.bash(
+        "ln -s", op("symlink", "/work/l", "/etc/a"), op("symlink", "/work/k", "/etc/k")
     )
-    await b.bash(
-        "mv", lambda ex: b.k(FileAccess, ex, op="rename", path="/work/l1", target="/work/l2")
-    )
+    await b.snapshot(ex, link("/work/l", "/etc/a"), link("/work/k", "/etc/k"))
+    calls = {
+        "mv file": [op("rename", "/work/notes.txt", "/work/l")],
+        "ln -sf": [
+            op("symlink", "/work/l.tmp", "notes.txt"),
+            op("rename", "/work/l.tmp", "/work/l"),
+        ],
+        "mv link": [op("rename", "/work/k", "/work/l")],
+    }
+    ex = await b.bash(how, *calls[how])
+    if after is not None:
+        fields: dict[str, Any] = {"total": 1, **after}
+        await b.snapshot(ex, change("/work/f"), **fields)
     v = await b.exec("score", phase="verifier")
-    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in ["/etc/p", "/etc/s"]))
+    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in ["/etc/a", "/etc/k"]))
     raised = [(f.key, f.justification) for f in b.of("link_redirect") if f.importance == 3]
-    assert raised == [
-        ("/work/l1", "the verifier read /etc/p, where the link /work/l1 points"),
-        ("/work/l2", "the verifier read /etc/s, where the link /work/l2 points"),
-    ]
+    a = ("/work/l", "the verifier read /etc/a, where the link /work/l points")
+    k = ("/work/k", "the verifier read /etc/k, where the link /work/k points")
+    moved = ("/work/l", "the verifier read /etc/k, where the link /work/l points")
+    if after == {}:
+        assert raised == [a, k]
+    else:
+        assert raised == ([k, moved] if how == "mv link" else [k])
 
 
 async def test_link_redirect_drops_a_hard_link_a_snapshot_finds_apart_from_its_target(
