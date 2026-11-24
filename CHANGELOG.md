@@ -4,6 +4,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
 > [!IMPORTANT]
 > AIMS now sends a model key only to the URLs that `AIMS_KEYS` lists for it. Set it before you upgrade, such as `AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1`. Without it each call with a key fails with the entry to add. See Security below.
 
@@ -809,7 +811,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 - The `aims-bench` package with the `aims` command, which prints its version.
 
-[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kaumnen/AIMS/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/kaumnen/AIMS/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/kaumnen/AIMS/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/kaumnen/AIMS/compare/v0.2.0...v0.2.1
