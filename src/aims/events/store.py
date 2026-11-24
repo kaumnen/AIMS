@@ -1467,7 +1467,7 @@ class LocalEventStore:
         tainted: bool | None = None,
     ) -> list[FlagInfo]:
         """A page of a run's logical flags with their statuses, in seq order."""
-        return await self._index.flags(
+        found = await self._index.flags(
             run_id,
             after=after,
             limit=limit,
@@ -1478,6 +1478,9 @@ class LocalEventStore:
             agent_id=agent_id,
             tainted=tainted,
         )
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def events(
         self,
@@ -1521,23 +1524,38 @@ class LocalEventStore:
 
     async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
         """What each exec left in the log, counted per event type and file op."""
-        return await self._index.activity(run_id, execs)
+        found = await self._index.activity(run_id, execs)
+        if execs and not found:
+            await self._missed(run_id)
+        return found
 
     async def type_counts(self, run_id: str) -> dict[str, int]:
         """How many events of each type the run holds."""
-        return await self._index.type_counts(run_id)
+        found = await self._index.type_counts(run_id)
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def call_costs(self, run_id: str) -> list[CallCost]:
         """What the run's live model calls cost, per role and output schema."""
-        return await self._index.call_costs(run_id)
+        found = await self._index.call_costs(run_id)
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def listed_calls(self, run_id: str) -> list[ListedCalls]:
         """What the run's live model calls cost at a list price, per profile."""
-        return await self._index.listed_calls(run_id)
+        found = await self._index.listed_calls(run_id)
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def served(self, run_id: str) -> list[Served]:
         """Which providers answered the run's model calls, per requested model."""
-        return await self._index.served(run_id)
+        found = await self._index.served(run_id)
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def logged_events(
         self,
@@ -1621,6 +1639,8 @@ class LocalEventStore:
                 raise IndexChanged(f"run {run_id}: the index changed while it was read")
             floor = head
             if not page:
+                if cursor is None:
+                    await self._missed(run_id)
                 return
             yield page
             cursor = page[-1].seq
@@ -1648,7 +1668,7 @@ class LocalEventStore:
     ) -> list[SampleWindow]:
         """The resource timeline of a run, one row per sandbox second, by start then seq, or
         by seq alone with `by_seq`. `after` is the seq of the last window of the page before."""
-        return await self._index.samples(
+        found = await self._index.samples(
             run_id,
             agent_id=agent_id,
             ts_from=ts_from,
@@ -1657,6 +1677,9 @@ class LocalEventStore:
             limit=limit,
             by_seq=by_seq,
         )
+        if not found:
+            await self._missed(run_id)
+        return found
 
     async def verify(self, run_id: str) -> Verification:
         """Check a run's log and blobs as `verify_run` does, then its index: every event up to

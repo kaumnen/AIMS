@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_steps import BODY, request, response
+from test_steps import started as exec_started
 
 from aims.events import (
     AgentStep,
@@ -2262,44 +2264,115 @@ async def test_a_run_held_here_is_indexed_again_after_another_process_reset_the_
             assert (await store.verify(run_id)).ok
 
 
+async def paged(store: LocalEventStore, run_id: str) -> list[Event]:
+    return [e async for page in store.pages(run_id) for e in page]
+
+
+# Each read of the index that can find a run missing, by what it gives for one run
+READS: dict[str, Callable[[LocalEventStore, str], Awaitable[Any]]] = {
+    "runs": lambda store, run_id: store.runs(),
+    "events": lambda store, run_id: store.events(run_id),
+    "steps": lambda store, run_id: store.steps(run_id),
+    "every": lambda store, run_id: store.every(run_id),
+    "pages": paged,
+    "flags": lambda store, run_id: store.flags(run_id),
+    "samples": lambda store, run_id: store.samples(run_id),
+    "type_counts": lambda store, run_id: store.type_counts(run_id),
+    "activity": lambda store, run_id: store.activity(run_id, ["x1"]),
+    "call_costs": lambda store, run_id: store.call_costs(run_id),
+    "listed_calls": lambda store, run_id: store.listed_calls(run_id),
+    "served": lambda store, run_id: store.served(run_id),
+}
+
+
+def of_each_read() -> list[Draft]:
+    """Events that each of READS finds."""
+    window = ResourceSample(
+        sandbox_id="s", hz=10, ts=[1_000_000, 900_000], **dict.fromkeys(ResourceSample.COLUMNS)
+    )
+    step = AgentStep(n=1, call_id="m1", status="completed", tool_calls=["c1"])
+    return [
+        call(1),
+        request("m1", "a1"),
+        response("m1", "a1", 0.5, provider="host", cost_source="list"),
+        Draft(step, "a1"),
+        exec_started("x1", "c1", "a1"),
+        Draft(window, "a1"),
+        Draft(FLAG),
+    ]
+
+
 @pytest.mark.parametrize("held", ["writer", "sink"])
-@pytest.mark.parametrize("read", ["runs", "events", "steps", "every"])
-async def test_a_list_read_brings_back_a_run_held_here_after_another_process_reset_the_index(
+@pytest.mark.parametrize("read", list(READS))
+async def test_a_read_brings_back_a_run_held_here_after_another_process_reset_the_index(
     tmp_path: Path, held: str, read: str
 ) -> None:
-    """A list of runs, or a read that finds no event or step of a run held here, indexes the
-    run again after another process reset the index, as a read by id does."""
+    """A list of runs, or a read that finds nothing of a run held here, indexes the run again
+    after another process reset the index, as a read by id does."""
     root = tmp_path / "runs"
-    step = AgentStep(n=1, call_id="m1", status="completed", tool_calls=["c1"])
-    drafts = [call(1), Draft(step, "a1")]
     async with await LocalEventStore.open(root, ingest_only=held == "sink") as store:
         if held == "writer":
             run_id = await store.create_run(STARTED)
-            await store.append(run_id, drafts)
+            await store.put_blob(run_id, BODY)
+            await store.append(run_id, of_each_read())
         else:
             async with await LocalEventStore.open(tmp_path / "source") as source:
                 run_id = await source.create_run(STARTED)
-                await source.append(run_id, drafts)
+                await source.put_blob(run_id, BODY)
+                await source.append(run_id, of_each_read())
+            store.prepare_run(run_id)
+            await store.put_blob(run_id, BODY)
             await store.ingest(run_id, split_lines((source.root / run_id / LOG).read_bytes()))
+
+        async def seen() -> int:
+            found = await READS[read](store, run_id)
+            if read == "runs":
+                return [r.run_id for r in found].count(run_id)
+            return len(found)
+
+        held_here = await seen()
+        assert held_here > 0
         reset_index(root)
         async with await LocalEventStore.open(root) as other:
             assert await other.run(run_id) is None
 
-        async def seen() -> int:
-            if read == "runs":
-                return [r.run_id for r in await store.runs()].count(run_id)
-            if read == "events":
-                return len(await store.events(run_id))
-            if read == "steps":
-                return len(await store.steps(run_id))
-            return len(await store.every(run_id))
-
         async def whole() -> bool:
-            return await seen() == {"runs": 1, "events": 3, "steps": 1, "every": 3}[read]
+            return await seen() == held_here
 
         # the read that finds the run missing starts its catch-up, which tells of a change
         assert await seen() == 0
         await eventually(store, whole)
+
+
+async def test_a_store_that_holds_no_run_reads_no_generation_when_a_read_finds_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the snapshots of a paged read read the generation."""
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    counts = {"generation": 0, "snapshot": 0}
+    generation, snapshot = Index.generation, Index.snapshot
+
+    async def counted(index: Index) -> int:
+        counts["generation"] += 1
+        return await generation(index)
+
+    @contextlib.asynccontextmanager
+    async def counted_snapshot(index: Index) -> AsyncGenerator[int]:
+        counts["snapshot"] += 1
+        async with snapshot(index) as found:
+            yield found
+
+    async with await LocalEventStore.open(root) as store:
+        monkeypatch.setattr(Index, "generation", counted)
+        monkeypatch.setattr(Index, "snapshot", counted_snapshot)
+        for read in READS.values():
+            await read(store, run_id)
+            await read(store, str(uuid.uuid7()))
+    assert counts["snapshot"] > 0
+    assert counts["generation"] == counts["snapshot"]
 
 
 @pytest.mark.parametrize("stays", [False, True])
