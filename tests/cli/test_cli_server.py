@@ -1914,6 +1914,69 @@ def test_a_control_plane_that_fails_ends_in_one_error_line(
     assert failed == []
 
 
+class Replying(BaseHTTPRequestHandler):
+    """Answers every request 200 with its class's body."""
+
+    body = b""
+
+    def answer(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    do_GET = do_POST = do_PUT = do_DELETE = answer
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+@pytest.mark.parametrize(
+    "body", [b" " * 4096, b"<html>proxy</html>"], ids=["past its cap", "not JSON"]
+)
+def test_push_whose_hello_reply_does_not_load_ends_in_one_error_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    """Once it ended in a traceback."""
+    monkeypatch.setattr("aims.node.client.REPLY_LIMIT", 1024)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), type("Reply", (Replying,), {"body": body}))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        r = CliRunner().invoke(
+            app, ["push", str(tmp_path), "--server", url], env={"AIMS_TOKEN": "t"}
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert one_error_line(r), (r.exit_code, r.exception, r.output)
+    why = {
+        b" " * 4096: "the reply to POST /runner/v1/hello passes 1024 bytes",
+        b"<html>proxy</html>": "1 validation error for HelloReply",
+    }[body]
+    assert r.output == f"error: a reply of the control plane at {url} does not load: {why}\n"
+
+
+async def test_push_does_not_blame_the_control_plane_for_a_damaged_local_run(
+    cp: CP, tmp_path: Path
+) -> None:
+    """A labels file that is not UTF-8 raises an error of the local side, which is a
+    ValueError too. It is not said as a reply of the control plane."""
+    started = RunStarted(scenario="offline", oversight="observe", agents=["a"])
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(started)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        store.labels_path(run_id).write_bytes(b"\xff\xfe\n")
+    env = {"AIMS_TOKEN": cp.runner}
+    r = await asyncio.to_thread(
+        CliRunner().invoke, app, ["push", str(tmp_path / "runs"), "--server", cp.url], env=env
+    )
+    assert "control plane" not in r.output
+    assert isinstance(r.exception, UnicodeDecodeError)
+
+
 def test_a_token_file_that_holds_no_token_ends_in_one_error_line(
     refusing: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

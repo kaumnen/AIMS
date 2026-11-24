@@ -2596,7 +2596,7 @@ def push(
 
     import httpx2
 
-    from aims.node.client import ApiError
+    from aims.node.client import ApiError, BadReply
 
     found = _connection(server, token_file, required=True)
     assert found is not None
@@ -2615,6 +2615,10 @@ def push(
         raise typer.Exit(EXIT_FAILED) from None
     except httpx2.TransportError as e:
         _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    except BadReply as e:
+        why = (str(e) or type(e).__name__).splitlines()[0]
+        _echo(f"error: a reply of the control plane at {url} does not load: {why}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     raise typer.Exit(code)
 
@@ -2787,7 +2791,7 @@ async def _monitor_runs(**o: Any) -> int:
         offline_monitor,
         origin_agents,
     )
-    from aims.node.client import ApiError
+    from aims.node.client import ApiError, BadReply
     from aims.prompts import TextError
     from aims.run.estimate import (
         ask_why,
@@ -2970,7 +2974,7 @@ async def _monitor_runs(**o: Any) -> int:
             failed = push.result()
         except asyncio.CancelledError:
             err.print("[yellow]stopped; some monitor runs did not reach the control plane[/]")
-        except (ApiError, httpx2.TransportError, OSError) as e:
+        except (ApiError, BadReply, httpx2.TransportError, OSError) as e:
             err.print(shown(f"the control plane did not take the monitor runs: {e}", "yellow"))
         else:
             if failed:

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from aims import __version__
 from aims.events import Label
@@ -50,9 +50,30 @@ FEED_EVENT = 16 * 1024 * 1024
 8 MiB."""
 
 
-class TooLarge(ValueError):
+class BadReply(ValueError):
+    """A reply of the control plane that does not load: past the bytes the runner reads of it,
+    not JSON or of another shape. An error of the local side is never one."""
+
+
+class TooLarge(BadReply):
     """A reply past the bytes the runner reads of it. A caller that retries a reply it cannot
     read, such as one that is not JSON, retries this one too."""
+
+
+class _Missing(BaseModel):
+    missing: list[str]
+
+
+class _Posted(BaseModel):
+    head: Head
+
+
+def _load[M: BaseModel](model: type[M], body: bytes) -> M:
+    """`body` as `model`. Raises BadReply when it is not JSON or of another shape."""
+    try:
+        return model.model_validate_json(body)
+    except ValidationError as e:
+        raise BadReply(str(e)) from e
 
 
 class ApiError(Exception):
@@ -163,7 +184,7 @@ class ControlClient:
         return await self._request("POST", path, content=content, headers=headers)
 
     async def hello(self, hello: RunnerHello) -> HelloReply:
-        return HelloReply.model_validate_json(await self._post("/hello", hello))
+        return _load(HelloReply, await self._post("/hello", hello))
 
     async def status(self, status: RunnerStatus) -> None:
         await self._post("/status", status)
@@ -190,7 +211,7 @@ class ControlClient:
             if e.status == 409:
                 return None
             raise
-        return Claimed.model_validate_json(body).job
+        return _load(Claimed, body).job
 
     async def release(self, run_id: str, reason: str) -> None:
         await self._post(f"/jobs/{run_id}/release", Release(reason=reason))
@@ -202,11 +223,11 @@ class ControlClient:
 
     async def heads(self, run_ids: Sequence[str]) -> dict[str, Head]:
         body = await self._post("/heads", Heads(run_ids=list(run_ids)))
-        return HeadsReply.model_validate_json(body).heads
+        return _load(HeadsReply, body).heads
 
     async def missing(self, run_id: str, shas: Sequence[str]) -> list[str]:
         body = await self._post(f"/runs/{run_id}/blobs/missing", Shas(shas=list(shas)))
-        return list(json.loads(body)["missing"])
+        return _load(_Missing, body).missing
 
     async def put_blob(self, run_id: str, sha256: str, path: Path) -> None:
         """Send a blob file as stored, without reading it into memory."""
@@ -242,7 +263,7 @@ class ControlClient:
             headers={"Content-Type": "application/x-ndjson", "Content-Encoding": "zstd"},
             timeout=httpx2.Timeout(120.0, connect=10.0),
         )
-        return Head.model_validate(json.loads(reply)["head"])
+        return _load(_Posted, reply).head
 
     async def post_deltas(self, deltas: Deltas) -> None:
         await self._post("/deltas", deltas)

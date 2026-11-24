@@ -62,7 +62,7 @@ from aims.events.schema import blob_refs
 from aims.models import DeltaBus, Profile
 from aims.models.keys import KeysError, parse
 from aims.node import shipper as shipper_module
-from aims.node.client import FEED, ApiError, ControlClient
+from aims.node.client import FEED, ApiError, BadReply, ControlClient
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
 from aims.node.shipper import WARN_AFTER, Shipper
@@ -4265,7 +4265,8 @@ async def test_a_link_logs_a_shipper_that_dies_of_an_error(
     assert said(caplog) == [("ERROR", f"run {run_id}: shipping stopped on an error")]
     error = caplog.records[-1].exc_info
     assert isinstance(error, tuple)
-    assert isinstance(error[1], ValidationError)
+    assert isinstance(error[1], BadReply)
+    assert isinstance(error[1].__cause__, ValidationError)
     assert run_id in link.shippers
     await link.close()
 

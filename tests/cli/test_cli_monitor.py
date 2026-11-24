@@ -326,6 +326,36 @@ def test_a_ctrl_c_during_the_push_of_aims_monitor_ends_the_push_once(
     assert result.stdout.split()[1:3] == [origin, "completed"]
 
 
+def test_a_push_reply_past_its_cap_is_a_warning_of_aims_monitor(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once it ended in a traceback after the monitor runs were made."""
+    from http.server import ThreadingHTTPServer
+
+    from test_cli_server import Replying
+
+    root, origin = runs
+    monkeypatch.setattr("aims.node.client.REPLY_LIMIT", 1024)
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), type("Reply", (Replying,), {"body": b" " * 4096})
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    monkeypatch.setattr("aims.cli._link", lambda *args: (url, "token"))
+    try:
+        result = invoke("monitor", origin, "--runs-dir", str(root), "--signals-only", "--quiet")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.stderr.split())
+    assert (
+        "the control plane did not take the monitor runs: the reply to POST /runner/v1/hello"
+        " passes 1024 bytes" in said
+    )
+    assert result.stdout.split()[1:3] == [origin, "completed"]
+
+
 @pytest.mark.usefixtures("profiles")
 def test_aims_monitor_refuses_what_it_cannot_run(
     runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
