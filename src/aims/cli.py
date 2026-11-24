@@ -2128,7 +2128,7 @@ def _connection(
 ) -> tuple[str, str] | None:
     """Where to ship and the runner token: --server with AIMS_TOKEN or --token-file, else the
     server.json a local `aims ui` wrote."""
-    from aims.server.serve import SERVER_JSON, server_dir
+    from aims.server.serve import SERVER_JSON, server_dir, starting
 
     if token_file is not None and server is None:
         raise typer.BadParameter("needs --server", param_hint="--token-file")
@@ -2139,17 +2139,36 @@ def _connection(
             raise typer.Exit(EXIT_FAILED)
         return server, token
     info = server_dir() / SERVER_JSON
+    # before the read: a server.json written during the probe is read
+    busy = starting(info.parent)
     if info.is_file():
         data = _local_ui(info)
         return str(data["url"]), str(data["token"])
     if required:
+        _no_local_ui(info, busy)
+    if busy:
+        typer.echo(
+            "warning: the local `aims ui` is starting or stopping, so the runs this command"
+            " records stay here; `aims push` ships them once the ui is up",
+            err=True,
+        )
+    return None
+
+
+def _no_local_ui(info: Path, busy: bool) -> NoReturn:
+    """Exit 1 as no local `aims ui` wrote its server.json `info`. `busy` says that one holds
+    its data dir, which it does while it starts or stops."""
+    if busy:
+        typer.echo(
+            "error: the local `aims ui` is starting or stopping; try again once it is up", err=True
+        )
+    else:
         typer.echo(
             f"error: no control plane: no {info}; start `aims ui`, give --server, or set"
             " AIMS_SERVER_DIR to the directory `aims ui --data-dir` uses",
             err=True,
         )
-        raise typer.Exit(EXIT_FAILED)
-    return None
+    raise typer.Exit(EXIT_FAILED)
 
 
 def _link(server: str | None, token_file: Path | None, no_server: bool) -> tuple[str, str] | None:
@@ -3370,19 +3389,15 @@ def _operator(
     """The control plane and an operator token: --server, else the local `aims ui`; the token
     from --token-file or AIMS_TOKEN, else the local ui's own operator token if it wrote one.
     With `reads`, any token does."""
-    from aims.server.serve import SERVER_JSON, server_dir
+    from aims.server.serve import SERVER_JSON, server_dir, starting
 
     token = _given_token(token_file)
     url = server
     if url is None:
         info = server_dir() / SERVER_JSON
+        busy = starting(info.parent)
         if not info.is_file():
-            typer.echo(
-                f"error: no control plane: no {info}; start `aims ui`, give --server, or set"
-                " AIMS_SERVER_DIR to the directory `aims ui --data-dir` uses",
-                err=True,
-            )
-            raise typer.Exit(EXIT_FAILED)
+            _no_local_ui(info, busy)
         data = _local_ui(info)
         url = str(data["url"])
         token = token or data.get("operator")

@@ -38,6 +38,8 @@ PORT = 8484
 SERVER_JSON = "server.json"
 # An `aims ui` holds a lock on this file in its data dir for as long as it runs
 LOCK_FILE = "server.lock"
+# How long `hold` waits out a lock that `starting` takes for a moment
+HOLD_WAIT_S = 0.5
 LOCAL_RUNNER = "local"
 UI_RUNNER = "AIMS_UI_RUNNER"
 # What `aims ui` writes on its runner's stdin for a later stop: kill now
@@ -274,7 +276,7 @@ def hold(data: Path) -> int | None:
     except OSError as e:
         raise ServeError(f"cannot open {path}: {e.strerror or e}") from None
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _flock_within(fd, HOLD_WAIT_S)
     except BlockingIOError:
         os.close(fd)
         raise ServeError(in_use_by(data)) from None
@@ -287,6 +289,44 @@ def hold(data: Path) -> int | None:
         )
         return None
     return fd
+
+
+def _flock_within(fd: int, wait_s: float) -> None:
+    """Lock `fd` for this process alone, trying again for up to `wait_s` seconds while
+    another holds it. Then BlockingIOError raises."""
+    end = time.monotonic() + wait_s
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if time.monotonic() >= end:
+                raise
+            time.sleep(0.02)
+        else:
+            return
+
+
+def starting(data: Path) -> bool:
+    """Whether an `aims ui` holds the data dir `data` with no server.json there: it is
+    starting, as while it indexes the runs, or stopping. The probe makes nothing. It holds a
+    shared lock for a moment, which `hold` waits out."""
+    info = data / SERVER_JSON
+    if info.exists():
+        return False
+    try:
+        fd = os.open(data / LOCK_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return not info.exists()
+    except OSError:
+        return False
+    finally:
+        # which ends the lock
+        os.close(fd)
+    return False
 
 
 def in_use_by(data: Path) -> str:

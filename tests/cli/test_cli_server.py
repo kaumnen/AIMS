@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import errno
+import fcntl
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from urllib.parse import urlsplit
 import aiodocker
 import httpx2
 import pytest
+import typer
 from children import create_child
 from cp import CP, control_plane
 from proxy import Server, environ, serving
@@ -61,6 +63,7 @@ from aims.server.serve import (
     serve,
     server_dir,
     snap_browser,
+    starting,
 )
 from aims.server.state import close_state
 from aims.terminal import AGAIN
@@ -2370,6 +2373,95 @@ async def test_aims_ui_on_a_data_dir_in_use_opens_none_of_its_state(
     again = hold(data)
     assert again is not None
     os.close(again)
+
+
+def test_a_starting_aims_ui_is_one_that_holds_its_data_dir_with_no_server_json(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "server"
+    assert not starting(data)
+    # the probe makes nothing
+    assert not data.exists()
+    held = hold(data)
+    assert held is not None
+    try:
+        assert starting(data)
+        (data / "server.json").write_text('{"url": "http://127.0.0.1:1", "token": "t"}')
+        assert not starting(data)
+    finally:
+        os.close(held)
+    # the lock file stays after an `aims ui` ends
+    (data / "server.json").unlink()
+    assert not starting(data)
+
+
+def test_aims_ui_takes_its_data_dir_past_a_probe_of_it(tmp_path: Path) -> None:
+    """A command probes the lock for a moment. An `aims ui` that started then was refused."""
+    data = tmp_path / "server"
+    os.close(cast(int, hold(data)))
+    fd = os.open(data / "server.lock", os.O_RDONLY)
+    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    threading.Timer(0.05, os.close, (fd,)).start()
+    held = hold(data)
+    assert held is not None
+    os.close(held)
+
+
+@pytest.mark.parametrize("command", [["models", "check"], ["run", "builtin/word-count"]])
+def test_a_command_that_would_ship_says_the_local_aims_ui_is_not_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    """While `aims ui` indexed 138 runs for 78 s, a check went to no control plane and said
+    nothing. The app then showed the profile as never checked."""
+    data = tmp_path / "server"
+    monkeypatch.setenv("AIMS_SERVER_DIR", str(data))
+    linked: list[object] = []
+
+    def stop_here(*args: object, **kwargs: object) -> NoReturn:
+        raise typer.Exit(3)
+
+    def link(server: str | None, token_file: Path | None, no_server: bool) -> object:
+        linked.append(found := real(server, token_file, no_server))
+        return found
+
+    real = cli._link
+    monkeypatch.setattr(cli, "_link", link)
+    monkeypatch.setattr(cli, "_settings", stop_here)
+    monkeypatch.setattr(cli, "_run", stop_here)
+    held = hold(data)
+    assert held is not None
+    try:
+        r = CliRunner().invoke(app, command)
+    finally:
+        os.close(held)
+    assert (r.exit_code, linked) == (3, [None])
+    assert r.stderr == (
+        "warning: the local `aims ui` is starting or stopping, so the runs this command"
+        " records stay here; `aims push` ships them once the ui is up\n"
+    )
+    r = CliRunner().invoke(app, command)
+    assert (r.exit_code, r.stderr) == (3, "")
+
+
+@pytest.mark.parametrize("command", [["push", "runs"], ["open", "--no-open"]])
+def test_a_command_that_needs_the_local_aims_ui_says_it_is_not_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    data = tmp_path / "server"
+    monkeypatch.setenv("AIMS_SERVER_DIR", str(data))
+    held = hold(data)
+    assert held is not None
+    try:
+        r = CliRunner().invoke(app, command)
+    finally:
+        os.close(held)
+    assert (r.exit_code, r.stderr) == (
+        1,
+        "error: the local `aims ui` is starting or stopping; try again once it is up\n",
+    )
+    r = CliRunner().invoke(app, command)
+    assert r.exit_code == 1
+    assert r.stderr.startswith(f"error: no control plane: no {data / 'server.json'}; ")
 
 
 async def test_aims_ui_says_it_indexes_the_runs_again_after_an_upgrade(
