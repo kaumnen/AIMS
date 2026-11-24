@@ -4136,6 +4136,84 @@ async def test_a_claim_whose_reply_does_not_load_frees_its_slot_and_hands_the_jo
     assert made.claimed == {}
 
 
+def past_the_cap(sent: list[str]) -> httpx2.MockTransport:
+    """A control plane that answers each call with a reply past a REPLY_LIMIT of 1024."""
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        reason = json.loads(request.content).get("reason") if request.content else None
+        sent.append(request.url.path if reason is None else f"{request.url.path}: {reason}")
+        return httpx2.Response(200, content=b" " * 4096)
+
+    return httpx2.MockTransport(handle)
+
+
+async def test_a_command_ack_whose_reply_passes_its_cap_is_sent_once(
+    local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control plane took the ack. Once its task ended with an error nobody read."""
+    monkeypatch.setattr("aims.node.client.REPLY_LIMIT", 1024)
+    sent: list[str] = []
+    client = ControlClient("http://cp", "t", runner="n", transport=past_the_cap(sent))
+    link = Link(client, local, DeltaBus())
+    action = CommandAction(action="pause", reason="r", token="t")
+    try:
+        await link._command(CommandMessage(id="c1", seq=1, run_id="r1", command=action))
+    finally:
+        await client.aclose()
+    assert sent == ["/runner/v1/commands/c1/ack"]
+
+
+@pytest.mark.parametrize("end", ["error", "stopping", "stop"])
+async def test_a_release_whose_reply_passes_its_cap_is_sent_once(
+    local: LocalEventStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    end: str,
+) -> None:
+    """A job that failed or stopped before its run began goes back once, with its reason. Once
+    such a reply escaped. A stopped job then failed and sent a second release with that reply as
+    its reason. Its task ended with that error in place of the cancel."""
+    monkeypatch.setattr("aims.node.client.REPLY_LIMIT", 1024)
+    began = asyncio.Event()
+
+    async def monitor(self: Node, job: Any) -> None:
+        if end == "error":
+            raise RuntimeError("the monitor broke")
+        began.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Node, "_monitor", monitor)
+    sent: list[str] = []
+    client = ControlClient("http://cp", "t", runner="n", transport=past_the_cap(sent))
+    made = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path))
+    link = SimpleNamespace(unship=lambda of: None, client=client)
+    made._open = cast(Any, SimpleNamespace(store=local, link=link))
+    made.stopping = end == "stopping"
+    task = asyncio.create_task(made._execute(MonitorJob.model_construct(run_id="r1")))
+    try:
+        async with asyncio.timeout(10):
+            if end == "stop":
+                await began.wait()
+                made.stopping = True
+                task.cancel()
+            await asyncio.wait([task])
+    finally:
+        await client.aclose()
+    reason = {
+        "error": "RuntimeError: the monitor broke",
+        "stopping": "the runner stopped before the job began",
+        "stop": "the runner stopped before the job began",
+    }[end]
+    assert sent == [f"/runner/v1/jobs/r1/release: {reason}"]
+    if end == "stop":
+        assert task.cancelled()
+    else:
+        assert task.exception() is None
+    failed = [r for r in caplog.records if r.getMessage() == "job r1 failed"]
+    assert len(failed) == (end == "error")
+
+
 async def test_closing_a_link_stops_its_shippers(local: LocalEventStore) -> None:
     run_id = await local.create_run(STARTED)
     client = ControlClient("http://127.0.0.1:9", "token", runner="r1")

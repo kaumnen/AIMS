@@ -406,7 +406,7 @@ class Node:
                 # A score job and a model check ship their run from before it begins. With
                 # no line written that shipper would wait for one without end.
                 link.unship(job.run_id)
-                with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
+                with contextlib.suppress(ApiError, TooLarge, httpx2.TransportError, OSError):
                     await link.client.release(job.run_id, f"{type(e).__name__}: {e}")
 
     async def _began(self, run_id: str) -> bool:
@@ -518,7 +518,7 @@ class Node:
         link = self.ctx.link
         # a score job ships its run from before the run begins
         link.unship(job.run_id)
-        with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
+        with contextlib.suppress(ApiError, TooLarge, httpx2.TransportError, OSError):
             await link.client.release(job.run_id, "the runner stopped before the job began")
 
     async def _monitor(self, job: MonitorJob) -> None:

@@ -346,6 +346,10 @@ class Link:
                     log.warning("ack of command %s refused: %s", message.id, e)
                     return
                 await backoff.wait(e.retry_after)
+            except TooLarge as e:
+                # the control plane took the ack; only its reply does not load
+                log.warning("ack of command %s: %s", message.id, e)
+                return
             except httpx2.TransportError, OSError:
                 await backoff.wait()
 
