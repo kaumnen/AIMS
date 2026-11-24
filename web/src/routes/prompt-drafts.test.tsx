@@ -14,6 +14,8 @@ const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let questions: string[];
 // what the person answers to a question
 let yes: boolean;
+// a proxy answers in place of the control plane
+let away: boolean;
 
 const prompt = (text: string, project: string | null = null) => ({
   text: project ?? text,
@@ -57,6 +59,7 @@ preloadRoutes();
 beforeEach(() => {
   questions = [];
   yes = false;
+  away = false;
   vi.stubGlobal("confirm", (q: string) => {
     questions.push(q);
     return yes;
@@ -66,6 +69,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const path = new URL(request.url).pathname;
+    if (away) return new Response(null, { status: 502, headers: { "Content-Length": "0" } });
     if (path === "/api/session") return Response.json({ name: "me", role: "operator", auth: true });
     if (path === "/api/prompts") {
       return Response.json({
@@ -181,4 +185,23 @@ test("another tab of a scenario asks before it drops a prompt draft", async () =
   fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
   await waitFor(() => expect(draft()).toBeNull());
   expect(hasUnsaved()).toBe(false);
+});
+
+test("a prompt draft under the outage screen still asks before a move drops it", async () => {
+  const router = renderAt("/settings/prompts");
+  await editSystem();
+  const source = FakeEventSource.all[0];
+  if (!source) throw new Error("no stream");
+  act(() => source.open());
+  away = true;
+  act(() => source.fail(true));
+  const again = await screen.findByRole("button", { name: "Try again" });
+  expect(hasUnsaved()).toBe(true);
+  act(() => void router.navigate({ to: "/runs" }));
+  await waitFor(() => expect(questions).toEqual(["Discard your changes to system?"]));
+  expect(router.state.location.pathname).toBe("/settings/prompts");
+  away = false;
+  fireEvent.click(again);
+  await waitFor(() => expect(draft()).not.toBeNull());
+  expect(hasUnsaved()).toBe(true);
 });

@@ -1,6 +1,6 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
-import { Activity, useEffect } from "react";
+import { createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-router";
+import { Activity, useEffect, useLayoutEffect } from "react";
 
 import { onUnauthorized, type Problem } from "@/api/client";
 import { watchSession, whoami } from "@/api/session";
@@ -10,6 +10,7 @@ import { LiveProvider } from "@/components/live";
 import { Shortcuts } from "@/components/shortcuts";
 import { SignIn, Unreachable } from "@/components/sign-in";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { hasUnsaved, holdUnsaved, mayDiscard } from "@/lib/unsaved";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
@@ -37,6 +38,27 @@ function Root() {
   ) : (
     <Unreachable retry={() => void me.refetch()} />
   );
+  // The page hides under the cover and keeps its drafts. Hidden, it drops its leave guard and
+  // the marks of its drafts, but only after this runs. So this keeps the marks: a reload, a tab
+  // close or Back asks first. A discard lets them go.
+  const router = useRouter();
+  const under = cover !== null && me.data !== undefined;
+  useLayoutEffect(() => {
+    if (!under) return;
+    holdUnsaved(true);
+    const unblock = router.history.block({
+      blockerFn: () => {
+        if (!mayDiscard()) return true;
+        holdUnsaved(false);
+        return false;
+      },
+      enableBeforeUnload: hasUnsaved,
+    });
+    return () => {
+      unblock();
+      holdUnsaved(false);
+    };
+  }, [under, router]);
   if (me.data === undefined) return cover;
   return (
     <TooltipProvider>
