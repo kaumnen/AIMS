@@ -26,7 +26,7 @@ jobs:
           version: "0.13.9"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
       # The hashes pin every version, so pip-audit reads the file as is and resolves nothing.
       # The project itself has no hash, so the export leaves it out.
       - name: python runtime
