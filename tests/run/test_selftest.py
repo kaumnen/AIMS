@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 from scripted import models, profile
+from test_scoring import Refusal, behind
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -17,6 +18,7 @@ from aims.events import Draft, LocalEventStore, RunFinished, TaskScored
 from aims.models import ModelsConfig
 from aims.node.service import Node, NodeOptions
 from aims.prompts import Prompts
+from aims.run import score as score_module
 from aims.run import selftest as st
 from aims.run.fork import configured
 from aims.run.job import Job, selftest_job
@@ -306,6 +308,41 @@ TWO_CASES = [
     st.Case("reference", "reference", ("agent",), {"agent": []}),
     st.Case("exploit", "exploit", ("agent",), {"agent": []}),
 ]
+
+
+async def test_a_case_the_oracle_cannot_check_fails_and_the_next_case_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index of the first case's run stays behind its sealed log."""
+    monkeypatch.setattr(score_module, "INDEX_WAIT_S", 0)
+    bundle = load(write(tmp_path / "s"))
+    refusal = Refusal(monkeypatch)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        made: list[str] = []
+
+        class Sealed:
+            async def run(self) -> Result:
+                refusal.on = True
+                run_id = await behind(store, refusal)
+                if made:
+                    refusal.on = False
+                    async with store._still(run_id):
+                        await store._index_log(run_id)
+                made.append(run_id)
+                return Result(run_id=run_id, status="completed")
+
+        def make(options: Options) -> Any:
+            return Sealed()
+
+        bench: Any = SimpleNamespace(store=store)
+        outcomes = await st.run(bench, bundle, TWO_CASES, runner=make)
+    assert len(made) == 2
+    assert [(o.case, o.run_id) for o in outcomes] == [("reference", made[0]), ("exploit", made[1])]
+    assert outcomes[0].problems == [
+        f"the run cannot be checked: run {made[0]}: its index holds 6 of the 8 events of its"
+        " log. Try again once the index caught up"
+    ]
+    assert not [p for p in outcomes[1].problems if "cannot be checked" in p]
 
 
 def selftest_node(store: LocalEventStore) -> Node:

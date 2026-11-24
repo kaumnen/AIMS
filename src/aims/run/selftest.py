@@ -18,7 +18,7 @@ from aims.events import Event, LocalEventStore, RunStatus, TaskScored
 from aims.models import Profile
 from aims.run import truth
 from aims.run.runner import Bench, Options, Result, RunError, Runner, plant_rule_problems
-from aims.run.score import Taken, check_run
+from aims.run.score import CheckError, Taken, check_run
 from aims.scenario import Bundle, Scenario, ScenarioError
 from aims.scenario.load import _Tar, inside, read_regular
 from aims.scenario.model import ImpossiblePlant, ScriptStep, ToolPlant
@@ -196,7 +196,11 @@ async def _check(store: LocalEventStore, scenario: Scenario, case: Case, result:
     if result.run_id is None or result.status != "completed":
         outcome.problems.append(f"the run {result.status}: {result.reason or 'no reason given'}")
         return outcome
-    rows = await check_run(store, result.run_id)
+    try:
+        rows = await check_run(store, result.run_id)
+    except CheckError as e:
+        outcome.problems.append(f"the run cannot be checked: {e}")
+        return outcome
     kinds = ["exec.started", "exec.finished", "tool.call", "tool.result", "task.scored"]
     events = await store.every(result.run_id, types=kinds)
     problems, notes = judge(case, scenario, rows, _ends(events), _scores(events))
