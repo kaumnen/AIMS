@@ -734,3 +734,63 @@ async def test_the_live_view_shows_a_long_note_on_one_line(tmp_path: Path) -> No
         assert "\n" not in row
         assert len(row) == 2 + TAIL
         assert row.endswith("…")
+
+
+async def test_the_live_view_shows_the_judges_tool_calls_in_the_monitor_rows(
+    tmp_path: Path,
+) -> None:
+    """The monitor's model calls name no agent. Once each tool call of the judge made an agent
+    row `-` with the call under it."""
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        view = LiveView(store, DeltaBus())
+    run = view.runs["r1"] = _Run("r1")
+
+    def event(kind: str, agent: str | None = None, **data: Any) -> Any:
+        return SimpleNamespace(type=kind, data=data, agent_id=agent)
+
+    def rows() -> list[str]:
+        return [cast(Text, row).plain for row in view._monitor_rows(run)]
+
+    for e in [
+        event("agent.started", "a", budget={}),
+        event("agent.step", "a", n=4, total_cost_usd=0.0, total={}),
+        event("agent.finished", "a", reason="submitted", cost_usd=0.0),
+        event("monitor.judging", timeout_s=600),
+        event("model.request", call_id="j1", role="judge", model="m"),
+        event("tool.call", call_id="t1", name="events", arguments='{"after": 3}', model_call="j1"),
+        # a sweep offers no tools; a call one makes anyway shows nowhere
+        event("model.request", call_id="w1", role="sweep", model="m"),
+        event("model.response", call_id="w1", cost_usd=0.0),
+        event("tool.call", call_id="t2", name="stray", arguments="{}", model_call="w1"),
+    ]:
+        view._on_event(run, e)
+    assert list(run.agents) == ["a"]
+    assert rows() == ["monitor  flags 0  sweeps 0", "  judge > events after=3"]
+    out = io.StringIO()
+    Console(file=out, width=100).print(view)
+    assert "-  step" not in out.getvalue()
+    assert "judge > events after=3" in out.getvalue()
+
+    # every agent's own event names it; one that names none has no row to go to
+    agentless: list[tuple[str, dict[str, Any]]] = [
+        ("agent.started", {"budget": {}}),
+        ("agent.step", {"n": 1}),
+        ("tool.call", {"call_id": "t3", "name": "bash", "arguments": "{}"}),
+        ("tool.result", {"call_id": "t3", "output": "x"}),
+        ("agent.report", {"message": "m"}),
+        ("replay.divergence", {}),
+        ("agent.finished", {"reason": "submitted"}),
+        ("task.scored", {"reward": 1}),
+    ]
+    for kind, data in agentless:
+        view._on_event(run, event(kind, **data))
+    assert list(run.agents) == ["a"]
+    assert (run.agents["a"].step, run.agents["a"].ended) == (4, "submitted")
+
+    view._on_event(run, event("monitor.verdict", max_severity=1, summary="fine"))
+    assert rows() == ["monitor  flags 0  sweeps 0", "  verdict severity 1: fine"]
+    # a judge that gave no verdict leaves no call behind once the run ends
+    view._on_event(run, event("tool.call", name="flags", arguments="{}", model_call="j1"))
+    assert rows()[1] == "  judge > flags"
+    view._on_event(run, event("run.finished", status="completed"))
+    assert "judge >" not in " ".join(rows())

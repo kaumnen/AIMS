@@ -91,8 +91,9 @@ class _Run:
     failed: list[str] = field(default_factory=list)
     cost_cap: float | None = None
     monitor_cap: float | None = None
-    monitor_calls: set[str] = field(default_factory=set)
+    monitor_calls: dict[str, str] = field(default_factory=dict)
     monitor_cost: float = 0.0
+    judge_call: str = ""
 
 
 def flag_line(data: dict[str, Any], agent: str | None) -> str:
@@ -166,8 +167,8 @@ class LiveView:
             async for delta in sub:
                 self._on_delta(delta)
 
-    def _agent(self, run: _Run, agent_id: str | None) -> _Agent:
-        return run.agents.setdefault(agent_id or "-", _Agent())
+    def _agent(self, run: _Run, agent_id: str) -> _Agent:
+        return run.agents.setdefault(agent_id, _Agent())
 
     def _on_delta(self, d: Delta) -> None:
         run = self.runs.get(d.run_id)
@@ -182,14 +183,18 @@ class LiveView:
             a.reasoning = (a.reasoning + d.text)[-TAIL:]
 
     def _on_event(self, run: _Run, e: Event) -> None:
+        """Each agent's events go to its row. The monitor's model calls name no agent, so their
+        tool calls go to the monitor's rows: the judge's latest shows while it judges. An
+        agent's event that names no agent has no row to go to."""
         data = e.data
+        agent = e.agent_id
         if e.type == "model.request":
             run.models.setdefault(str(data.get("call_id")), str(data.get("model")))
         elif e.type == "model.response":
             self._served(run, data)
         match e.type:
             case "model.request" if data.get("role") is not None:
-                run.monitor_calls.add(str(data.get("call_id")))
+                run.monitor_calls[str(data.get("call_id"))] = str(data.get("role"))
                 if data.get("role") == "sweep":
                     run.sweeping.add(str(data.get("call_id")))
             case "model.response" if data.get("call_id") in run.monitor_calls:
@@ -206,6 +211,7 @@ class LiveView:
             case "monitor.verdict":
                 run.verdict = f"severity {data.get('max_severity')}: {_text(data.get('summary'))}"
                 run.failed = failed_lines(data)
+                run.judge_call = ""
             case "monitor.degraded":
                 note = f"monitor {data.get('part')}: {data.get('reason')}"
                 run.notes = [*run.notes, visible(note)][-SHOWN_NOTES:]
@@ -220,44 +226,48 @@ class LiveView:
                 run.phase = "sandbox"
             case "exec.started" if data.get("phase") in ("setup", "verifier"):
                 run.phase = str(data["phase"])
-            case "agent.started":
+            case "agent.started" if agent is not None:
                 run.phase = "agents"
-                a = self._agent(run, e.agent_id)
+                a = self._agent(run, agent)
                 steps = _cap(_at(data, "budget", "steps"))
                 a.steps_cap = None if steps is None else int(steps)
                 a.cost_cap = _cap(_at(data, "budget", "cost_usd"))
-            case "agent.step":
-                a = self._agent(run, e.agent_id)
+            case "agent.step" if agent is not None:
+                a = self._agent(run, agent)
                 a.step = int(_num(data.get("n")))
                 a.cost = _num(data.get("total_cost_usd"))
                 total = data.get("total")
                 if isinstance(total, dict):
                     a.tokens_in = int(_num(total.get("input_tokens")))
                     a.tokens_out = int(_num(total.get("output_tokens")))
-            case "tool.call":
-                a = self._agent(run, e.agent_id)
+            case "tool.call" if data.get("model_call") in run.monitor_calls:
+                # the judge's tools read the run; a sweep or a review offers none
+                if run.monitor_calls[str(data.get("model_call"))] == "judge":
+                    run.judge_call = f"{data.get('name')} {_args(data.get('arguments'))}"
+            case "tool.call" if agent is not None:
+                a = self._agent(run, agent)
                 args = data.get("arguments")
                 a.call = f"{data.get('name')} {_args(args)}"
                 a.result = ""
-            case "tool.result":
-                a = self._agent(run, e.agent_id)
+            case "tool.result" if agent is not None:
+                a = self._agent(run, agent)
                 out = data.get("output")
                 a.result = "(large output)" if isinstance(out, dict) else _short(out, ARGS)
                 a.result_error = bool(data.get("error"))
-            case "agent.report":
-                a = self._agent(run, e.agent_id)
+            case "agent.report" if agent is not None:
+                a = self._agent(run, agent)
                 a.reports += 1
                 message = data.get("message")
                 long = isinstance(message, dict)
                 a.last_report = "(long message)" if long else _short(message, ARGS)
-            case "replay.divergence":
-                self._agent(run, e.agent_id).divergences += 1
-            case "agent.finished":
-                a = self._agent(run, e.agent_id)
+            case "replay.divergence" if agent is not None:
+                self._agent(run, agent).divergences += 1
+            case "agent.finished" if agent is not None:
+                a = self._agent(run, agent)
                 a.ended = str(data.get("reason"))
                 a.cost = _num(data.get("cost_usd"))
-            case "task.scored":
-                a = self._agent(run, e.agent_id)
+            case "task.scored" if agent is not None:
+                a = self._agent(run, agent)
                 reward = data.get("reward")
                 a.reward = "none" if reward is None else f"{_num(reward):g}"
             case "sandbox.archived":
@@ -268,6 +278,7 @@ class LiveView:
             case "run.finished":
                 run.status = str(data.get("status"))
                 run.phase = "done"
+                run.judge_call = ""
 
     def _served(self, run: _Run, data: Mapping[str, Any]) -> None:
         """Note it when a second provider answers a model: a router moved the run's calls."""
@@ -369,7 +380,9 @@ class LiveView:
         return Text(line, style="dim")
 
     def _monitor_rows(self, run: _Run) -> list[RenderableType]:
-        if not (run.flags or run.sweeps or run.sweeping or run.notes or run.verdict):
+        if not (
+            run.flags or run.sweeps or run.sweeping or run.notes or run.judge_call or run.verdict
+        ):
             return []
         head = Text("monitor", style="bold magenta")
         head.append(f"  flags {run.flags}")
@@ -381,6 +394,8 @@ class LiveView:
         rows: list[RenderableType] = [head]
         rows += [Text(f"  ! {line}", style="magenta") for line in run.shown]
         rows += [Text(f"  {_short(note, TAIL)}", style="yellow") for note in run.notes]
+        if run.judge_call:
+            rows.append(Text(f"  judge > {_short(run.judge_call, ARGS)}", style="blue"))
         if run.verdict:
             rows.append(Text(f"  verdict {_short(run.verdict, TAIL)}", style="cyan"))
         rows += [Text(f"  {_short(line, TAIL)}", style="yellow") for line in run.failed]
