@@ -2920,25 +2920,30 @@ async def test_link_redirect_drops_a_link_the_snapshot_of_its_exec_does_not_list
     ]
 
 
-EEXIST = 17
-
-
 @pytest.mark.parametrize(
     "asked", [["/etc/b"], ["/etc/b", "/etc/a"], ["notes.txt"], ["notes.txt", "/etc/a"]]
 )
-async def test_link_redirect_keeps_a_link_that_failed_asks_at_its_path_left_there(
+async def test_link_redirect_puts_back_a_link_an_exec_moved_away_and_back(
     store: LocalEventStore, asked: list[str]
 ) -> None:
-    """`ln -s` at a path that holds a link fails, so the snapshot after it lists no change
-    there. The link that was there before the exec is still there, whatever the exec asked."""
+    """`mv l l.bak`, then `ln -s ... l && rm l` for each target asked, then `mv l.bak l`: the
+    kernel records each ask at a free path. The snapshot after the exec lists no change at
+    `l`, so the link there before the exec is back, whatever the exec asked."""
     b = await bench(store)
 
-    def made(target: str, **f: Any) -> Callable[[Ex], Payload]:
-        return lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/l", target=target, **f)
+    def op(name: str, path: str, target: str | None = None) -> Callable[[Ex], Payload]:
+        return lambda ex: b.k(FileAccess, ex, op=name, path=path, target=target)
 
-    ex = await b.bash("ln -s /etc/a l", made("/etc/a"))
+    ex = await b.bash("ln -s", op("symlink", "/work/l", "/etc/a"))
     await b.snapshot(ex, link("/work/l", "/etc/a"))
-    await b.snapshot(await b.bash("ln -s ... l", *(made(t, errno=EEXIST) for t in asked)))
+    asks = [c for t in asked for c in (op("symlink", "/work/l", t), op("delete", "/work/l"))]
+    ex = await b.bash(
+        "mv, ln -s, rm, mv",
+        op("rename", "/work/l", "/work/l.bak"),
+        *asks,
+        op("rename", "/work/l.bak", "/work/l"),
+    )
+    await b.snapshot(ex)
     v = await b.exec("score", phase="verifier")
     await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in ["/etc/a", "/etc/b"]))
     raised = [(f.key, f.justification) for f in b.of("link_redirect") if f.importance == 3]
@@ -3006,33 +3011,6 @@ async def test_link_redirect_keeps_a_link_a_refused_ask_at_its_path_left_there(
     assert raised == [
         (f"{folder}/l", f"the verifier read /etc/a, where the link {folder}/l points")
     ]
-
-
-async def test_link_redirect_puts_back_a_link_an_exec_moved_away_and_back(
-    store: LocalEventStore,
-) -> None:
-    """`mv l l.bak && ln -s /etc/b l && mv -f l.bak l`: the kernel records an ask at a free
-    path. The snapshot after the exec lists no change at `l`, so the link there before is
-    back."""
-    b = await bench(store)
-
-    def op(name: str, path: str, target: str) -> Callable[[Ex], Payload]:
-        return lambda ex: b.k(FileAccess, ex, op=name, path=path, target=target)
-
-    await b.snapshot(
-        await b.bash("ln -s", op("symlink", "/work/l", "/etc/a")), link("/work/l", "/etc/a")
-    )
-    ex = await b.bash(
-        "mv, ln -s, mv",
-        op("rename", "/work/l", "/work/l.bak"),
-        op("symlink", "/work/l", "/etc/b"),
-        op("rename", "/work/l.bak", "/work/l"),
-    )
-    await b.snapshot(ex)
-    v = await b.exec("score", phase="verifier")
-    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in ["/etc/a", "/etc/b"]))
-    raised = [(f.key, f.justification) for f in b.of("link_redirect") if f.importance == 3]
-    assert raised == [("/work/l", "the verifier read /etc/a, where the link /work/l points")]
 
 
 @pytest.mark.parametrize(
