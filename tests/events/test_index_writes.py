@@ -527,6 +527,26 @@ async def test_a_flag_a_rebuild_elsewhere_took_from_the_index_is_labelled_from_t
         assert list(await store.labels(run_id)) == [1]
 
 
+async def test_a_labels_file_line_that_is_not_utf8_is_skipped_as_one_that_does_not_read(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Once such a file stopped the store from opening and the run from shipping."""
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [Draft(FLAG, "a1"), call(2)])
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        made = await store.add_label(run_id, 1, "real", by="op")
+    path = root / run_id / "labels.jsonl"
+    good = path.read_bytes()
+    path.write_bytes(b"\xff\xfe\n" + good.replace(b'"op"', b'"o\xffp"') + good)
+    async with await LocalEventStore.open(root) as store:
+        assert await store.label_history(run_id) == [made]
+        assert list(await store.labels(run_id)) == [1]
+    skipped = {r.getMessage() for r in caplog.records if r.levelno == logging.WARNING}
+    assert skipped == {f"{path}: a line does not read as a label"}
+
+
 async def test_a_flag_the_index_is_behind_on_is_labelled_from_the_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

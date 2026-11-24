@@ -2351,13 +2351,14 @@ def _append_line(path: Path, line: bytes) -> None:
 
 
 def _read_labels(path: Path) -> list[Label]:
-    """The labels a run's labels file holds; lines that do not read are skipped."""
+    """The labels a run's labels file holds; lines that do not read are skipped, as UTF-8 or
+    as a label."""
     try:
-        text = path.read_text()
+        data = path.read_bytes()
     except OSError:
         return []
     out: list[Label] = []
-    for line in text.splitlines():
+    for line in data.splitlines():
         try:
             out.append(Label.model_validate_json(line))
         except ValueError:

@@ -1960,10 +1960,30 @@ def test_push_whose_hello_reply_does_not_load_ends_in_one_error_line(
 
 
 async def test_push_does_not_blame_the_control_plane_for_a_damaged_local_run(
-    cp: CP, tmp_path: Path
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A labels file that is not UTF-8 raises an error of the local side, which is a
-    ValueError too. It is not said as a reply of the control plane."""
+    """An error of the local side may be a ValueError too. It is not said as a reply of the
+    control plane."""
+    started = RunStarted(scenario="offline", oversight="observe", agents=["a"])
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(started)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        store.labels_path(run_id).write_bytes(b"\n")
+
+    def unread(path: Path) -> list[Any]:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr("aims.events.store._read_labels", unread)
+    env = {"AIMS_TOKEN": cp.runner}
+    r = await asyncio.to_thread(
+        CliRunner().invoke, app, ["push", str(tmp_path / "runs"), "--server", cp.url], env=env
+    )
+    assert "control plane" not in r.output
+    assert isinstance(r.exception, UnicodeDecodeError)
+
+
+async def test_push_ships_a_run_whose_labels_file_is_not_utf8(cp: CP, tmp_path: Path) -> None:
+    """Once it ended in a traceback."""
     started = RunStarted(scenario="offline", oversight="observe", agents=["a"])
     async with await LocalEventStore.open(tmp_path / "runs") as store:
         run_id = await store.create_run(started)
@@ -1973,8 +1993,9 @@ async def test_push_does_not_blame_the_control_plane_for_a_damaged_local_run(
     r = await asyncio.to_thread(
         CliRunner().invoke, app, ["push", str(tmp_path / "runs"), "--server", cp.url], env=env
     )
-    assert "control plane" not in r.output
-    assert isinstance(r.exception, UnicodeDecodeError)
+    assert r.exit_code == 0, (r.exception, r.output)
+    assert r.stdout == f"{run_id} completed 2 events\n"
+    assert await cp.state.store.run(run_id) is not None
 
 
 def test_a_token_file_that_holds_no_token_ends_in_one_error_line(
