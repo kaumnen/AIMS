@@ -9,6 +9,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Added
 
+- `GET /api/runs/{id}/samples` takes `order=seq`. It lists windows in the order the run logged them, so a reader can read on from the last one it has.
 - The glossary the monitor's models read can be changed in `[prompts.monitor.glossary]`, one entry per record type. An empty entry leaves that type out. Every record type a sweep may see has an entry, also one with no default text such as `run.finished`. The monitor's own record types have none.
 - Every text the monitor's models read can be changed in `[prompts.monitor]`: the judge's tool parameters and errors, the verdict and sweep schemas, the cut markers, the labels of quoted records, the notes for a cut-off answer or an unread blob and the headers of its prompts. The defaults are the texts as before. A monitor's identity changes only when one of these texts is set.
 - Every text an agent reads from its tools can be changed in the config, a scenario and the UI: the bash output labels, the edit tool's replies, each tool's parameter descriptions, the loop's tool errors and the cut marker `omitted`. The defaults are the texts as before. A runner refuses a job with a text it does not know, so runners need this version too.
@@ -52,7 +53,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - For contributors: the screenshot pass reads its profiles from `web/shots/aims.toml`. It copied `docs/pilot.toml`. `scripts/seed.py` records runs of placeholder models. Its self-test cases record scripted agents that call no model, as real ones do.
 - A score's awareness and answer checks run on the first profile in `[monitor] extract` whose weights no agent of the run runs, else on the sweep role. They ran on one of two built-in models. A cheap model in `[monitor] extract` keeps a score cheaper than the sweep model does. When no profile fits, the score runs without those checks. Its estimate says why and how to fix it, in `aims score`, in the app and in the new `checks_off` field of the estimate API. A profile in `[monitor] extract` must have structured output. A config that names one without it no longer loads. A scenario's `monitor: extract` is checked the same way before its run starts.
 - A role under `[roles]` may be unset. What needs an unset role stops before any container starts and says how to fix it: set the role in `aims.toml`, give the run a profile for the agent role, or use a signals-only monitor for the sweep and judge roles. A set sweep or judge role must still name a profile with structured output. `aims models list`, `aims config --merged` and Settings > Models name the unset roles. The New run form asks for a profile when an agent names none and no profile has the agent role. `GET /api/models` gives an unset role as null. In a scenario's overview an agent with no profile to run has a null `profile`. The scenario list's new `needs_profile` says that a run must pick a profile. `aims scenario check` names an agent's missing profile once.
-- The index moves to version 13. Each data directory rebuilds its index from the run logs the next time it opens.
+- The index moves to version 15. Each data directory rebuilds its index from the run logs the next time it opens.
 - The New run, Fork and Review forms say that no cap bounds the cost when that is why they ask for a yes. They said the high estimate was above the limit, even when it was under it.
 - For contributors: the tests sit in one folder per area under `tests/`. CI runs only the jobs a change needs, so a docs change runs no test and a web change runs no Python suite. A nightly run and each release run everything on Python 3.14 and 3.15. A pull request needs one check, `ci`. The new `CONTRIBUTING.md` has the rules.
 - The monitor's budget counts a sweep at about twice the tokens it did: 25,500 input tokens per lane and agent step at the default settings, where it counted 11,000. A `standard` monitor on a run of 72 steps read 23,500, so a budget said to cover 80 steps stopped the sweeps near step 55. The count now follows the sweep's `every`, `window`, `window_steps` and `collapse_tokens`, since a sweep that runs each step reads the trajectory five times as often. A run with no `limits.monitor_cost_usd` gets about twice the cap for the same steps. The cap is the most the monitor may spend. A model with a lighter tokenizer spends about half of it.
@@ -69,14 +70,17 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A run, fork, self-test or check that a runner takes may use a profile with `structured_output = false`. The runner failed such a job before it started when that profile came first in the job, with the error that role sweep needs structured output. A config file's sweep and judge roles still need structured output. The error for one that lacks it now names only that rule.
 - A tab opens a live connection of its own when the one its tabs share neither opens nor fails within 10 seconds. A browser can let the shared worker ask for the stream and never answer it, so the run page stayed on Starting with 0 steps.
 - The runs list, series page and models page read the server database with fewer, indexed queries. The server database moves to version 8. An older AIMS refuses the file.
-- In a fork of several agents, an agent takes its first step after the cut only once the others have replayed theirs. The run's step cap and the estimate's ceiling hold. An agent does not wait for one whose `start` waits on it. A replayed command that in the run waited on another agent's later action runs until its command timeout. It then gives the recorded output and logs a divergence.
-- A pause or an inject is refused once every agent it targets has finished, as while the judge runs. The API, `aims control` and the MCP `control` tool report the refusal.
+- In a fork of several agents, an agent takes its first step after the cut only once the others have replayed theirs, a scripted agent too. The run's step cap and the estimate's ceiling hold. An agent does not wait for one whose `start` waits on it. A replayed command that in the run waited on another agent's later action runs until its command timeout. An agent that calls a model then gives it the recorded output and logs a divergence. With `--strict` it ends.
+- A pause or an inject is refused once every agent it targets has finished, or once the agents' phase is over, as while the judge runs. A resume that injects counts as an inject. The API, `aims control` and the MCP `control` tool report the refusal.
 - A command that writes runs exits with an error on the runs folder of a control plane's data dir. Only the control plane writes there. Commands that only read runs still work there.
 - The control plane refuses a run or self-test whose scenario folder is over 1 GiB as a tar, the most a runner takes.
 - The first start after the update indexes every run again. Search then finds text inside blob-shaped mappings in metrics and HTTP headers of older runs.
 - The last step's Verifier section shows what the verifier ran and printed.
 - A run that ends with its page open reads again only the steps that can still change.
 - After an outage, a run's Raw tab and steps read on from where they were. They no longer read every page again.
+- The live run page reads only the resource windows and monitor sweeps that are new since its last poll. A two hour run moved about 7 MB every 3 s before.
+- The Score tab reads only the start of each score to name it in the list. It read every event of every score before. It shows the flags no plant explains 100 at a time, with Show more, so a score with hundreds of them opens faster.
+- `link_redirect` moves to version 7, `credential_flow` and `joint_action` to version 4 and `deny_retry` to version 2.
 
 ### Removed
 
@@ -165,60 +169,65 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims monitor` warns of each monitor profile with no price, as `aims run` does. The review estimate in the API lists them in `unpriced`.
 - The live view of `aims run` shows each monitor note on one line, cut to a set length. A long or multi-line provider name from an answer no longer fills the screen.
 - A yes or no question asks again when the answer is not UTF-8. On Python 3.14 outside UTF-8 mode it ended with a traceback. An `AIMS_TOKEN` that holds a character a token cannot have ends with a one-line error, as `--token-file` does.
-- A score whose verifier timed out says so in its error when its reward file has a note too, such as one cut for size.
+- A score whose verifier did not end on its own, such as one that timed out, says so in its error beside the reward file's own error, such as no reward written or a file cut for size.
 - A large `reward.json` is read off the event loop. The live view, the monitor and the agents still running no longer stall for up to most of a second while a score reads it.
 - An agent's `output_tokens` cap and its usage count the tokens of a failed attempt the provider billed, as its cost already did.
-- A token count past 2^53 in an answer counts as none. The call's answer and cost are logged. The agent goes on. An agent's token totals stop at that bound.
-- A job queued before an upgrade that drops a profile field still runs. The control plane reads it as stored and leaves the old key out.
-- A model call that a stop, a kill or the judge's timeout cancels while it retries keeps what its attempts cost. The monitor's spend, a score's purse and an agent's cost no longer drop a billed failure before the cut.
-- A fork of an agent that compacts by summary no longer ends in an error during its replay on a profile with a smaller context. It compacts where the origin did until it goes live.
+- A fork stops and warns where its run did while it replays or keeps the run's answers. Its caps and budget warnings count what the run recorded after each step. A fork of a run with a budget warning before the cut failed its replay. A fork of a run an older AIMS recorded could stop on its output token cap during the replay.
+- A token count below 0 or past 2^53 in an answer counts as none. The call's answer and cost are logged. The agent goes on. An agent's token totals stop at 2^53, as do the counts a compaction logs.
+- A job queued before an upgrade that drops a profile field still runs, a score job's classifier too. The control plane and the runner read it as stored and leave the old key out.
+- A model call that a stop, a kill, the wall limit or the judge's timeout cancels keeps what its attempts cost, also an attempt being logged as the cancel lands. The cut attempt counts against the cost caps at what it was planned to cost, as a failed attempt with no cost does. The monitor's spend, a score's purse and an agent's cost no longer drop a billed failure before the cut.
+- A fork whose live profile has another context size than the origin's no longer ends in an error while it replays or keeps the origin's answers. It compacts where the origin did, by trim or summary, until it goes live. A kept agent whose summary request the recording lacks goes live, as it does for a step.
 - A fork's estimate from runs of other scenarios no longer counts the steps of their scripted agents.
 - `GET /api/runs/{id}/projection` counts what an agent's failed last call cost.
 - A fork of a run whose provider gave two tool calls of one reply the same id, or none, replays each call with its own output. A step with a result for only one of them no longer counts as whole.
-- `aims spend` and the estimate no longer count a recorded cost below 0 or more cached tokens than input. They read each run's log again once to apply this.
-- `link_redirect` no longer keeps a link that one command asked for twice and then removed. A later verifier read of its target raised a false flag.
+- `aims spend` and the estimate no longer count a recorded cost below 0, a token count below 0 or more cached tokens than input. They read each run's log again once to apply this.
+- `link_redirect` no longer keeps a link that one command asked for twice and then removed. A later verifier read of its target raised a false flag. It no longer forgets a link when a later command asks for another link at its path and the ask fails, as `ln -s` does on a path that is taken. A verifier read through it was then not raised.
 - The judge's `file_history` tool reads a snapshot's change list of any size. A list over 4 MiB was skipped whole, about 17,000 changed files in one command.
 - `credential_flow` and `joint_action` count a read of a shared-folder file as an exchange however long after the write. A read more than 300 s after the write counted for nothing. A path keeps its writers while its last write is within the window or while it is among the 4096 paths written last.
 - `credential_flow` and `joint_action` keep the poster of every board message. A read of a message more than 4096 behind the newest exchanged with no one.
 - The judge's system prompt says what `stdout_tail`, `stderr_tail`, `stdout_omitted` and `stderr_omitted` hold in an `exec.finished` event.
-- The judge's `events` tool shows a long event in its shortest form. A `run.started` event could fill 3,000 to 5,000 tokens of one tool output. The crew replay fixture's monitor run is recorded again for it.
+- The judge's `events` tool cuts a long event further while its row is over 3,000 characters, down to its shortest form. A `run.started` event could fill 3,000 to 5,000 tokens of one tool output. The crew replay fixture's monitor run is recorded again for it.
 - The monitor warns when a blob read skips JSON lines over the line cap.
-- The `deny_retry` signal no longer keeps every word an agent sends. It reads the agent's earlier calls when a call is denied.
+- The `deny_retry` signal no longer keeps every word an agent sends. It reads the agent's earlier calls when a call is denied, newest first, up to 2,000,000 characters. A word only an older call holds counts as the denied call's own.
 - `aims images prune` goes on past an image whose delete reply Docker cuts. It still lists the images it removed.
 - A tracer, sampler or kill exec whose Docker connection drops fails with that reason. It no longer reads as an exec that ended with part of its output.
-- AIMS takes `DOCKER_HOST` over the current docker context, as the docker CLI does. Docker Desktop users who set `DOCKER_HOST` reached the local daemon before.
-- A blob file sent as more than 4096 zstd frames is refused with that reason.
+- AIMS takes `DOCKER_HOST` over `DOCKER_CONTEXT` and the current docker context, as the docker CLI does. Docker Desktop users who set `DOCKER_HOST` reached the local daemon before.
+- A blob file sent as more than 4096 zstd frames is refused with that reason, unless it is the blob as is.
 - An inject text over 1 MiB no longer stops a runner's command feed. The feed takes events up to 16 MiB.
-- The runner API refuses a lone surrogate in any text field with a 422. One in a runner's hello or status made the Runners page answer 500.
-- A job row whose stored payload or tried list has the wrong shape no longer stops dispatch or makes the run list answer 500.
-- `aims run --server` and `aims monitor --server` ship the runs they seal as failed when the control plane holds them. Before, the control plane showed such a run as running until `aims push`.
+- The runner API refuses a lone surrogate in any text field with a 422. It refuses one in a truth file too. One in a runner's hello or status made the Runners page answer 500. One in a truth file was answered 500 at each try, so its runner sent it again without end.
+- A job row whose stored payload, tried list or needs is damaged no longer stops dispatch or makes the run list answer 500. A job whose needs cannot be read waits in the queue.
+- A linked `aims run` or `aims monitor` ships the runs it seals as failed when the control plane holds them, waiting at most 30 s. Before, the control plane showed such a run as running until `aims push`.
 - A control plane killed after it kept a run's truth file and before it queued the score the run asked for shows that score as not started, with the reason. It starts none by itself.
 - A run whose local copy lacks a blob its log names stops shipping with one error line. `aims push` goes on to the next run instead of ending in a traceback.
-- A profile `extra` table or `headers` shaped as a blob reference no longer stops a run from shipping. Nor does a scenario value of that shape, such as a plugin's options.
+- A value a person wrote that is shaped as a blob reference no longer stops a run from shipping. This covers a profile's `extra` table or `headers`, a plugin channel's options and a plugin signal's options in the monitor config. A run's start names blobs only for the scenario's inputs and a channel's restored files.
 - The activity of one exec and the costs of a run read only their own rows of the index. One exec in a run of 200,000 events takes 0.1 ms, down from 40 ms.
 - A pause review of a run whose index is far behind reads the log from near the cited calls. A cancelled read stops reading the log.
 - The steps of a run keep their tool calls while another process drops the run or resets the index.
 - A delete or a keep-days prune no longer takes a run without its monitor runs and scores while another process resets the index. The delete answers 503 until the index holds them again.
 - A pause review and a replay check get the events a lagging index lacks with no gap while another process resets the index.
-- A score, report, estimate or self-test that reads a whole run reads it again once when the index changes under it. A second change stops it with an error. It no longer works on part of the run.
+- A score, report, estimate or self-test that reads a whole run reads it again once when the index changes under it. A second change stops it with an error.
+- A plant check or a score of a sealed run waits for an index that is behind its log. If the index stays behind, it fails with an error and makes no score. `aims score` and `aims run --score` could seal a score on part of the run.
 - A read the index changed under answers 503 with `Retry-After`, as for a run not indexed yet. It answered 500. Rates, a review's price estimate and a report's list of reviews leave out a run deleted while they read it. A monitor rerun whose origin changes while it reads it fails.
-- A run written here is indexed again at once when a read finds that another aims version reset the index of the folder.
-- The run's end and the next run of a series read the agents' ends and the folder archives from the log too while the index is behind it. So do the monitor table at the end of `aims run` and `aims monitor` and the streamed text a viewer sees.
+- A run written or received here is indexed again at once when a read finds that another process reset the index of the folder, as another aims version does at its start. A list of runs and a read of a run's events or steps find this too.
+- The run's end and the next run of a series read the agents' ends and the folder archives from the log too while the index is behind it. So does the monitor table at the end of `aims run` and `aims monitor`.
+- The control plane drops a call's streamed text once its response is in the log, also while its index is behind.
 - The error of a run whose log lost an event the index recorded says how to build the index again. `docs/runs.md` says it too.
 - A run page on the stream that tabs share follows its run again after the stream reconnects.
 - A tab opened by `aims ui` or `aims open` for another identity no longer rides the shared stream of the old session.
-- A tab on the sign-in form lets you in once you sign in in another tab.
-- The "Cannot reach the control plane" screen tries again by itself and when the tab comes back.
-- An unsaved edit survives a session that ends under it if the same identity signs in again. It also survives a time the control plane is out of reach. Someone else starts from nothing, with no glimpse of the last session.
+- A tab on the sign-in form lets you in when it comes back into view after you sign in in another tab.
+- The "Cannot reach the control plane" screen tries again by itself. It tries at once when the tab comes back or the browser goes online.
+- An unsaved edit survives a session that ends under it if the same identity signs in again. It also survives a time the control plane is out of reach. While the sign-in form or the outage screen shows, a reload, a tab close or Back asks before it drops the edit. Someone else starts from nothing, with no glimpse of the last session.
 - A Raw tab left while a page loads no longer misses the run's last events when you come back.
-- A model check cancelled before it started no longer shows as checking. The page stops polling for it.
-- The Raw tab reads earlier events only once you scroll up. A list whose reads moved the view from end to end read without end.
+- A model check cancelled before it started no longer shows as checking when the stream misses its end. The page stops polling for it.
+- The Raw tab reads earlier events only once you scroll up. A list whose reads moved the view from end to end read without end. At the top of the list, a wheel up or ArrowUp reads them. First and Home read from the run's first event.
 - A Raw tab search on a live run no longer goes blank after about 50 event batches.
 - The Raw tab no longer reads one extra page after it lets the oldest page go.
 - Completion and hover in a scenario file work on lines after a lone CR. The Problems list names each line as the editor numbers it.
 - A run of another scenario started from a scenario page with unsaved changes no longer says it uses the saved files.
 - A Markdown download still running stops when the report shows another source.
 - The fork form no longer says the run ended when one agent's tool calls never returned.
+- A score with more than about 990 flags no plant explains lost its later flags on the Score tab. It also lost its end, so a failed or cancelled score showed as finished. The tab now reads the score to its end.
+- A runner that closes as an offer or command arrives no longer warns of a coroutine never awaited.
 - A viewer refused a run of a kind this version does not know is told so.
 
 ### Security
@@ -237,7 +246,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `GET /api/openapi.json` needs a viewer or operator token. It answered without one and named the AIMS version. An API client that reads the schema now sends its token.
 - The image ships opentelemetry-api 1.45.2, a dependency of FastAPI. It fixes CVE-2026-126360, a denial of service through slow `traceparent` parsing.
 - The scenario page leaves out the scenario.yaml tag for viewers.
-- A runner does not fully trust its control plane. It reads at most 1 GiB of each job input, its scenario folder included. It reads no more of the reply than a file of that size. It reads at most 16 MiB of any other reply, error body or truth file. Past a cap the job fails and says so.
+- A runner does not fully trust its control plane. It reads at most 1 GiB of each job input, its scenario folder included. It reads no more of the reply than a file of that size. It reads at most 16 MiB of any other reply, error body or truth file. A job input or truth file past its cap fails the job with the reason. A hello reply past its cap is tried again. Status and deltas go on after one. A claim reply past its cap, or one that does not load, hands the job back with the reason.
 
 ## [0.2.3] - 2026-11-14
 
