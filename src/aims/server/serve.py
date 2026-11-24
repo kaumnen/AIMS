@@ -30,7 +30,7 @@ from aims.report.escape import visible
 from aims.server.app import create_app
 from aims.server.db import UI_TOKEN, Token, new_token
 from aims.server.state import CODE_TTL_S, close_state, open_state
-from aims.terminal import on_hangup, on_stop
+from aims.terminal import on_hangup, on_stop, say_reindex
 
 log = logging.getLogger("aims.server")
 
@@ -340,12 +340,6 @@ def in_use_by(data: Path) -> str:
     if isinstance(url, str) and url:
         return f"the data dir {data} is in use by the `aims ui` on {url}"
     return f"the data dir {data} is in use by another `aims ui`"
-
-
-def say_reindex(runs: int, upgrade: bool) -> None:
-    """Say why the address takes a while: indexing 138 runs again took 78 s in a test."""
-    why = ", once after an upgrade" if upgrade else ""
-    print(f"indexing {runs} run{'s' * (runs != 1)}{why}", file=sys.stderr)
 
 
 async def _serve(o: UiOptions, sockets: list[socket.socket]) -> int:

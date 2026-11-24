@@ -2474,7 +2474,7 @@ def runner_cmd(
     from aims.node.service import NoBackend, Node, NodeOptions, Refused
     from aims.node.service import data_dir as default_dir
     from aims.sandbox import AuditMode
-    from aims.terminal import VisibleLog, on_hangup, on_stop
+    from aims.terminal import VisibleLog, on_hangup, on_stop, say_reindex
 
     handler = logging.StreamHandler()
     handler.setFormatter(VisibleLog("%(levelname)s %(name)s: %(message)s"))
@@ -2502,6 +2502,11 @@ def runner_cmd(
     if by_ui:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+    def reindex(folder: str, runs: int, upgrade: bool) -> None:
+        # under `aims ui` this comes after its address, and after its own line for its runs
+        what = "copied run" if folder == "origins" else "run"
+        say_reindex(runs, upgrade, what=what, who="the local runner" if by_ui else None)
+
     async def main() -> None:
         node = Node(
             NodeOptions(
@@ -2514,6 +2519,7 @@ def runner_cmd(
                 image_keep_days=image_days,
                 verify=True if tls_ca is None else str(tls_ca),
                 audit=mode,
+                on_reindex=reindex,
             )
         )
         stop = asyncio.Event()

@@ -139,6 +139,15 @@ def _say(text: str) -> None:
         print(text, file=sys.stderr)
 
 
+def say_reindex(runs: int, upgrade: bool, *, what: str = "run", who: str | None = None) -> None:
+    """Say why a start or a command takes a while: indexing 138 runs again took 78 s in a
+    test. `what` names the runs. `who` names the process when another one prints in the same
+    terminal, as the local runner of `aims ui` does."""
+    why = ", once after an upgrade" if upgrade else ""
+    line = f"indexing {runs} {what}{'s' * (runs != 1)}{why}"
+    _say(line if who is None else f"{who} is {line}")
+
+
 def on_stop(
     loop: asyncio.AbstractEventLoop,
     then: Callable[[], object],

@@ -2486,6 +2486,60 @@ async def test_aims_ui_says_it_indexes_the_runs_again_after_an_upgrade(
     assert capsys.readouterr().err == "indexing 1 run, once after an upgrade\n"
 
 
+@pytest.mark.parametrize("by_ui", [False, True])
+def test_the_runner_says_it_indexes_its_runs_again_after_an_upgrade(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by_ui: bool
+) -> None:
+    """The local runner was silent for the 32 s it took to index 32 runs again, after the
+    address of `aims ui`. Its copies of other runners' runs are indexed again too."""
+    data = tmp_path / "runner"
+
+    async def made() -> None:
+        for folder, runs in (("runs", 2), ("origins", 1)):
+            async with await LocalEventStore.open(data / folder) as store:
+                for _ in range(runs):
+                    run_id = await store.create_run(
+                        RunStarted(scenario="demo", oversight="observe", agents=["a"])
+                    )
+                    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+            with contextlib.closing(sqlite3.connect(data / folder / "index.sqlite")) as db:
+                db.execute(f"pragma user_version = {INDEX_VERSION - 1}")
+                db.commit()
+
+    asyncio.run(made())
+
+    async def no_docker(**kw: object) -> NoReturn:
+        raise RuntimeError("no Docker here")
+
+    monkeypatch.setattr(DockerBackend, "open", no_docker)
+    # A runner of `aims ui` reads its stdin and ignores signals; neither may outlast the test
+    read_end, write_end = os.pipe()
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    previous = [signal.getsignal(sig) for sig in signals]
+    stdin = os.dup(0)
+    os.dup2(read_end, 0)
+    os.close(read_end)
+    try:
+        r = CliRunner().invoke(
+            app,
+            ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(data)],
+            env={"AIMS_TOKEN": "x", UI_RUNNER: "1" if by_ui else "0"},
+        )
+    finally:
+        for sig, handler in zip(signals, previous, strict=True):
+            signal.signal(sig, handler)
+        os.dup2(stdin, 0)
+        os.close(stdin)
+        os.close(write_end)
+    who = "the local runner is " if by_ui else ""
+    assert (r.exit_code, r.stderr) == (
+        1,
+        f"{who}indexing 2 runs, once after an upgrade\n"
+        f"{who}indexing 1 copied run, once after an upgrade\n"
+        "error: cannot start the sandbox backend: no Docker here\n",
+    )
+
+
 def test_a_data_dir_on_a_file_system_without_locks_is_used_with_a_warning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

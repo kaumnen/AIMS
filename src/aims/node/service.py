@@ -8,8 +8,10 @@ import logging
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import IO
 
@@ -117,6 +119,10 @@ class NodeOptions:
     transport: httpx2.AsyncBaseTransport | None = None
     model_transport: httpx2.AsyncBaseTransport | None = None
     backend: DockerBackend | None = None
+    # Told before the runner indexes a folder of its runs again, which can take minutes: the
+    # folder ("runs", or "origins" for copies of other runners' runs), how many runs, and
+    # whether an upgrade is why
+    on_reindex: Callable[[str, int, bool], object] | None = None
 
 
 class Refused(Exception):
@@ -191,9 +197,16 @@ class Node:
     async def run(self, stop: asyncio.Event) -> None:
         o = self.options
         await asyncio.to_thread(o.data.mkdir, parents=True, exist_ok=True)
+        told = o.on_reindex
+
+        def tell(folder: str) -> Callable[[int, bool], object] | None:
+            return None if told is None else partial(told, folder)
+
         async with (
-            await LocalEventStore.open(o.data / "runs") as store,
-            await LocalEventStore.open(o.data / "origins", ingest_only=True) as origins,
+            await LocalEventStore.open(o.data / "runs", on_reindex=tell("runs")) as store,
+            await LocalEventStore.open(
+                o.data / "origins", ingest_only=True, on_reindex=tell("origins")
+            ) as origins,
         ):
             sealed = await seal_unsealed(store)
             if sealed:
