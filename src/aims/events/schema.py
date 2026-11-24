@@ -148,8 +148,16 @@ SCENARIO_INPUTS = frozenset({"file", "files", "verifier", "context"})
 
 def blob_sizes(kind: object, data: Any) -> Iterator[tuple[str, Any]]:
     """The sha256 and the stated size of each blob reference in `data`, the data of an event of
-    type `kind`. Its Opaque fields hold none. A run.started holds only those AIMS made there;
-    see `_started`. A sha256 or a size of a hand-made log may be any JSON value."""
+    type `kind`; see `blob_mappings`. A sha256 or a size of a hand-made log may be any JSON
+    value."""
+    for ref in blob_mappings(kind, data):
+        yield ref["sha256"], ref["size"]
+
+
+def blob_mappings(kind: object, data: Any) -> Iterator[Mapping[str, Any]]:
+    """The blob references in `data`, the data of an event of type `kind`, as the mappings that
+    hold them. Its Opaque fields hold none. A run.started holds only those AIMS made there;
+    see `_started`."""
     if kind == "run.started":
         yield from _started(data)
         return
@@ -162,7 +170,7 @@ def blob_sizes(kind: object, data: Any) -> Iterator[tuple[str, Any]]:
         yield from _refs(data)
 
 
-def _started(data: Any) -> Iterator[tuple[str, Any]]:
+def _started(data: Any) -> Iterator[Mapping[str, Any]]:
     """The blob references in the data of a run.started, in the order they appear: the inputs
     of `config.scenario` and the `restored` archive of each of `channels`. AIMS makes no other.
     The rest is the run's config, much of it what a person wrote: the scenario as resolved, a
@@ -176,17 +184,17 @@ def _started(data: Any) -> Iterator[tuple[str, Any]]:
             if isinstance(scenario, Mapping):
                 for name, ref in scenario.items():
                     if name in SCENARIO_INPUTS and is_blob_ref(ref):
-                        yield ref["sha256"], ref["size"]
+                        yield ref
         elif key == "channels" and isinstance(value, list):
             for channel in value:
                 ref = channel.get("restored") if isinstance(channel, Mapping) else None
                 if ref is not None and is_blob_ref(ref):
-                    yield ref["sha256"], ref["size"]
+                    yield ref
 
 
-def _refs(value: Any) -> Iterator[tuple[str, Any]]:
+def _refs(value: Any) -> Iterator[Mapping[str, Any]]:
     if is_blob_ref(value):
-        yield value["sha256"], value["size"]
+        yield value
     elif isinstance(value, Mapping):
         for item in value.values():
             yield from _refs(item)

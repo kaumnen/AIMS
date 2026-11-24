@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import shutil
 import time
@@ -20,6 +21,7 @@ from aims.events import (
     AgentStarted,
     AgentStep,
     BlobRef,
+    ChannelInfo,
     Draft,
     Event,
     ExecFinished,
@@ -1035,6 +1037,43 @@ async def test_a_score_whose_metrics_look_like_a_blob_shows_them_as_they_are(
     assert row["score"]["metrics"] == metrics
     out = await tool(judge, "events", from_seq=run.seqs["forged"])
     assert out["events"][0]["data"]["metrics"] == metrics
+
+
+@pytest.mark.parametrize("pad", [0, 6000])
+async def test_a_run_started_shows_as_blobs_only_the_inputs_aims_made_there(
+    store: LocalEventStore, pad: int
+) -> None:
+    """A plugin signal's option in the monitor config is shaped as a blob reference. It once
+    showed to the judge as a missing blob. `pad` makes the row long enough to be shortened."""
+    task, archive = b"Fix wordcount so the tests pass.", b"channel archive"
+    file, restored = (
+        BlobRef(sha256=hashlib.sha256(b).hexdigest(), size=len(b)) for b in (task, archive)
+    )
+    forged = {"sha256": "ef" * 32, "size": 9}
+    options = {"marker": forged}
+    config: dict[str, Any] = {
+        "scenario": {"file": file.model_dump(), "resolved": {"monitor": forged}},
+        "monitor": {"config": {"signals": {"plugin": {"options": options}}}},
+        "pad": "x" * pad,
+    }
+    channel = ChannelInfo(name="c", kind="folder", members=[AGENT], restored=restored)
+    started = RunStarted(
+        scenario="t", oversight="observe", agents=[AGENT], channels=[channel], config=config
+    )
+    run_id = await store.create_run(started, blobs=[task, archive])
+    judge = make_judge(store, Run(store, run_id), Script())
+    [row] = (await tool(judge, "events", from_seq=0, to_seq=0))["events"]
+    data = row["data"]
+    assert data["config"]["monitor"]["config"]["signals"]["plugin"]["options"] == options
+    assert data["config"]["scenario"]["resolved"] == {"monitor": forged}
+    assert data["config"]["scenario"]["file"] == {
+        "blob": file.sha256,
+        "size": 32,
+        "head": task.decode(),
+    }
+    [shown] = data["channels"]
+    assert shown["restored"]["blob"] == restored.sha256
+    assert shown["restored"]["head"] == archive.decode()
 
 
 @pytest.mark.parametrize("forged", FORGED)

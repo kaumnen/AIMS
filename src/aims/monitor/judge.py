@@ -13,7 +13,7 @@ import math
 import random
 import secrets
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import groupby
@@ -50,7 +50,7 @@ from aims.events import (
     payload_type,
 )
 from aims.events.blobs import Part
-from aims.events.schema import format_ts, is_blob_ref, opaque_fields
+from aims.events.schema import blob_mappings, format_ts, is_blob_ref
 from aims.models import (
     Item,
     Message,
@@ -606,18 +606,22 @@ class Reader:
         keys: int | None = None,
         nested: bool = False,
         kind: str | None = None,
-        refs: bool = True,
+        refs: Container[int] | None = None,
     ) -> Any:
         """`value` with each text cut to `chars` characters and each list to `items` items.
         With `keys`, an object inside it keeps that many keys and counts the rest under
         `more_keys`; `value` itself keeps every key, as an event's payload has a fixed set. A
         blob shows as its hash and size with the head of its text, or the end of it under a
         key that names a tail, where the last lines say how a command ended. `value` is the
-        data of an event of type `kind`: a mapping in one of its Opaque fields, or with `refs`
-        false, shows as it is, however much it looks like a blob reference."""
+        data of an event of type `kind`. Only the mappings `blob_mappings` names in it are
+        blobs; `refs` holds their ids. Any other mapping shows as it is, however much it looks
+        like a blob reference, such as one in an Opaque field or one a person wrote in a
+        run.started."""
+        if refs is None:
+            refs = {id(m) for m in blob_mappings(kind, value)}
         if isinstance(value, str):
             return self.clip(value, chars)
-        if refs and is_blob_ref(value):
+        if isinstance(value, Mapping) and id(value) in refs:
             size = value["size"]
             ref: dict[str, Any] = {"blob": value["sha256"], "size": size}
             if key not in NO_HEAD and type(size) is int and size <= HEAD_BLOB:
@@ -629,18 +633,8 @@ class Reader:
         if isinstance(value, Mapping):
             kept = [(k, v) for k, v in value.items() if v is not None]
             shown = kept[:keys] if nested and keys is not None else kept
-            opaque = opaque_fields(kind)
             out: dict[str, Any] = {
-                k: await self.compact(
-                    run_id,
-                    v,
-                    chars,
-                    items,
-                    k,
-                    keys=keys,
-                    nested=True,
-                    refs=refs and k not in opaque,
-                )
+                k: await self.compact(run_id, v, chars, items, k, keys=keys, nested=True, refs=refs)
                 for k, v in shown
             }
             if len(kept) > len(shown):
