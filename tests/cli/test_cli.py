@@ -94,6 +94,9 @@ def test_the_json_help_names_the_judges_start(command: str, last: str) -> None:
     r = CliRunner().invoke(app, [command, "--help"], env={"COLUMNS": "1000"})
     (line,) = [line for line in r.output.splitlines() if "Print JSON lines" in line]
     assert f"sweeps, the judge's start, verdicts, {last}" in line
+    # the lines of type estimate, cleared and degraded, which the help once left out
+    assert "estimate" in line
+    assert "actions, cleared flags, parts of the monitor that stopped, sweeps" in line
 
 
 def test_help_shows_no_type_for_a_flag() -> None:

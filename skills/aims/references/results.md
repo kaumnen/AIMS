@@ -25,7 +25,7 @@ Monitor runs and score runs are runs too, with their own ids. They point at the 
 01a1a296-a3d1-75c2-bee1-7387fd5241a7 completed $0.0000
 ```
 
-`aims run --json` prints JSON lines instead: monitor flags, actions, sweeps, the judge's start, verdicts, results and scores.
+`aims run --json` prints JSON lines instead: the estimate, monitor flags, actions, cleared flags, parts of the monitor that stopped, sweeps, the judge's start, verdicts, results and scores. Each line names its kind in `type`.
 
 ## Read a run
 
