@@ -1620,6 +1620,30 @@ async def test_config_edits_keep_comments_and_need_the_current_etag(cp: CP) -> N
         assert [x["layer"] for x in info["layers"]] == ["user", "project"]
 
 
+async def test_two_config_patches_at_once_both_land(cp: CP) -> None:
+    """Once a patch read the layer before it took the layer's lock. With `If-Match: *` the
+    later of two patches then wrote its own copy over the other's keys."""
+    star = {"If-Match": "*"}
+    async with cp.client(cp.operator) as c:
+        r = await c.put(
+            "/api/config/user",
+            json={"text": "[credits]\nexample = 1\n"},
+            headers={"If-None-Match": "*"},
+        )
+        assert r.status_code == 200, r.text
+        patches = [
+            {"set": [{"key": ["prompts", "system"], "value": "mine"}]},
+            {"set": [{"key": ["credits", "example"], "value": 2}]},
+        ]
+        both = await asyncio.gather(
+            *(c.patch("/api/config/user", json=p, headers=star) for p in patches)
+        )
+        assert [r.status_code for r in both] == [200, 200], [r.text for r in both]
+        text = (await c.get("/api/config/user")).json()["text"]
+    assert 'system = "mine"' in text
+    assert "example = 2" in text
+
+
 @contextlib.contextmanager
 def read_only(path: Path) -> Generator[None]:
     mode = path.stat().st_mode
@@ -1761,7 +1785,7 @@ async def test_config_routes_read_and_load_files_off_the_event_loop(
         patch = {"set": [{"key": ["credits", "example"], "value": 2}]}
         r = await c.patch("/api/config/user", json=patch, headers={"If-Match": r.headers["ETag"]})
         assert r.status_code == 200, r.text
-    assert (len(threads["_problem"]), len(threads["read_or_none"])) == (2, 6)
+    assert (len(threads["_problem"]), len(threads["read_or_none"])) == (2, 5)
     assert loop not in threads["_problem"] + threads["read_or_none"]
 
 

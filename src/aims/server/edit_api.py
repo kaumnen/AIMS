@@ -8,6 +8,7 @@ import secrets
 import shutil
 import tomllib
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
@@ -246,12 +247,20 @@ def _lock(path: Path) -> asyncio.Lock:
 
 
 async def _save(
-    state: ServerState, layer: Layer, text: str, if_match: str | None, if_none_match: str | None
+    state: ServerState,
+    layer: Layer,
+    text: str | Callable[[bytes | None], str],
+    if_match: str | None,
+    if_none_match: str | None,
 ) -> Response:
+    """Write a layer's text. A callable makes the text from the file as it is under the lock, so
+    two edits at once both land."""
     path = _path(state, layer)
-    data = text.encode()
     async with _lock(path):
         current = await asyncio.to_thread(read_or_none, path)
+        if not isinstance(text, str):
+            text = text(current)
+        data = text.encode()
         check_match(current, if_match, if_none_match)
         await asyncio.to_thread(_validate, state, layer, text)
         with writing(path):
@@ -521,30 +530,37 @@ async def patch_config(
     """Set or unset keys in a layer, keeping its comments and order."""
     note.detail = _keys([c.key for c in body.set], body.unset)
     path = _path(state, layer)
-    current = await asyncio.to_thread(read_or_none, path)
-    try:
-        doc = tomlkit.parse(STARTER if current is None else current.decode())
-    except UnicodeDecodeError:
-        raise ProblemException(422, "Invalid request", f"{path} is not UTF-8") from None
-    except tomlkit.exceptions.ParseError as e:
-        error = ProblemError(msg=str(e), line=e.line)
-        raise ProblemException(
-            422, "Not TOML", f"{path}: {e}", code="toml", errors=[error]
-        ) from None
-    for change in body.set:
-        name = ".".join(change.key)
-        table = _table(doc, change.key[:-1], create=True)
-        if table is None:
-            raise ProblemException(422, "Invalid request", f"{name}: a part of it is not a table")
+
+    def patched(current: bytes | None) -> str:
         try:
-            table[change.key[-1]] = _value(change.value)
-        except tomlkit.exceptions.ConvertError:
-            raise ProblemException(422, "Invalid request", f"{name}: TOML has no null") from None
-    for key in body.unset:
-        table = _table(doc, key[:-1], create=False)
-        if table is not None and key and key[-1] in table:
-            del table[key[-1]]
-    return await _save(state, layer, tomlkit.dumps(doc), if_match, if_none_match)
+            doc = tomlkit.parse(STARTER if current is None else current.decode())
+        except UnicodeDecodeError:
+            raise ProblemException(422, "Invalid request", f"{path} is not UTF-8") from None
+        except tomlkit.exceptions.ParseError as e:
+            error = ProblemError(msg=str(e), line=e.line)
+            raise ProblemException(
+                422, "Not TOML", f"{path}: {e}", code="toml", errors=[error]
+            ) from None
+        for change in body.set:
+            name = ".".join(change.key)
+            table = _table(doc, change.key[:-1], create=True)
+            if table is None:
+                raise ProblemException(
+                    422, "Invalid request", f"{name}: a part of it is not a table"
+                )
+            try:
+                table[change.key[-1]] = _value(change.value)
+            except tomlkit.exceptions.ConvertError:
+                raise ProblemException(
+                    422, "Invalid request", f"{name}: TOML has no null"
+                ) from None
+        for key in body.unset:
+            table = _table(doc, key[:-1], create=False)
+            if table is not None and key and key[-1] in table:
+                del table[key[-1]]
+        return tomlkit.dumps(doc)
+
+    return await _save(state, layer, patched, if_match, if_none_match)
 
 
 def _keys(set_: list[list[str]], unset: list[list[str]]) -> str | None:
