@@ -1274,6 +1274,53 @@ async def test_hash_budget_goes_to_the_smallest_files_first(
     assert last.unhashed == 10
 
 
+# aims-snap takes a snapshot, a file is rewritten at the same size at once, and the next
+# snapshot must give the file's new hash. Then a snapshot with no room to hash must report no
+# change for a file left alone. It asks for no contents, so each change is a line, the path,
+# then the end line on the path's line.
+REWRITES = r"""
+mkdir /race /race/d && mkfifo /race/in /race/out || exit 2
+/reader/aims-snap /w=/race/d < /race/in > /race/out &
+exec 3> /race/in 4< /race/out
+take() {
+    sha=- lines=0
+    echo "S 0 0 100000 $1" >&3
+    while read -r a b c d e f g rest <&4; do
+        case $a in C) sha=$g lines=$((lines + 1)) ;; *E) return ;; esac
+    done
+    exit 2
+}
+printf '%032d' 0 > /race/d/f
+take 1000000
+i=0 missed=0 false=0
+while [ $i -lt 200 ]; do
+    i=$((i + 1))
+    printf '%031dX' $i 1<> /race/d/f
+    take 1000000
+    printf '%031dY' $i 1<> /race/d/f
+    take 1000000
+    want=$(sha256sum < /race/d/f)
+    [ "$sha" = "${want%% *}" ] || missed=$((missed + 1))
+    printf '%031dZ' $i 1<> /race/d/f
+    take 1000000
+    take 1
+    false=$((false + lines))
+done
+[ $missed -eq 0 ] || { echo "the snapshots missed $missed of 200 rewrites" >&2; exit 1; }
+[ $false -eq 0 ] || { echo "$false changes reported for a file left alone" >&2; exit 1; }
+"""
+
+
+async def test_a_same_size_rewrite_right_after_a_snapshot_is_seen(backend: DockerBackend) -> None:
+    """Before Linux 6.13 a write in the clock tick of a file's last change leaves its stat as
+    it was, so a snapshot that kept the hash by the stat missed the rewrite for good: 184 to
+    192 of 200 on 6.12. From 6.13 on the kernel dates such a write apart."""
+    image = await ensure_image(backend.docker, "toolbox")
+    await docker_module._helper(
+        backend.docker, image, ["sh", "-c", REWRITES], [], labels=backend._labels, caps=[]
+    )
+
+
 async def test_a_failed_hash_keeps_the_reader(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

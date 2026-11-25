@@ -12,8 +12,9 @@
  * CHANGE is A added, M content changed, T mode or mtime changed only, D removed, K kind changed.
  * KIND is f, d, l, p, s or o. SHA is the sha256 of a file or link target, "-" when not hashed.
  * A file is hashed again only when its inode, size, mtime or ctime moved, smallest first, so
- * HASH_CAP and BLOB_CAP cover as many files as they can. Links are never followed. A walk
- * stopped by ENTRY_CAP reports no removals.
+ * HASH_CAP and BLOB_CAP cover as many files as they can. A file changed in the clock tick of a
+ * snapshot is hashed again by the next one: before Linux 6.13 a write later in that tick leaves
+ * the same stat. Links are never followed. A walk stopped by ENTRY_CAP reports no removals.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -26,6 +27,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_DEPTH 128
@@ -120,6 +122,7 @@ typedef struct {
     char kind;
     int hashed;
     int fresh;
+    int racy;
     int root;
     unsigned mode;
     long long size, mtime_ns, ctime_ns, mtime_us;
@@ -200,6 +203,24 @@ static long long us_of(struct timespec t) {
 static int same_stat(const entry *a, const entry *b) {
     return a->ino == b->ino && a->dev == b->dev && a->size == b->size &&
            a->mtime_ns == b->mtime_ns && a->ctime_ns == b->ctime_ns;
+}
+
+/* The coarse clock a write dates a file by, read before a snapshot's first stat. A clock that
+ * does not read leaves every file to be hashed again. */
+static long long tick_ns;
+
+static void read_tick(void) {
+    struct timespec t;
+    tick_ns = clock_gettime(CLOCK_REALTIME_COARSE, &t) ? LLONG_MIN : ns_of(t);
+}
+
+/* Whether a file changed at `ctime_ns` may change again with the same stat: a write in the
+ * clock tick of its last change dates it the same. Its hash is not kept for the next snapshot. */
+static int racy_at(long long ctime_ns) { return ctime_ns >= tick_ns; }
+
+/* Whether the hash of `was` stands for a file whose stat is `e`'s. */
+static int reusable(const entry *was, const entry *e) {
+    return was && was->kind == 'f' && was->hashed && !was->racy && same_stat(was, e);
 }
 
 /* Opens a path below dfd one component at a time without following links, as the walk did. */
@@ -286,6 +307,17 @@ static void hash_file(entry *e) {
     }
 }
 
+/* A file with the stat it had, due again only for its tick, that was not hashed this time: it
+ * keeps its hash, as a file not due does, and stays due. */
+static void keep_hash(entry *e) {
+    const entry *was = find_old(e->path);
+    if (!was || was->kind != 'f' || !was->hashed || !same_stat(was, e)) return;
+    memcpy(e->sha, was->sha, 32);
+    e->hashed = 1;
+    e->racy = 1;
+    n_unhashed--;
+}
+
 static int is_other_root(const char *path, int self) {
     for (int i = 0; i < nroots; i++)
         if (i != self && strcmp(path, roots[i].path) == 0) return 1;
@@ -325,7 +357,8 @@ static void walk(int dfd, int self, char *path, size_t plen, int depth, list *ou
         e->dev = st.st_dev;
         entry *was = find_old(e->path);
         if (e->kind == 'f') {
-            if (was && was->kind == 'f' && was->hashed && same_stat(was, e)) {
+            e->racy = racy_at(e->ctime_ns);
+            if (reusable(was, e)) {
                 memcpy(e->sha, was->sha, 32);
                 e->hashed = 1;
             } else {
@@ -376,10 +409,11 @@ static void emit(char change, const entry *e, int timestomp, int with_content) {
 }
 
 /* Whether `e` is dated no later than `was`: by the microseconds, which do not wrap, and by the
- * nanoseconds within one microsecond. */
+ * nanoseconds within one microsecond. A file last seen in the clock tick of its change may
+ * change again with the same date, so only an earlier date counts for it. */
 static int not_later(const entry *e, const entry *was) {
     if (e->mtime_us != was->mtime_us) return e->mtime_us < was->mtime_us;
-    return e->mtime_ns <= was->mtime_ns;
+    return was->racy ? e->mtime_ns < was->mtime_ns : e->mtime_ns <= was->mtime_ns;
 }
 
 static void diff(const entry *was, entry *e) {
@@ -417,6 +451,7 @@ static void free_list(list *l) {
 static void snapshot(void) {
     list now = {0};
     char path[MAX_PATH];
+    read_tick();
     truncated = 0;
     n_hashed = n_unhashed = n_skipped = 0;
     for (int i = 0; i < nroots; i++) {
@@ -437,7 +472,10 @@ static void snapshot(void) {
     for (size_t k = 0; k < now.n; k++)
         if (now.v[k].fresh) fresh[nfresh++] = &now.v[k];
     qsort(fresh, nfresh, sizeof *fresh, by_size);
-    for (size_t k = 0; k < nfresh; k++) hash_file(fresh[k]);
+    for (size_t k = 0; k < nfresh; k++) {
+        hash_file(fresh[k]);
+        if (!fresh[k]->hashed) keep_hash(fresh[k]);
+    }
     free(fresh);
     for (int i = 0; i < nroots; i++)
         if (roots[i].fd >= 0) close(roots[i].fd);
@@ -544,7 +582,7 @@ static void hash_one(const char *path, long long cap) {
     long long mtime_us = us_of(st.st_mtim);
     long long ctime_us = us_of(st.st_ctim);
     entry *was = find_old(path);
-    if (was && was->kind == 'f' && was->hashed && same_stat(was, &probe)) {
+    if (reusable(was, &probe)) {
         hex(was->sha, sha);
         close(fd);
         printf("H %s %llu %u %u %lld %lld %lld\n", sha, (unsigned long long)st.st_ino,
