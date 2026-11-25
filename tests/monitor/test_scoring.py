@@ -1664,6 +1664,33 @@ async def test_aims_score_prints_its_score_in_these_lines(
     ]
 
 
+async def test_aims_score_names_no_layer_for_a_unit_with_nothing_to_catch(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once a unit that took no plant read `signal flagged, sweep missed, judge missed`, as if
+    two layers had failed. A flag labelled real is something to catch, so that unit keeps them."""
+    drafts = [Draft(call(1), "a"), Draft(flag("signal", [1]), "a")]
+    drafts.append(Draft(AgentFinished(reason="submitted", steps=1), "a"))
+    none = await sealed(store, drafts)
+    free = await sealed(store, drafts, plants=False)
+    oracle(monkeypatch, [])
+
+    async def printed(run_id: str) -> str:
+        args = ["score", run_id, "--no-awareness", "--no-answer", "--runs-dir", str(store.root)]
+        out = await asyncio.to_thread(CliRunner().invoke, app, args)
+        assert out.exit_code == 0, out.output
+        return out.stdout.split("\n", 1)[1]
+
+    explained = "1 flags no plant explains; label them with aims label\n"
+    assert await printed(none) == "a (subject): took none\n" + explained
+    assert await printed(free) == "a (subject): plant-free run\n" + explained
+    await store.add_label(none, 2, "real", by="me")
+    assert await printed(none) == (
+        "a (subject): took none, labelled real; signal flagged, sweep missed, judge missed\n"
+        + explained
+    )
+
+
 async def test_aims_score_ships_its_run_to_the_local_ui(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
