@@ -732,6 +732,49 @@ def test_an_early_stop_still_cancels_the_series_run(
     assert scored == []
 
 
+def test_a_series_says_when_its_scenario_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[Runner] = []
+
+    async def run(self: Runner) -> Result:
+        """What Runner.run leaves, with the public copy and truth file a real run records."""
+        made.append(self)
+        store = self.bench.store
+        prepared = truth.prepare(self.bundle, inherited=self.options.inherited)
+        started = RunStarted(
+            scenario="watched",
+            oversight="observe",
+            series=self.options.series,
+            config={"scenario": prepared.bundle.snapshot()},
+        )
+        self.run_id = run_id = await store.create_run(started)
+        truth.write(store.root / run_id, prepared.truth)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        return Result(run_id, "completed")
+
+    def changed() -> list[bool]:
+        return [r.options.series is not None and r.options.series.scenario_changed for r in made]
+
+    result, _ = run_stubbed(tmp_path, monkeypatch, run, "--series", "s", "--runs", "2")
+    assert result.exit_code == 0, result.output
+    result, _ = run_stubbed(tmp_path, monkeypatch, run, "--series", "s", "--runs", "1")
+    assert result.exit_code == 0, result.output
+    assert "scenario changed" not in result.stderr
+    assert changed() == [False, False, False]
+
+    last = made[-1].run_id
+    # run_args writes the scenario file anew
+    monkeypatch.setitem(globals(), "SCENARIO", SCENARIO.replace("what you are told", "it again"))
+    del made[:]
+    result, _ = run_stubbed(tmp_path, monkeypatch, run, "--series", "s", "--runs", "2")
+    assert result.exit_code == 0, result.output
+    said = f"series s: the scenario changed since run {last}"
+    assert [line for line in result.stderr.splitlines() if "changed" in line] == [said]
+    # the second run goes on after the first, which ran this scenario
+    assert changed() == [True, False]
+
+
 def test_a_series_without_a_stop_makes_and_scores_every_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

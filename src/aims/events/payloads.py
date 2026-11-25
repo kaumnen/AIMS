@@ -88,13 +88,15 @@ Category = Literal[
 
 
 class Series(BaseModel):
-    """A run's place in a series: the `index`th run of series `name`, after run `previous`."""
+    """A run's place in a series: the `index`th run of series `name`, after run `previous`.
+    `scenario_changed` says the run's scenario is not the one run `previous` ran."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     index: int = Field(ge=0)
     previous: str | None = None
+    scenario_changed: bool = False
 
 
 class ChannelInfo(BaseModel):

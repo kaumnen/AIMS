@@ -49,6 +49,7 @@ from aims.run.job import INPUT_LIMIT, Job, job_bundle, runner_for, selftest_runn
 from aims.run.runner import Bench, Options, RunError, Runner, seal_unsealed
 from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
+from aims.run.series import scenario_changed
 from aims.sandbox import AuditMode, DockerBackend
 from aims.sandbox.images import KEEP_DAYS
 from aims.scenario import Bundle
@@ -397,7 +398,7 @@ class Node:
                 if job.fork is not None:
                     source = await self._origin(job.fork.origin, job.run_id)
                     origin = await load_origin(source, job.fork.origin)
-                inherited, restored = await self._previous(job)
+                inherited, restored, changed = await self._previous(job, bundle)
                 runner = runner_for(
                     ctx.bench,
                     job,
@@ -406,6 +407,7 @@ class Node:
                     origins=None if source is store else source,
                     inherited=inherited,
                     restored=restored,
+                    changed=changed,
                 )
                 link.track(runner)
                 if self.stopping:
@@ -605,13 +607,14 @@ class Node:
             raise RunError(str(e)) from None
 
     async def _previous(
-        self, job: Job
-    ) -> tuple[list[dict[str, JsonValue]] | None, dict[str, bytes] | None]:
+        self, job: Job, bundle: Bundle
+    ) -> tuple[list[dict[str, JsonValue]] | None, dict[str, bytes] | None, bool]:
         """The canaries and folder archives the series run before `job` left, fetched with its
-        truth file when another runner ran it; (None, None) for a run that starts a series."""
+        truth file when another runner ran it, and whether `bundle` is another scenario than
+        the one that run ran; (None, None, False) for a run that starts a series."""
         place = job.options.series
         if place is None or place.previous is None:
-            return None, None
+            return None, None, False
         previous = place.previous
         source = await self._origin(previous, job.run_id)
         if not source.truth_path(previous).is_file():
@@ -627,7 +630,10 @@ class Node:
                     raise RunError(f"the truth file of {previous} does not check: {e}") from None
         found = source.truth_path(previous).is_file()
         inherited = truth.inherit(source.root / previous) if found else []
-        return inherited, await archives(source, previous)
+        changed = await scenario_changed(source, previous, bundle)
+        if changed:
+            log.warning("job %s: the scenario changed since run %s", job.run_id, previous)
+        return inherited, await archives(source, previous), changed
 
     async def _origin(self, run_id: str, job_id: str) -> LocalEventStore:
         """The store holding run `run_id` for job `job_id`: this runner's own, or a copy from

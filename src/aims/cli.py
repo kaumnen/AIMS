@@ -1601,7 +1601,7 @@ async def _run(**o: Any) -> int:
     )
     from aims.run.job import monitor_for, monitor_profiles
     from aims.run.runner import Bench, Fork, Options, Result, RunError, Runner, agent_profile, check
-    from aims.run.series import series_start
+    from aims.run.series import scenario_changed, series_start
     from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, result_json, summary
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
@@ -1988,6 +1988,7 @@ async def _run(**o: Any) -> int:
                     previous = None
                     inherited = None
                     restored = None
+                    changed = False
                     last, start = await series_start(store, o["series"], o["series_restart"])
                     if o["series_restart"]:
                         err.print(shown(f"series {o['series']} starts fresh at #{start}"))
@@ -1996,16 +1997,29 @@ async def _run(**o: Any) -> int:
                         inherited = truth.inherit(store.root / previous)
                         restored = await archives(store, previous)
                         err.print(shown(f"series {o['series']} goes on after run {previous}"))
+                        changed = await scenario_changed(store, previous, bundle)
+                        if changed:
+                            said = (
+                                f"series {o['series']}: the scenario changed since run {previous}"
+                            )
+                            err.print(shown(said), style="yellow")
                     for i in range(start, start + o["runs"]):
                         # A stop reaches only the runs made before it.
                         if stops:
                             break
                         made = make(
                             i,
-                            Series(name=o["series"], index=i, previous=previous),
+                            Series(
+                                name=o["series"],
+                                index=i,
+                                previous=previous,
+                                scenario_changed=changed,
+                            ),
                             inherited,
                             restored,
                         )
+                        # the runs after it go on after a run of this scenario
+                        changed = False
                         runners.append(made)
                         if link is not None:
                             link.track(made)

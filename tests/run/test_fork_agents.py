@@ -846,6 +846,85 @@ async def test_a_series_goes_on_after_its_last_completed_run(store: LocalEventSt
     assert (found[0].run_id, found[1]) == (fresh, 4)
 
 
+async def test_a_series_tells_a_scenario_that_changed_since_its_last_run(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    import shutil
+
+    from aims.run import truth
+    from aims.run.series import scenario_changed
+
+    # a built-in with plants: its public copy holds canaries, so it differs run to run
+    folder = tmp_path / "cache-keys"
+    shutil.copytree(Path("src/aims/scenarios/cache-keys"), folder)
+    path = folder / "scenario.yaml"
+
+    async def ran(
+        seed: bytes, inherited: list[dict[str, Any]] | None = None, variant: str | None = None
+    ) -> str:
+        loaded = load(path, variant)
+        # as the Runner prepares it
+        prepared = truth.prepare(loaded, variant or loaded.variant, seed=seed, inherited=inherited)
+        config: dict[str, Any] = {"scenario": prepared.bundle.snapshot()}
+        started = RunStarted(scenario="cache-keys", oversight="observe", config=config)
+        run_id = await store.create_run(started)
+        truth.write(store.root / run_id, prepared.truth)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        return run_id
+
+    first = await ran(b"\x01" * 16)
+    second = await ran(b"\x02" * 16, truth.inherit(store.root / first))
+    recorded = [
+        cast(Any, (await store.events(r, limit=1))[0].data)["config"]["scenario"]["digest"]
+        for r in (first, second)
+    ]
+    # the runs of one scenario record two digests, and the next run makes a third
+    assert len({*recorded, truth.prepare(load(path)).bundle.digest}) == 3
+    assert not await scenario_changed(store, first, load(path))
+    assert not await scenario_changed(store, second, load(path))
+
+    for part in ("env/Dockerfile", "repo/README.md", "verifier/score.py"):
+        target = folder / part
+        before = target.read_bytes()
+        target.write_bytes(before + b"\n# changed\n")
+        assert await scenario_changed(store, second, load(path)), part
+        target.write_bytes(before)
+    text = path.read_text()
+    assert "Fix the code" in text
+    path.write_text(text.replace("Fix the code", "Repair the code"))
+    assert await scenario_changed(store, second, load(path))
+    # a comment is nothing a run reads
+    path.write_text(text + "\n# a note\n")
+    assert not await scenario_changed(store, second, load(path))
+
+    # a run of a variant is compared as that variant, however the next run is loaded
+    third = await ran(b"\x03" * 16, truth.inherit(store.root / second), "unobserved")
+    for variant in ("unobserved", "observed", None):
+        assert not await scenario_changed(store, third, load(path, variant)), variant
+        assert not await scenario_changed(store, second, load(path, variant)), variant
+    cue = folder / "cue/unobserved/AGENTS.md"
+    before = cue.read_bytes()
+    cue.write_bytes(before + b"\nchanged\n")
+    assert await scenario_changed(store, third, load(path, "unobserved"))
+    cue.write_bytes(before)
+
+    # a check that cannot run says nothing: it only warns
+    def broken(*args: Any, **kw: Any) -> Any:
+        raise RuntimeError("boom")
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(truth, "prepare", broken)
+        assert not await scenario_changed(store, second, load(path))
+
+    # nothing to compare: no truth file here, or a run that recorded no digest
+    truth.path(store.root / second).unlink()
+    (folder / "env/Dockerfile").write_text("FROM scratch\n")
+    assert not await scenario_changed(store, second, load(path))
+    bare = await store.create_run(RunStarted(scenario="cache-keys", oversight="observe"))
+    truth.write(store.root / bare, {})
+    assert not await scenario_changed(store, bare, load(path))
+
+
 def test_the_command_line_checks_the_fork_and_series_flags(tmp_path: Path) -> None:
     from typer.testing import CliRunner
 

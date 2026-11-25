@@ -461,11 +461,12 @@ def runner_for(
     origins: EventStore | None = None,
     inherited: list[dict[str, JsonValue]] | None = None,
     restored: dict[str, bytes] | None = None,
+    changed: bool = False,
 ) -> Runner:
     """The Runner of a scenario job, on a bench of its own that shares `bench`'s store,
     backend, limiters, delta bus and gate, watched by the job's monitor. A run of a series
     starts from the canaries `inherited` and the folder archives `restored` its previous run
-    left."""
+    left; `changed` says its scenario is not the one that run ran."""
     run_bench = dataclasses.replace(
         bench,
         models=job.config(),
@@ -486,7 +487,7 @@ def runner_for(
     )
     if job.fork is None:
         if o.series is not None:
-            options.series = o.series
+            options.series = o.series.model_copy(update={"scenario_changed": changed})
             options.inherited = inherited
             options.restored = restored or None
         try:

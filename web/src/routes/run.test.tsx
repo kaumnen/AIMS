@@ -3046,6 +3046,7 @@ test("a run of a series links its series, the run before it and every run of it"
   expect(link.getAttribute("href")).toBe("/runs?series=nightly");
   const after = await screen.findByRole("link", { name: "after #1" });
   expect(after.getAttribute("href")).toBe(`/runs/${seriesId(1)}`);
+  expect(screen.queryByText("scenario changed since that run")).toBeNull();
   const strip = screen.getByRole("navigation", { name: "Series nightly" });
   const chips = within(strip).getAllByRole("link");
   expect(chips.map((c) => c.textContent)).toEqual([
@@ -3062,6 +3063,20 @@ test("a run of a series links its series, the run before it and every run of it"
   if (!source) throw new Error("no list stream");
   act(() => source.send({ kind: "run", run: moved }));
   await waitFor(() => expect(within(strip).getAllByRole("link")[3]?.textContent).toBe("#3Running"));
+});
+
+test("a run of a series says when its scenario changed since the run before it", async () => {
+  seriesRuns = [seriesRun(0), seriesRun(1), { ...detail.run, series: "nightly", series_index: 2 }];
+  const series = { name: "nightly", index: 2, previous: seriesId(1), scenario_changed: true };
+  detail = {
+    ...detail,
+    run: { ...detail.run, series: "nightly", series_index: 2 },
+    series_previous: seriesId(1),
+    started: ev(0, "run.started", { agents: ["agent"], series }),
+  };
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("link", { name: "after #1" })).toBeTruthy();
+  expect(screen.getByText("scenario changed since that run")).toBeTruthy();
 });
 
 test("an operator deletes a sealed run with the runs made from it and lands on the list", async () => {

@@ -15938,7 +15938,7 @@
       },
       "Series": {
         "additionalProperties": false,
-        "description": "A run's place in a series: the `index`th run of series `name`, after run `previous`.",
+        "description": "A run's place in a series: the `index`th run of series `name`, after run `previous`.\n`scenario_changed` says the run's scenario is not the one run `previous` ran.",
         "properties": {
           "index": {
             "minimum": 0.0,
@@ -15959,6 +15959,11 @@
               }
             ],
             "title": "Previous"
+          },
+          "scenario_changed": {
+            "default": false,
+            "title": "Scenario Changed",
+            "type": "boolean"
           }
         },
         "required": [

@@ -7911,6 +7911,7 @@ export interface components {
         /**
          * Series
          * @description A run's place in a series: the `index`th run of series `name`, after run `previous`.
+         *     `scenario_changed` says the run's scenario is not the one run `previous` ran.
          */
         Series: {
             /** Index */
@@ -7919,6 +7920,11 @@ export interface components {
             name: string;
             /** Previous */
             previous?: string | null;
+            /**
+             * Scenario Changed
+             * @default false
+             */
+            scenario_changed?: boolean;
         };
         /**
          * SeriesInfo

@@ -432,6 +432,8 @@ async def test_a_series_from_the_api_hands_each_run_the_folder_and_canaries(
         await until(lambda: cp.state.store.truth_path(second).is_file(), 30)
     assert "one\ntwo" in await outputs(cp, second)
 
+    # the third run is of a scenario changed since the second, on a runner that fetches it
+    (folder / "scenario.yaml").write_text(SERIAL.replace("Leave a note", "Read the notes"))
     script = Script(
         call("bash", command="cat /shared/log.txt"),
         call("submit", answer="three"),
@@ -447,6 +449,16 @@ async def test_a_series_from_the_api_hands_each_run_the_folder_and_canaries(
     async with cp.client(cp.viewer) as c:
         detail = (await c.get(f"/api/runs/{third}")).json()
     assert detail["series_previous"] == second
+    assert detail["started"]["data"]["series"]["scenario_changed"] is True
+    async with cp.client(cp.viewer) as c:
+        before = (await c.get(f"/api/runs/{second}")).json()
+    # the second run drew new canaries for the same scenario
+    assert before["started"]["data"]["series"] == {
+        "name": "nightly",
+        "index": 1,
+        "previous": first,
+        "scenario_changed": False,
+    }
     inherited = truth.read(cp.state.store.root / third)["inherited"]
     assert [(i["run"], i["plant"]) for i in inherited] == [(first, "svc"), (second, "svc")]
 

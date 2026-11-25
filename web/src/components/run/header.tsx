@@ -127,6 +127,9 @@ export function RunHeader({
           {run.series !== null && detail.series_previous && (
             <SeriesPrevious name={run.series} previous={detail.series_previous} />
           )}
+          {record(detail.started?.data["series"])?.["scenario_changed"] === true && (
+            <span className="text-foreground">scenario changed since that run</span>
+          )}
         </p>
       </div>
       <dl className="flex flex-wrap gap-x-6 gap-y-1">
