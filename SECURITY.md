@@ -125,6 +125,7 @@ The control plane keeps an audit log in `server.sqlite`. It records each change 
 - A profile URL with a user name or password is refused, since runs record the URL.
 - The agent can read a scenario's `env` values. Never put real credentials there.
 - Runs hold full prompts, model output and file contents. They are stored unencrypted in the data directories.
+- AIMS makes a new data dir with mode `0700`. A folder that already exists keeps its mode. Set it to `0700` with `chmod 700 <dir>`, since the run logs inside can be read by anyone who can enter the folder.
 
 ## Run without the tracer
 
