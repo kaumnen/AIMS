@@ -23,6 +23,7 @@ from aims.events import (
     LogTruncated,
     MonitorAction,
     MonitorDegraded,
+    MonitorSweep,
     MonitorVerdict,
     OperatorAction,
     PlantTriggered,
@@ -36,6 +37,7 @@ from aims.events import (
     TaskScored,
     ToolCall,
     Verification,
+    sweep_failed,
 )
 from aims.events.schema import BlobRef, Content, Payload, payload_types
 from aims.report import texts
@@ -190,6 +192,10 @@ async def build(
         held_marks if review else [],
         verdict,
         None if verdict_event is None else verdict_event.seq,
+        [
+            (r, await store.every(r, types=(MonitorSweep.type,)))
+            for r in dict.fromkeys((run_id, holder))
+        ],
     )
     if verify_error is not None:
         warnings.insert(0, Warning(kind="verify_failed", run_id=run_id, detail=verify_error))
@@ -575,6 +581,7 @@ def _warnings(
     held_marks: Sequence[Event],
     verdict: MonitorVerdict | None,
     verdict_seq: int | None,
+    sweeps: Sequence[tuple[str, Sequence[Event]]] = (),
 ) -> list[Warning]:
     out: list[Warning] = []
     for where, events in ((run_id, marks), (holder, held_marks)):
@@ -588,6 +595,20 @@ def _warnings(
                     detail=d.reason,
                     part=d.part,
                     then=d.then,
+                )
+            )
+    for where, events in sweeps:
+        made = [e for e in events if e.type == MonitorSweep.type]
+        failed = [e for e in made if sweep_failed(e.data)]
+        if failed:
+            out.append(
+                Warning(
+                    kind="sweeps_failed",
+                    run_id=where,
+                    seq=failed[0].seq,
+                    count=len(failed),
+                    total=len(made),
+                    detail=str(failed[0].data.get("error")),
                 )
             )
     for label, error in [] if verdict is None else verdict.failed():

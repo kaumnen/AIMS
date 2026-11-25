@@ -1,4 +1,5 @@
 import itertools
+from collections.abc import Mapping
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -1257,6 +1258,12 @@ class MonitorSweep(Payload):
     duration_ms: int = 0
     error: str | None = None
     no_room: bool = False
+
+
+def sweep_failed(data: Mapping[str, object]) -> bool:
+    """Whether the `monitor.sweep` payload `data` is a sweep lost to an error. One the monitor
+    budget had no room for is not counted: the monitor's own stop tells of it."""
+    return data.get("error") is not None and data.get("no_room") is not True
 
 
 class MonitorCleared(Payload):

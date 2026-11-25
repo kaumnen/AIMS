@@ -38,6 +38,10 @@ const WARNINGS: Record<ReportWarning["kind"], readonly [Level, string]> = {
   in_progress: ["note", "In progress. This report shows the log so far."],
   verify_failed: ["caution", "The hash chain did not verify. Treat every fact below as unproven."],
   monitor_degraded: ["warning", "{who}'s {part} stopped at {at}. {then}"],
+  sweeps_failed: [
+    "warning",
+    "{who} lost {count} of its {total} sweeps to an error, first at {at}.",
+  ],
   rollout_failed: [
     "warning",
     "{who}'s rollout {part} failed. The verdict at {at} is from the other rollouts.",
@@ -317,6 +321,7 @@ function warningLine(props: SectionProps, w: ReportWarning): ReactNode {
     then: THEN[w.then ?? ""] ?? "",
     lost: w.lost === null ? LOST_UNKNOWN : LOST_EVENTS.replace("{n}", w.lost.toLocaleString("en")),
     count: String(w.count),
+    total: String(w.total ?? ""),
     agent: <span className="font-mono text-xs">{visible(w.agent ?? "")}</span>,
     seqs: flagLinks(props, w.run_id, w.seqs),
   });

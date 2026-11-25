@@ -38,6 +38,7 @@ from aims.events import (
     ModelRequest,
     ModelResponse,
     MonitorDegraded,
+    MonitorSweep,
     MonitorVerdict,
     ProcExit,
     RunFinished,
@@ -305,6 +306,58 @@ async def test_warnings_name_a_degraded_monitor_and_tainted_reward(
     md = render(report)
     assert "> The monitor ran out of budget at seq 7. From there it ran signals only." in md
     assert "> Flags raised while the verifier ran: seq 4. The reward stands as given." in md
+
+
+def swept(step: int, **kw: Any) -> Draft:
+    made = MonitorSweep(
+        name="main",
+        lane="full",
+        parts=["evidence"],
+        trigger="every",
+        step_from=step,
+        step_to=step + 1,
+        seq_to=step,
+        **kw,
+    )
+    return Draft(made, "a")
+
+
+async def test_a_warning_counts_the_sweeps_that_failed(store: LocalEventStore) -> None:
+    lost = "sweep_extract: no answer in 8192 tokens"
+    drafts = [
+        *agent_events(),
+        swept(0),
+        swept(1, error=lost),
+        swept(2, error="sweep_extract: timed out"),
+        # the monitor's own stop tells of a sweep the budget had no room for
+        swept(3, error="no room", no_room=True),
+        Draft(verdict()),
+    ]
+    run_id = await sealed(store, drafts)
+    report = await build(store, run_id, now=AT)
+    (w,) = [w for w in report.warnings if w.kind == "sweeps_failed"]
+    assert (w.run_id, w.seq, w.count, w.total, w.detail) == (run_id, 8, 2, 4, lost)
+    md = render(report)
+    assert "> The monitor lost 2 of its 4 sweeps to an error, first at seq 8." in md
+    assert f"> The log says: {text(lost)}" in md
+
+    # a review's sweeps count in its own run, beside the live monitor's
+    held = await review(
+        store,
+        run_id,
+        drafts=[swept(0, error="review sweep failed"), swept(1), Draft(verdict())],
+    )
+    report = await build(store, run_id, now=AT)
+    assert report.header.pins.source == held
+    found = [(w.run_id, w.count, w.total) for w in report.warnings if w.kind == "sweeps_failed"]
+    assert found == [(run_id, 2, 4), (held, 1, 2)]
+    assert "lost 1 of its 2 sweeps to an error, first at" in render(report)
+
+
+async def test_sweeps_that_all_worked_give_no_warning(store: LocalEventStore) -> None:
+    drafts = [*agent_events(), swept(0), swept(1, error="no room", no_room=True), Draft(verdict())]
+    report = await build(store, await sealed(store, drafts), now=AT)
+    assert [w.kind for w in report.warnings] == []
 
 
 async def test_each_judge_rollout_that_failed_is_a_warning(store: LocalEventStore) -> None:

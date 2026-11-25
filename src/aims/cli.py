@@ -3072,7 +3072,7 @@ async def _monitor_runs(**o: Any) -> int:
                     r.origin,
                     r.status if r.reason is None else f"{r.status}: {r.reason}",
                     str(len(d.flags)),
-                    str(d.sweeps),
+                    f"{d.sweeps} ({d.sweeps_failed} failed)" if d.sweeps_failed else str(d.sweeps),
                     verdict,
                     f"${r.cost_usd:.4f}",
                 )

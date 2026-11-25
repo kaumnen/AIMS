@@ -67,6 +67,7 @@ WarningKind = Literal[
     "in_progress",
     "verify_failed",
     "monitor_degraded",
+    "sweeps_failed",
     "rollout_failed",
     "audit_lost",
     "log_truncated",
@@ -156,7 +157,8 @@ class Warning(_Model):
     it in `run_id`, `count` how many there were, `detail` the reason the log gives. A
     degraded monitor names its `part` and what it did `then`; a judge rollout that failed
     beside the verdict at `seq` names its label in `part`; lost audit records sum to `lost`
-    when known; `seqs` are the flags that tainted the reward."""
+    when known; `seqs` are the flags that tainted the reward. Sweeps an error lost are `count`
+    of the `total` the monitor made, less those its budget had no room for."""
 
     kind: WarningKind
     run_id: str
@@ -167,6 +169,7 @@ class Warning(_Model):
     part: str | None = None
     then: str | None = None
     lost: int | None = None
+    total: int | None = None
     seqs: list[int] = Field(default_factory=list)
 
 

@@ -153,6 +153,10 @@ WARNINGS = {
         "The hash chain did not verify. Treat every fact below as unproven.",
     ),
     "monitor_degraded": ("WARNING", "{who}'s {part} stopped at {at}. {then}"),
+    "sweeps_failed": (
+        "WARNING",
+        "{who} lost {count} of its {total} sweeps to an error, first at {at}.",
+    ),
     "rollout_failed": (
         "WARNING",
         "{who}'s rollout {part} failed. The verdict at {at} is from the other rollouts.",

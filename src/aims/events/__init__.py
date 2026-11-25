@@ -136,6 +136,7 @@ from aims.events.payloads import (
     Told,
     ToolCall,
     ToolResult,
+    sweep_failed,
 )
 from aims.events.schema import BlobRef, Content, Draft, Event, Payload, payload_type
 from aims.events.store import (
@@ -310,5 +311,6 @@ __all__ = [
     "logged_events",
     "payload_type",
     "split_lines",
+    "sweep_failed",
     "verify_run",
 ]

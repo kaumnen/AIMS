@@ -76,6 +76,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
         // oxlint-disable-next-line unicorn/no-thenable
         then: "signals_only",
         lost: null,
+        total: null,
         seqs: [],
       },
       {
@@ -89,6 +90,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
         // oxlint-disable-next-line unicorn/no-thenable
         then: null,
         lost: null,
+        total: null,
         seqs: [],
       },
     ],

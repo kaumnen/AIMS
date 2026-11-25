@@ -38,6 +38,7 @@ function warning(over: Partial<ReportWarning> & Pick<ReportWarning, "kind">): Re
     // oxlint-disable-next-line unicorn/no-thenable
     then: null,
     lost: null,
+    total: null,
     seqs: [],
     ...over,
   };
@@ -240,6 +241,7 @@ test("each kind of warning says what the Markdown says", async () => {
       degraded(7, "sweep", "continue"),
       degraded(8, "judge", null),
       degraded(9, "lane", "pause"),
+      warning({ kind: "sweeps_failed", seq: 7, count: 2, total: 38, detail: "no answer" }),
       warning({ kind: "rollout_failed", seq: 20, part: "judge.2 (blind)", detail: "a <b>503</b>" }),
       warning({ kind: "audit_lost", seq: 2, count: 2, lost: 1234 }),
       warning({ kind: "audit_lost", seq: 3, lost: null }),
@@ -261,6 +263,10 @@ test("each kind of warning says what the Markdown says", async () => {
       ["Warning The monitor's sweeps stopped at step 2. It went on without that part."],
       ["Warning The monitor's judge stopped at step 2."],
       ["Warning The monitor's lane stopped at step 2. It paused the agents."],
+      [
+        "Warning The monitor lost 2 of its 38 sweeps to an error, first at step 2.",
+        "The log says: no answer",
+      ],
       [
         "Warning The monitor's rollout judge.2 (blind) failed. The verdict at step 3 is from the other rollouts.",
         "The log says: a <b>503</b>",

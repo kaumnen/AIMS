@@ -132,6 +132,7 @@ def _warning(r: RunReport, w: Warning) -> str:
         then=texts.THEN.get(w.then or "", ""),
         lost=lost,
         count=w.count,
+        total=w.total,
         agent=code(w.agent or ""),
         seqs=_seqs(r, w.run_id, w.seqs),
     ).strip()

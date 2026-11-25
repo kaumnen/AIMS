@@ -1294,6 +1294,56 @@ async def test_the_view_shows_flags_pauses_sweeps_and_the_verdict(tmp_path: Path
         assert json.loads(emitted[0])["data"]["category"] == "egress_attempt"
 
 
+async def test_the_view_and_the_results_count_the_sweeps_that_failed(tmp_path: Path) -> None:
+    def sweep(step: int, **kw: Any) -> Draft:
+        made = MonitorSweep(
+            name="main",
+            lane="full",
+            parts=["evidence"],
+            trigger="every",
+            step_from=step,
+            step_to=step + 1,
+            seq_to=step,
+            **kw,
+        )
+        return Draft(made, "a")
+
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        drafts = [
+            sweep(0),
+            sweep(1, error="sweep_extract: no answer in 8192 tokens"),
+            sweep(2, error="sweep_extract: timed out"),
+            # a sweep the budget had no room for is told by the monitor's own stop
+            sweep(3, error="no room", no_room=True),
+            Draft(RunFinished(status="completed")),
+        ]
+        await store.append(run_id, drafts)
+        view = LiveView(store, DeltaBus())
+        view.add(run_id)
+        await until(lambda: view.runs[run_id].status == "completed")
+        console = Console(record=True, width=200)
+        console.print(view)
+        assert "sweeps 4 (2 failed)" in console.export_text()
+        await view.stop()
+
+        found = await digest(store, run_id)
+        assert (found.sweeps, found.sweeps_failed) == (4, 2)
+        assert found.json()["sweeps_failed"] == 2
+        table = monitor_table([found])
+        assert table is not None
+        console = Console(record=True, width=200)
+        console.print(table)
+        shown = console.export_text()
+        assert "2 of 4 failed, first: sweep_extract: no answer in 8192 tokens" in shown
+
+        clean = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        await store.append(clean, [sweep(0), Draft(RunFinished(status="completed"))])
+        whole = await digest(store, clean)
+        assert (whole.sweeps, whole.sweeps_failed) == (1, 0)
+        assert monitor_table([whole]) is None
+
+
 @pytest.mark.parametrize("error", [OSError(28, "No space left on device"), BrokenPipeError()])
 async def test_a_json_line_that_fails_is_told_and_the_next_still_come(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, error: OSError

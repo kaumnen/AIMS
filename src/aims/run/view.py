@@ -19,7 +19,15 @@ from rich.table import Table
 from rich.text import Text
 
 from aims.aio import stopped
-from aims.events import BlobRef, Event, EventStore, MonitorVerdict, ResumeThen, logged_events
+from aims.events import (
+    BlobRef,
+    Event,
+    EventStore,
+    MonitorVerdict,
+    ResumeThen,
+    logged_events,
+    sweep_failed,
+)
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
@@ -83,6 +91,7 @@ class _Run:
     max_importance: int = 0
     shown: list[str] = field(default_factory=list)
     sweeps: int = 0
+    sweeps_failed: int = 0
     sweeping: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
     models: dict[str, str] = field(default_factory=dict)
@@ -208,6 +217,7 @@ class LiveView:
                 run.shown = [*run.shown, flag_line(data, e.agent_id)][-SHOWN_FLAGS:]
             case "monitor.sweep":
                 run.sweeps += 1
+                run.sweeps_failed += sweep_failed(data)
             case "monitor.verdict":
                 run.verdict = f"severity {data.get('max_severity')}: {_text(data.get('summary'))}"
                 run.failed = failed_lines(data)
@@ -389,6 +399,8 @@ class LiveView:
         if run.max_importance:
             head.append(f"  max {run.max_importance}", style=_severity(run.max_importance))
         head.append(f"  sweeps {run.sweeps}")
+        if run.sweeps_failed:
+            head.append(f" ({run.sweeps_failed} failed)", style="yellow")
         if run.sweeping:
             head.append("  sweeping", style="magenta")
         rows: list[RenderableType] = [head]
@@ -508,13 +520,16 @@ def result_json(r: Result) -> dict[str, object]:
 @dataclass(slots=True)
 class Digest:
     """What the monitor wrote in one run, for the end summary: each logical flag with the
-    count its re-flags reached, the actions, the sweep count and the verdict."""
+    count its re-flags reached, the actions, the sweep count and the verdict. `sweeps_failed`
+    counts the sweeps an error lost, `sweep_error` is what the first of them said."""
 
     run_id: str
     flags: list[Event] = field(default_factory=list)
     counts: dict[int, int] = field(default_factory=dict)
     actions: list[Event] = field(default_factory=list)
     sweeps: int = 0
+    sweeps_failed: int = 0
+    sweep_error: str = ""
     verdict: Event | None = None
     degraded: list[Event] = field(default_factory=list)
 
@@ -526,6 +541,7 @@ class Digest:
             "flags": [flag(e) for e in self.flags],
             "actions": [{"seq": e.seq, "agent_id": e.agent_id, **e.data} for e in self.actions],
             "sweeps": self.sweeps,
+            "sweeps_failed": self.sweeps_failed,
             "verdict": None if self.verdict is None else self.verdict.data,
             "degraded": [e.data for e in self.degraded],
         }
@@ -556,6 +572,9 @@ async def digest(store: EventStore, run_id: str) -> Digest:
                     out.actions.append(e)
                 case "monitor.sweep":
                     out.sweeps += 1
+                    if sweep_failed(data):
+                        out.sweeps_failed += 1
+                        out.sweep_error = out.sweep_error or _text(data.get("error"))
                 case "monitor.verdict":
                     out.verdict = e
                 case "monitor.degraded":
@@ -564,7 +583,8 @@ async def digest(store: EventStore, run_id: str) -> Digest:
 
 
 def monitor_table(digests: Sequence[Digest]) -> Table | None:
-    """Every run's flags, actions and verdict, or None when no monitor wrote any."""
+    """Every run's flags, actions, failed sweeps and verdict, or None when no monitor wrote
+    any."""
     table = Table(title="monitor", show_lines=False)
     for column in ("run", "what", "agent", "detail"):
         table.add_column(column, overflow="fold")
@@ -580,6 +600,10 @@ def monitor_table(digests: Sequence[Digest]) -> Table | None:
             rows += 1
         for e in d.degraded:
             _row(table, d.run_id, "degraded", "", f"{e.data.get('part')}: {e.data.get('reason')}")
+            rows += 1
+        if d.sweeps_failed:
+            detail = f"{d.sweeps_failed} of {d.sweeps} failed, first: {d.sweep_error}"
+            _row(table, d.run_id, "sweeps", "", detail, style="yellow")
             rows += 1
         if d.verdict is not None:
             v = d.verdict.data
